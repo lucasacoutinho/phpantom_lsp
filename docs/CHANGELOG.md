@@ -47,6 +47,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Mixin resolution extracted to `MixinProvider`.** The `@mixin` merge logic (`merge_mixins_into` / `merge_mixins_into_recursive`) has been moved from `inheritance.rs` into a new `MixinProvider` in `virtual_members/mixin.rs`, implementing the `VirtualMemberProvider` trait. `resolve_class_with_inheritance` now performs base resolution only (own + traits + parent chain), and mixin members are applied lazily through the provider pipeline in `resolve_class_fully`. No user-facing behavior changes. This is groundwork for the upcoming PHPDoc and Laravel providers.
+
 ## [0.3.0] - 2026-02-21
 
 ### Added

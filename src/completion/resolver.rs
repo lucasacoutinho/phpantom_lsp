@@ -960,7 +960,8 @@ impl Backend {
         // In docblocks `@return $this` means "the instance the method is
         // called on" — identical to `static` for inheritance, but when the
         // method comes from a `@mixin` the return type is rewritten to the
-        // mixin class name during merge (see `merge_mixins_into_recursive`).
+        // mixin class name during merge (see `MixinProvider` in
+        // `virtual_members/mixin.rs`).
         if hint == "self" || hint == "static" || hint == "$this" {
             return all_classes
                 .iter()

@@ -32,8 +32,10 @@
 //!    c. Mixin provider      — @mixin
 //! ```
 
+pub mod mixin;
+
 use crate::Backend;
-use crate::types::{ClassInfo, MethodInfo, PropertyInfo};
+use crate::types::{ClassInfo, ConstantInfo, MethodInfo, PropertyInfo};
 
 /// Members synthesized by a provider.
 ///
@@ -45,12 +47,14 @@ pub struct VirtualMembers {
     pub methods: Vec<MethodInfo>,
     /// Virtual properties to add to the class.
     pub properties: Vec<PropertyInfo>,
+    /// Virtual constants to add to the class.
+    pub constants: Vec<ConstantInfo>,
 }
 
 impl VirtualMembers {
-    /// Whether this value contains no methods and no properties.
+    /// Whether this value contains no methods, properties, or constants.
     pub fn is_empty(&self) -> bool {
-        self.methods.is_empty() && self.properties.is_empty()
+        self.methods.is_empty() && self.properties.is_empty() && self.constants.is_empty()
     }
 }
 
@@ -107,6 +111,11 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
             class.properties.push(property);
         }
     }
+    for constant in virtual_members.constants {
+        if !class.constants.iter().any(|c| c.name == constant.name) {
+            class.constants.push(constant);
+        }
+    }
 }
 
 /// Apply all registered providers to a base-resolved class.
@@ -140,7 +149,10 @@ pub fn apply_virtual_members(
 /// 2. PHPDoc provider
 /// 3. Mixin provider (lowest priority)
 pub fn default_providers() -> Vec<Box<dyn VirtualMemberProvider>> {
-    Vec::new()
+    vec![
+        // Mixin provider — lowest priority among virtual member providers.
+        Box::new(mixin::MixinProvider),
+    ]
 }
 
 // ─── Backend integration ────────────────────────────────────────────────────
@@ -250,6 +262,7 @@ mod tests {
         let vm = VirtualMembers {
             methods: Vec::new(),
             properties: Vec::new(),
+            constants: Vec::new(),
         };
         assert!(vm.is_empty());
     }
@@ -259,6 +272,7 @@ mod tests {
         let vm = VirtualMembers {
             methods: vec![make_method("foo", Some("string"))],
             properties: Vec::new(),
+            constants: Vec::new(),
         };
         assert!(!vm.is_empty());
     }
@@ -268,6 +282,22 @@ mod tests {
         let vm = VirtualMembers {
             methods: Vec::new(),
             properties: vec![make_property("bar", Some("int"))],
+            constants: Vec::new(),
+        };
+        assert!(!vm.is_empty());
+    }
+
+    #[test]
+    fn virtual_members_not_empty_with_constant() {
+        let vm = VirtualMembers {
+            methods: Vec::new(),
+            properties: Vec::new(),
+            constants: vec![ConstantInfo {
+                name: "FOO".to_string(),
+                type_hint: None,
+                visibility: Visibility::Public,
+                is_deprecated: false,
+            }],
         };
         assert!(!vm.is_empty());
     }
@@ -282,6 +312,7 @@ mod tests {
         let virtual_members = VirtualMembers {
             methods: vec![make_method("new_method", Some("int"))],
             properties: Vec::new(),
+            constants: Vec::new(),
         };
 
         merge_virtual_members(&mut class, virtual_members);
@@ -301,6 +332,7 @@ mod tests {
         let virtual_members = VirtualMembers {
             methods: Vec::new(),
             properties: vec![make_property("new_prop", Some("int"))],
+            constants: Vec::new(),
         };
 
         merge_virtual_members(&mut class, virtual_members);
@@ -318,6 +350,7 @@ mod tests {
         let virtual_members = VirtualMembers {
             methods: vec![make_method("doStuff", Some("int"))],
             properties: Vec::new(),
+            constants: Vec::new(),
         };
 
         merge_virtual_members(&mut class, virtual_members);
@@ -340,6 +373,7 @@ mod tests {
         let virtual_members = VirtualMembers {
             methods: Vec::new(),
             properties: vec![make_property("value", Some("int"))],
+            constants: Vec::new(),
         };
 
         merge_virtual_members(&mut class, virtual_members);
@@ -363,6 +397,7 @@ mod tests {
             VirtualMembers {
                 methods: Vec::new(),
                 properties: Vec::new(),
+                constants: Vec::new(),
             },
         );
 
@@ -395,6 +430,7 @@ mod tests {
             VirtualMembers {
                 methods: self.methods.clone(),
                 properties: self.properties.clone(),
+                constants: Vec::new(),
             }
         }
     }
@@ -416,7 +452,7 @@ mod tests {
             _class: &ClassInfo,
             _class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
         ) -> VirtualMembers {
-            panic!("provide should not be called when applies_to returns false");
+            panic!("provide should not be called when applies_to returns false")
         }
     }
 
@@ -532,12 +568,9 @@ mod tests {
     }
 
     #[test]
-    fn default_providers_is_empty() {
+    fn default_providers_has_mixin() {
         let providers = default_providers();
-        assert!(
-            providers.is_empty(),
-            "no providers registered yet in Step 1"
-        );
+        assert_eq!(providers.len(), 1, "should have MixinProvider registered");
     }
 
     // ── resolve_class_fully tests ───────────────────────────────────────

@@ -1,23 +1,28 @@
-/// Class inheritance resolution.
+/// Base class inheritance resolution.
 ///
-/// This module handles merging members from parent classes, traits, and
-/// `@mixin` classes into a single `ClassInfo`.  The resulting merged class
-/// contains the complete set of members visible on an instance / static
-/// access, respecting PHP's precedence rules:
+/// This module handles merging members from parent classes and traits
+/// into a single `ClassInfo`.  The resulting merged class contains the
+/// base set of members visible on an instance / static access,
+/// respecting PHP's precedence rules:
 ///
-///   class own > traits > parent chain > mixins
+///   class own > traits > parent chain
 ///
-/// It also supports **generic type substitution**: when a child class
-/// declares `@extends Parent<ConcreteType1, ConcreteType2>` and the parent
-/// has `@template T1` / `@template T2`, the inherited methods and properties
-/// have their template parameter references replaced with the concrete types.
+/// `@mixin` members are handled separately by
+/// [`MixinProvider`](crate::virtual_members::mixin::MixinProvider) in
+/// the virtual member provider layer.
+///
+/// This module also supports **generic type substitution**: when a child
+/// class declares `@extends Parent<ConcreteType1, ConcreteType2>` and the
+/// parent has `@template T1` / `@template T2`, the inherited methods and
+/// properties have their template parameter references replaced with the
+/// concrete types.
 use std::collections::HashMap;
 
 use crate::Backend;
 use crate::docblock::types::split_generic_args;
 use crate::types::{
-    ClassInfo, MAX_INHERITANCE_DEPTH, MAX_MIXIN_DEPTH, MAX_TRAIT_DEPTH, MethodInfo, PropertyInfo,
-    TraitAlias, TraitPrecedence, Visibility,
+    ClassInfo, MAX_INHERITANCE_DEPTH, MAX_TRAIT_DEPTH, MethodInfo, PropertyInfo, TraitAlias,
+    TraitPrecedence, Visibility,
 };
 use crate::util::short_name;
 
@@ -156,38 +161,6 @@ impl Backend {
             current = parent;
         }
 
-        // 3. Merge members from @mixin classes.
-        //    Mixin members have the lowest precedence — they only fill in
-        //    members that are not already provided by the class itself,
-        //    its traits, or its parent chain.  This models the PHP pattern
-        //    where `@mixin` documents that magic methods (__call, __get,
-        //    etc.) proxy to another class.
-        //
-        //    Mixins are inherited: if `User extends Model` and `Model`
-        //    has `@mixin Builder`, then `User` also gains Builder's
-        //    members.  We merge the class's own mixins first, then walk
-        //    up the parent chain again to collect ancestor mixins.
-        Self::merge_mixins_into(&mut merged, &class.mixins, class_loader);
-
-        // Also merge mixins declared on ancestor classes.
-        let mut ancestor = class.clone();
-        let mut mixin_depth = 0u32;
-        while let Some(ref parent_name) = ancestor.parent_class {
-            mixin_depth += 1;
-            if mixin_depth > MAX_INHERITANCE_DEPTH {
-                break;
-            }
-            let parent = if let Some(p) = class_loader(parent_name) {
-                p
-            } else {
-                break;
-            };
-            if !parent.mixins.is_empty() {
-                Self::merge_mixins_into(&mut merged, &parent.mixins, class_loader);
-            }
-            ancestor = parent;
-        }
-
         merged
     }
 
@@ -237,103 +210,6 @@ impl Backend {
             .iter()
             .find(|p| p.name == prop_name)
             .and_then(|p| p.type_hint.clone())
-    }
-
-    /// Merge public members from `@mixin` classes into `merged`.
-    ///
-    /// Mixins are resolved with full inheritance (the mixin class itself
-    /// may extend another class, use traits, etc.), and only **public**
-    /// members that don't already exist in `merged` are added.  This
-    /// gives mixins the lowest precedence in the resolution chain:
-    ///
-    ///   class own > traits > parent chain > mixins
-    ///
-    /// Mixin classes can themselves declare `@mixin`, so this recurses
-    /// up to a depth limit to handle mixin chains.
-    fn merge_mixins_into(
-        merged: &mut ClassInfo,
-        mixin_names: &[String],
-        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
-    ) {
-        Self::merge_mixins_into_recursive(merged, mixin_names, class_loader, 0, MAX_MIXIN_DEPTH);
-    }
-
-    fn merge_mixins_into_recursive(
-        merged: &mut ClassInfo,
-        mixin_names: &[String],
-        class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
-        depth: u32,
-        max_depth: u32,
-    ) {
-        if depth > max_depth {
-            return;
-        }
-
-        for mixin_name in mixin_names {
-            let mixin_class = if let Some(c) = class_loader(mixin_name) {
-                c
-            } else {
-                continue;
-            };
-
-            // Resolve the mixin class with its own inheritance so we see
-            // all of its inherited/trait members too.
-            let resolved_mixin = Self::resolve_class_with_inheritance(&mixin_class, class_loader);
-
-            // Only merge public members — mixins proxy via magic methods
-            // which only expose public API.
-            for method in &resolved_mixin.methods {
-                if method.visibility != Visibility::Public {
-                    continue;
-                }
-                if merged.methods.iter().any(|m| m.name == method.name) {
-                    continue;
-                }
-                let mut method = method.clone();
-                // `@return $this` in the mixin class refers to the mixin
-                // instance, NOT the consuming class.  Rewrite the return
-                // type to the concrete mixin class name so that resolution
-                // produces the mixin class rather than the consumer.
-                if matches!(
-                    method.return_type.as_deref(),
-                    Some("$this" | "self" | "static")
-                ) {
-                    method.return_type = Some(mixin_class.name.clone());
-                }
-                merged.methods.push(method);
-            }
-
-            for property in &resolved_mixin.properties {
-                if property.visibility != Visibility::Public {
-                    continue;
-                }
-                if merged.properties.iter().any(|p| p.name == property.name) {
-                    continue;
-                }
-                merged.properties.push(property.clone());
-            }
-
-            for constant in &resolved_mixin.constants {
-                if constant.visibility != Visibility::Public {
-                    continue;
-                }
-                if merged.constants.iter().any(|c| c.name == constant.name) {
-                    continue;
-                }
-                merged.constants.push(constant.clone());
-            }
-
-            // Recurse into mixins declared by the mixin class itself.
-            if !mixin_class.mixins.is_empty() {
-                Self::merge_mixins_into_recursive(
-                    merged,
-                    &mixin_class.mixins,
-                    class_loader,
-                    depth + 1,
-                    max_depth,
-                );
-            }
-        }
     }
 
     /// Recursively merge members from the given traits into `merged`.

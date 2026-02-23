@@ -329,27 +329,6 @@ end-to-end.
 
 ## Implementation sequence
 
-### Step 1: Virtual member provider abstraction
-
-- Define `VirtualMemberProvider` trait, `VirtualMembers` struct in
-  `src/virtual_members/mod.rs`.
-- Define the merge logic (merge virtual members into a ClassInfo, skipping
-  members that already exist).
-- Add a priority-ordered provider registry.
-- Wire the registry into the resolution path: after
-  `resolve_class_with_inheritance` returns the base class, query providers
-  in priority order.
-- No new providers yet. Just the plumbing. All existing behavior unchanged.
-
-### Step 2a: Extract MixinProvider
-
-- Move `merge_mixins_into` / `merge_mixins_into_recursive` from
-  `inheritance.rs` into `src/virtual_members/mixin.rs`.
-- Implement `VirtualMemberProvider` for `MixinProvider`.
-- Remove the mixin merge step from `resolve_class_with_inheritance`.
-- All existing mixin tests must continue to pass unchanged.
-- This is a pure refactor.
-
 ### Step 2b: Extract PHPDocProvider
 
 - Stop parsing `@method` and `@property` / `@property-read` /

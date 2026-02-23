@@ -12,7 +12,7 @@
 //! - `util` — Utility helpers (position conversion, class lookup, logging)
 //! - `definition` — Go-to-definition support for classes, members, and functions
 //! - `inheritance` — Base class inheritance resolution. Merges members from parent
-//!   classes, traits, and `@mixin` classes into a unified `ClassInfo`
+//!   classes and traits into a unified `ClassInfo`
 //! - `virtual_members` — Virtual member provider abstraction. Defines the
 //!   [`VirtualMemberProvider`](virtual_members::VirtualMemberProvider) trait and
 //!   merge logic for members synthesized from `@method`/`@property` tags,
@@ -76,7 +76,7 @@ pub use types::{
 /// - `server` — `impl LanguageServer` (initialize, completion, did_open, …)
 /// - `resolution` — `find_or_load_class`, `find_or_load_function`, `resolve_class_name`,
 ///   `resolve_function_name`
-/// - `inheritance` — `resolve_class_with_inheritance` (base resolution), trait/mixin/parent merging
+/// - `inheritance` — `resolve_class_with_inheritance` (base resolution), trait/parent merging
 /// - `virtual_members` — `resolve_class_fully` (base resolution + virtual member providers),
 ///   `VirtualMemberProvider` trait, merge logic, provider registry
 /// - `subject_extraction` — Shared subject extraction helpers for `->`, `?->`, `::` operators
