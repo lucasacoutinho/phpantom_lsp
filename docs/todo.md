@@ -30,24 +30,6 @@ target.
 
 ### Remaining by user need
 
-#### 40. No nested key completion for literal array assignments
-
-When a variable is assigned a literal array with nested associative
-keys, completing the second-level key after `$arr['first']['` does not
-offer suggestions. It works when an `array{...}` shape docblock is
-present, but not for arrays inferred purely from the literal.
-
-```php
-$red = ['a' => ['b' => 1, 'c' => 2]];
-$red['a']['  // ← no completion for 'b' / 'c'
-```
-
-**Fix:** extend the array-shape inference in `array_shape.rs` to
-recursively extract nested literal array structures so that multi-level
-key completion works without a docblock annotation.
-
----
-
 #### 34 / 36. No go-to-definition for built-in (stub) functions and constants
 
 Clicking on a built-in function name like `array_map`, `strlen`, or

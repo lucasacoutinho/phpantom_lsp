@@ -1657,6 +1657,953 @@ async fn test_array_shape_nested_key_completion() {
     }
 }
 
+// ─── Nested Key Completion from Literal Arrays ─────────────────────────────
+
+/// When a variable is assigned a literal array with nested associative
+/// arrays, completing the second-level key should offer the nested keys.
+#[tokio::test]
+async fn test_array_shape_nested_key_completion_literal_array() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_literal.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "$config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "$config['db']['\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 2,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested literal array keys"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host' from nested literal, got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port' from nested literal, got {:?}",
+                labels
+            );
+            assert_eq!(labels.len(), 2, "Should only suggest nested keys");
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Three levels deep: `$arr['a']['b']['` should offer third-level keys.
+#[tokio::test]
+async fn test_array_shape_nested_key_completion_three_levels() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_three.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "$app = ['db' => ['primary' => ['host' => 'localhost', 'port' => 5432]]];\n",
+        "$app['db']['primary']['\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 2,
+                character: 23,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for three-level nested array"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// First-level keys still work on a literal array with nested values.
+#[tokio::test]
+async fn test_array_shape_nested_literal_first_level_keys() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_first_level.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "$config = ['db' => ['host' => 'x'], 'cache' => ['driver' => 'redis']];\n",
+        "$config['\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 2,
+                character: 9,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Should return first-level keys");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"db"),
+                "Should suggest 'db', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"cache"),
+                "Should suggest 'cache', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Nested literal inside a class method body.
+#[tokio::test]
+async fn test_array_shape_nested_literal_inside_method() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_method.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function load() {\n",
+        "        $settings = ['mail' => ['from' => 'noreply@example.com', 'driver' => 'smtp']];\n",
+        "        $settings['mail']['\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 27,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested literal inside method"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"from"),
+                "Should suggest 'from', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"driver"),
+                "Should suggest 'driver', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Load the actual example.php file and trigger completion at the nested
+/// literal array access. This catches issues that smaller synthetic tests
+/// miss (e.g. other `$config` assignments earlier in the file that `rfind`
+/// might match instead of the local one).
+#[tokio::test]
+async fn test_array_shape_nested_literal_real_example_php() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///example.php").unwrap();
+    let original = include_str!("../example.php");
+
+    // Find the line with `$config['db']['host']` and replace 'host' with
+    // empty quotes to simulate the user deleting it.
+    let target_line = "$config['db']['host'];";
+    let replacement = "$config['db'][''];";
+    assert!(
+        original.contains(target_line),
+        "example.php must contain the target line"
+    );
+    let text = original.replace(target_line, replacement);
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.clone(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Find the cursor position: line number and column between the quotes.
+    let cursor_line = text
+        .lines()
+        .position(|l| l.contains(replacement))
+        .expect("replacement line must exist");
+    let line_text = text.lines().nth(cursor_line).unwrap();
+    // Cursor goes between the two quotes in ['']
+    let col = line_text.find("['']").expect("must find ['']") + 2; // after [' before ']
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: cursor_line as u32,
+                character: col as u32,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return nested key completions in real example.php (line={}, col={})",
+        cursor_line,
+        col
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host' from nested literal in example.php, got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port' from nested literal in example.php, got {:?}",
+                labels
+            );
+            assert!(
+                !labels.contains(&"db"),
+                "Should NOT leak first-level key 'db', got {:?}",
+                labels
+            );
+            assert!(
+                !labels.contains(&"debug"),
+                "Should NOT leak first-level key 'debug', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Reproduce the exact example.php nestedLiteral() method: the user has the
+/// complete method body, places their cursor on the `$config['db']['host']`
+/// line, deletes `host`, and triggers completion between the empty quotes.
+/// This is the closest simulation of the real editor scenario.
+#[tokio::test]
+async fn test_array_shape_nested_literal_example_php_scenario() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_example_php.php").unwrap();
+    // Mirrors the ShapeDemo::nestedLiteral() method from example.php,
+    // but with the user having deleted 'host' from the second line.
+    let text = concat!(
+        "<?php\n",
+        "namespace Demo;\n",
+        "class ShapeDemo {\n",
+        "    public function nestedLiteral(): void {\n",
+        "        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "        $config['db']['']\n",
+        "        $config['debug'];\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor between the two quotes on line 5: $config['db']['']
+    //         $config['db']['']
+    //         8       16  20 23
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 5,
+                character: 23,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return nested key completions for $config['db'][''] in example.php scenario"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host' from nested literal, got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port' from nested literal, got {:?}",
+                labels
+            );
+            assert!(
+                !labels.contains(&"db"),
+                "Should NOT leak first-level key 'db' into nested results, got {:?}",
+                labels
+            );
+            assert!(
+                !labels.contains(&"debug"),
+                "Should NOT leak first-level key 'debug' into nested results, got {:?}",
+                labels
+            );
+            assert_eq!(
+                labels.len(),
+                2,
+                "Should have exactly 2 nested keys, got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+
+    // Also verify first-level still works: trigger on $config['debug'] line
+    // by simulating $config[''] on line 6
+    // (Separate test: just verify the raw type resolves correctly for the
+    // same variable in the same method.)
+}
+
+/// Reproduce the exact example.php scenario: nested literal inside a class
+/// method with other statements around it, user deletes the key leaving
+/// autoclosed quotes `$config['db']['']`.
+#[tokio::test]
+async fn test_array_shape_nested_literal_autoclosed_quotes() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_autoclosed.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function demo(): void {\n",
+        "        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "        $config['db']['']\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor between the two quotes on: $config['db']['']
+    //         $config['db']['']
+    //         8       16  20 23
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 23,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested literal with autoclosed quotes"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host' from nested literal, got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port' from nested literal, got {:?}",
+                labels
+            );
+            assert_eq!(
+                labels.len(),
+                2,
+                "Should only suggest nested keys, got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Autoclosed quotes with semicolon: `$config['db'][''];`
+#[tokio::test]
+async fn test_array_shape_nested_literal_autoclosed_with_semicolon() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_autoclosed_semi.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function demo(): void {\n",
+        "        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "        $config['db'][''];\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    //         $config['db'][''];
+    //         8       16  20 23
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 23,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested literal with autoclosed quotes + semicolon"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Editor autoclosed bracket then quote: `$config['db'][']`
+/// (closing bracket auto-inserted, then user types opening quote).
+#[tokio::test]
+async fn test_array_shape_nested_literal_bracket_then_quote() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_bracket_quote.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function demo(): void {\n",
+        "        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "        $config['db'][']\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    //         $config['db'][']
+    //         8       16  2022
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 22,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested literal with bracket+quote pattern"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Bare bracket only: `$config['db'][`
+#[tokio::test]
+async fn test_array_shape_nested_literal_bare_bracket() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_bare_bracket.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function demo(): void {\n",
+        "        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "        $config['db'][\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    //         $config['db'][
+    //         8       16  21
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 22,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested literal with bare bracket"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Autoclosed bracket: `$config['db'][]`
+#[tokio::test]
+async fn test_array_shape_nested_literal_autoclosed_bracket() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_autoclosed_bracket.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function demo(): void {\n",
+        "        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "        $config['db'][]\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    //         $config['db'][]
+    //         8       16  2122
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 22,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested literal with autoclosed bracket"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// First-level completion must NOT leak nested keys when the type is a
+/// recursively inferred shape.
+#[tokio::test]
+async fn test_array_shape_nested_literal_first_level_no_leak() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_no_leak.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function demo(): void {\n",
+        "        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "        $config['']\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor between the two quotes on: $config['']
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 17,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Should return first-level completions");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"db"),
+                "Should suggest 'db', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"debug"),
+                "Should suggest 'debug', got {:?}",
+                labels
+            );
+            assert!(
+                !labels.contains(&"host"),
+                "Should NOT suggest nested key 'host' at first level, got {:?}",
+                labels
+            );
+            assert_eq!(
+                labels.len(),
+                2,
+                "Should only have two first-level keys, got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Open-ended second level: `$config['db']['` without closing quote.
+#[tokio::test]
+async fn test_array_shape_nested_literal_open_quote() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nested_open.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Config {\n",
+        "    public function demo(): void {\n",
+        "        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];\n",
+        "        $config['db']['\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 4,
+                character: 23,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should return completions for nested literal with open quote"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::FIELD))
+                .map(|i| i.label.as_str())
+                .collect();
+            assert!(
+                labels.contains(&"host"),
+                "Should suggest 'host', got {:?}",
+                labels
+            );
+            assert!(
+                labels.contains(&"port"),
+                "Should suggest 'port', got {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
 // ─── $_SERVER Superglobal Key Completion ────────────────────────────────────
 
 #[tokio::test]

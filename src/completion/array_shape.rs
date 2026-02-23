@@ -861,7 +861,7 @@ fn extract_string_literal(s: &str) -> Option<String> {
 /// - `true` / `false` → `bool`
 /// - `null` → `null`
 /// - `new ClassName(…)` → `ClassName`
-/// - `[…]` → `array`
+/// - `[…]` / `array(…)` → `array{key: type, …}` when string-keyed, else `array`
 /// - Anything else → `mixed`
 fn infer_literal_type(expr: &str) -> String {
     let trimmed = expr.trim();
@@ -901,10 +901,19 @@ fn infer_literal_type(expr: &str) -> String {
         }
     }
 
-    // Array literal
+    // Array literal — recursively build a shape string when possible.
     if (trimmed.starts_with('[') && trimmed.ends_with(']'))
         || (lower.starts_with("array(") && trimmed.ends_with(')'))
     {
+        if let Some(entries) = parse_array_literal_entries(trimmed)
+            && !entries.is_empty()
+        {
+            let shape_parts: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, v))
+                .collect();
+            return format!("array{{{}}}", shape_parts.join(", "));
+        }
         return "array".to_string();
     }
 
@@ -1321,7 +1330,10 @@ mod tests {
         let entries =
             parse_array_literal_entries("['db' => ['host' => 'x'], 'debug' => true]").unwrap();
         assert_eq!(entries.len(), 2);
-        assert_eq!(entries[0], ("db".to_string(), "array".to_string()));
+        assert_eq!(
+            entries[0],
+            ("db".to_string(), "array{host: string}".to_string())
+        );
         assert_eq!(entries[1], ("debug".to_string(), "bool".to_string()));
     }
 
@@ -1391,6 +1403,15 @@ mod tests {
         assert_eq!(infer_literal_type("[]"), "array");
         assert_eq!(infer_literal_type("['a', 'b']"), "array");
         assert_eq!(infer_literal_type("array()"), "array");
+        // Nested associative arrays produce shape strings.
+        assert_eq!(
+            infer_literal_type("['host' => 'x', 'port' => 3306]"),
+            "array{host: string, port: int}"
+        );
+        assert_eq!(
+            infer_literal_type("['db' => ['host' => 'x']]"),
+            "array{db: array{host: string}}"
+        );
     }
 
     #[test]

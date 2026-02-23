@@ -1075,6 +1075,14 @@ class ShapeDemo
         $response['items'][0]->getName(); // list element type
     }
 
+    public function nestedLiteral(): void
+    {
+        // No @var annotation needed — nested keys are inferred from the literal.
+        $config = ['db' => ['host' => 'localhost', 'port' => 3306], 'debug' => true];
+        $config['db']['host'];            // Try: delete 'host' and trigger completion
+        $config['debug'];                 // first-level keys also work
+    }
+
     public function objectShapes(): void
     {
         $profile = $this->getProfile();

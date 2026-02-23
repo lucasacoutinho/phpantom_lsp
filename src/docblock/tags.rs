@@ -406,6 +406,8 @@ pub fn find_iterable_raw_type_in_source(
     // Annotations found while `brace_depth > 0` belong to an inner
     // scope and must be skipped.
     let mut brace_depth = 0i32;
+    let mut min_depth = 0i32;
+    let mut seen_sibling_scope = false;
 
     for line in search_area.lines().rev() {
         let trimmed = line.trim();
@@ -421,6 +423,19 @@ pub fn find_iterable_raw_type_in_source(
             // Going backward: `}` means entering a block, `{` means leaving.
             brace_depth += closes;
             brace_depth -= opens;
+        }
+
+        min_depth = min_depth.min(brace_depth);
+
+        // Once we have exited our containing scope (min_depth < 0) and
+        // re-entered a block at depth >= 0, we are inside a sibling
+        // scope (e.g. a different method in the same class).  From that
+        // point on every annotation belongs to a foreign scope.
+        if min_depth < 0 && brace_depth >= 0 {
+            seen_sibling_scope = true;
+        }
+        if seen_sibling_scope {
+            continue;
         }
 
         // Skip annotations that belong to a deeper (inner) scope.
