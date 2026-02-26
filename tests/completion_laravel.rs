@@ -3749,6 +3749,171 @@ async fn test_custom_collection_same_file_plain_backend() {
     );
 }
 
+// ─── Same-file accessor on variable (reproduces example.php scenario) ───────
+
+/// When using inline namespace stubs (like example.php), accessor virtual
+/// properties should appear on `$model->` (variable), not just `$this->`.
+#[tokio::test]
+async fn test_accessor_on_variable_same_file_inline_stubs() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///accessor_var.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "namespace Demo {\n",
+        "\n",
+        "class AccessorDemo extends \\Illuminate\\Database\\Eloquent\\Model\n",
+        "{\n",
+        "    public function getDisplayNameAttribute(): string\n",
+        "    {\n",
+        "        return 'display';\n",
+        "    }\n",
+        "\n",
+        "    protected function avatarUrl(): \\Illuminate\\Database\\Eloquent\\Casts\\Attribute\n",
+        "    {\n",
+        "        return new \\Illuminate\\Database\\Eloquent\\Casts\\Attribute();\n",
+        "    }\n",
+        "\n",
+        "    public function demo(): void\n",
+        "    {\n",
+        "        $model = new AccessorDemo();\n",
+        "        $model->\n",
+        "    }\n",
+        "}\n",
+        "\n",
+        "} // end namespace Demo\n",
+        "\n",
+        "namespace Illuminate\\Database\\Eloquent {\n",
+        "    abstract class Model {}\n",
+        "}\n",
+        "\n",
+        "namespace Illuminate\\Database\\Eloquent\\Casts {\n",
+        "    class Attribute {}\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                // "$model->" at line 18, character 16
+                position: Position {
+                    line: 18,
+                    character: 16,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    let items = match result {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        _ => Vec::new(),
+    };
+    let props = property_names(&items);
+
+    assert!(
+        props.contains(&"display_name"),
+        "Legacy accessor getDisplayNameAttribute should produce property display_name on $model->, got: {:?}",
+        props
+    );
+    assert!(
+        props.contains(&"avatar_url"),
+        "Modern accessor avatarUrl() should produce property avatar_url on $model->, got: {:?}",
+        props
+    );
+}
+
+// ─── Accessor on variable with real example.php ─────────────────────────────
+
+/// Loads the actual example.php and verifies that accessor virtual properties
+/// appear on `$model->` (variable access), not just `$this->`.
+#[tokio::test]
+async fn test_accessor_on_variable_with_real_example_php() {
+    let original = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("example.php"),
+    )
+    .expect("example.php should exist");
+
+    // Find the line "$model->display_name;" and replace it with "$model->"
+    // to create a completion trigger point.
+    let trigger_line = "        $model->";
+    let text = original.replace(
+        "        $model->display_name;             // virtual property → string",
+        trigger_line,
+    );
+
+    let trigger_line_idx = text
+        .lines()
+        .position(|l| l == trigger_line)
+        .expect("trigger line should exist in modified text") as u32;
+
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///example_accessor.php").unwrap();
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text,
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: trigger_line_idx,
+                    character: trigger_line.len() as u32,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    let items = match result {
+        Some(CompletionResponse::Array(items)) => items,
+        Some(CompletionResponse::List(list)) => list.items,
+        _ => Vec::new(),
+    };
+    let props = property_names(&items);
+    let methods = method_names(&items);
+
+    assert!(
+        props.contains(&"display_name"),
+        "Legacy accessor should produce display_name on $model-> in example.php, got props: {:?}, methods: {:?}",
+        props,
+        methods
+    );
+    assert!(
+        props.contains(&"avatar_url"),
+        "Modern accessor should produce avatar_url on $model-> in example.php, got props: {:?}",
+        props
+    );
+}
+
 // ─── Legacy accessor virtual properties ─────────────────────────────────────
 
 /// A model with `getFullNameAttribute(): string` should produce a virtual

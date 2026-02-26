@@ -534,7 +534,12 @@ pub fn find_enclosing_return_type(content: &str, cursor_offset: usize) -> Option
     //
     // First, locate the `function` keyword so we know where the
     // signature starts.
-    let sig_start = before_brace.len().saturating_sub(2000);
+    let mut sig_start = before_brace.len().saturating_sub(2000);
+    // Adjust to a valid UTF-8 char boundary so we don't panic on
+    // multi-byte characters (e.g. `─` in comment banners).
+    while sig_start > 0 && !before_brace.is_char_boundary(sig_start) {
+        sig_start -= 1;
+    }
     let sig_region = &before_brace[sig_start..];
     let func_kw_rel = sig_region.rfind("function")?;
     let func_kw_pos = sig_start + func_kw_rel;
