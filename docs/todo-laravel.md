@@ -14,7 +14,7 @@ virtual member provider design, see `ARCHITECTURE.md`.
 |------|--------|
 | Container string aliases | Requires booting the application. Use `::class` references instead. |
 | Facade `getFacadeAccessor()` with string aliases | Same problem. `@method` tags provide a workable fallback. |
-| Blade templates | Large scope, separate project. |
+| Blade templates | Separate project. See `todo-blade.md` for the implementation plan. |
 | Model column types from DB/migrations | Unreasonable complexity. Require `@property` annotations (via ide-helper or hand-written). |
 | Legacy Laravel versions | We target current Larastan-style annotations. Older code may degrade gracefully. |
 | Application provider scanning | Low-value, high-complexity. |
