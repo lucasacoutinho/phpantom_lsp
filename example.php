@@ -239,6 +239,34 @@ class GuardClauseDemo
 }
 
 
+// ── in_array Strict-Mode Narrowing ─────────────────────────────────────────
+
+class InArrayNarrowingDemo
+{
+    /**
+     * @param Rock|Banana $item
+     * @param list<Rock> $rocks
+     */
+    public function demo($item, array $rocks): void
+    {
+        if (in_array($item, $rocks, true)) {
+            $item->crush();                       // narrowed to Rock
+            // MUST NOT appear: peel() (Banana only)
+        } else {
+            $item->peel();                        // excluded Rock → Banana
+            // MUST NOT appear: crush() (Rock only)
+        }
+
+        // Guard clause with in_array
+        $specimen = pickRockOrBanana();           // Rock|Banana
+        if (!in_array($specimen, $rocks, true)) {
+            return;
+        }
+        $specimen->crush();                       // narrowed to Rock after guard
+    }
+}
+
+
 // ── Generics (@template / @extends) ────────────────────────────────────────
 
 class GenericsDemo
@@ -1218,12 +1246,12 @@ class ClosureParamInferenceDemo
         $src->items->map(fn(Pencil $p) => $p->sketch());
 
         // Eloquent chunk — $orders inferred as Collection
-        \App\Models\BlogAuthor::where('active', true)->chunk(100, function ($orders) {
+        BlogAuthor::where('active', true)->chunk(100, function ($orders) {
             $orders->count();             // resolves to Eloquent Collection
         });
 
         // Eloquent whereHas — $query inferred as Builder
-        \App\Models\BlogAuthor::whereHas('posts', function ($query) {
+        BlogAuthor::whereHas('posts', function ($query) {
             $query->where('published', true); // resolves to Builder
         });
     }

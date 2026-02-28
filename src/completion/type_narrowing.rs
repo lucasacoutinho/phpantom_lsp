@@ -16,10 +16,13 @@
 ///   - Guard clauses: `if (!$var instanceof Foo) { return; }` — narrows
 ///     after the if block when the body unconditionally exits via
 ///     `return`, `throw`, `continue`, or `break`.
+///   - `in_array($var, $haystack, true)` — narrows `$var` to the
+///     haystack's element type when the third argument is `true`.
 use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
 use crate::Backend;
+use crate::docblock;
 use crate::types::{AssertionKind, ClassInfo};
 
 use super::conditional_resolution::extract_class_string_from_expr;
@@ -908,6 +911,178 @@ impl Backend {
                         Self::apply_instanceof_inclusion(&assertion.asserted_type, ctx, results);
                     }
                 }
+            }
+        }
+    }
+
+    // ── in_array strict-mode narrowing ───────────────────────────────
+
+    /// Extract the haystack expression from an
+    /// `in_array($needle, $haystack, true)` call where the needle
+    /// matches `var_name`.
+    ///
+    /// Returns `Some(haystack_expr)` when:
+    ///   - The function name is `in_array`
+    ///   - The first argument is a simple `$variable` matching `var_name`
+    ///   - There are at least 3 arguments and the third is the literal `true`
+    ///
+    /// The caller is responsible for resolving the haystack expression's
+    /// iterable element type.
+    fn try_extract_in_array<'b>(
+        expr: &'b Expression<'b>,
+        var_name: &str,
+    ) -> Option<&'b Expression<'b>> {
+        let expr = match expr {
+            Expression::Parenthesized(inner) => inner.expression,
+            other => other,
+        };
+        let func_call = match expr {
+            Expression::Call(Call::Function(fc)) => fc,
+            _ => return None,
+        };
+        let name = match func_call.function {
+            Expression::Identifier(ident) => ident.value(),
+            _ => return None,
+        };
+        if name != "in_array" {
+            return None;
+        }
+        let args: Vec<_> = func_call.argument_list.arguments.iter().collect();
+        if args.len() < 3 {
+            return None;
+        }
+
+        // Third argument must be the literal `true` (strict mode).
+        let third_expr = match &args[2] {
+            Argument::Positional(pos) => pos.value,
+            Argument::Named(named) => named.value,
+        };
+        if !third_expr.is_true() {
+            return None;
+        }
+
+        // First argument must be our variable.
+        let first_expr = match &args[0] {
+            Argument::Positional(pos) => pos.value,
+            Argument::Named(named) => named.value,
+        };
+        let needle_var = match first_expr {
+            Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+            _ => return None,
+        };
+        if needle_var != var_name {
+            return None;
+        }
+
+        // Second argument is the haystack expression.
+        let second_expr = match &args[1] {
+            Argument::Positional(pos) => pos.value,
+            Argument::Named(named) => named.value,
+        };
+        Some(second_expr)
+    }
+
+    /// Resolve the haystack expression's iterable element type and return
+    /// it as a type string suitable for [`apply_instanceof_inclusion`].
+    ///
+    /// Handles `$variable` (via docblock + assignment chasing) as well as
+    /// method calls, property access, and other expressions supported by
+    /// [`resolve_arg_raw_type`](super::variable_resolution).
+    fn resolve_in_array_element_type(
+        haystack_expr: &Expression<'_>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Option<String> {
+        let raw_type = Self::resolve_arg_raw_type(haystack_expr, ctx)?;
+        docblock::types::extract_iterable_element_type(&raw_type)
+    }
+
+    /// Apply `in_array($var, $haystack, true)` narrowing when the call
+    /// appears as an `if` / `while` condition and the cursor is inside
+    /// the then-body.
+    ///
+    /// Narrows `$var` to the haystack's element type.  Also handles
+    /// negated conditions (`!in_array(…)`) by excluding instead.
+    pub(super) fn try_apply_in_array_narrowing(
+        condition: &Expression<'_>,
+        body_span: mago_span::Span,
+        ctx: &VarResolutionCtx<'_>,
+        results: &mut Vec<ClassInfo>,
+    ) {
+        if ctx.cursor_offset < body_span.start.offset || ctx.cursor_offset > body_span.end.offset {
+            return;
+        }
+        let (inner, negated) = Self::unwrap_condition_negation(condition);
+        if let Some(haystack_expr) = Self::try_extract_in_array(inner, ctx.var_name)
+            && let Some(element_type) = Self::resolve_in_array_element_type(haystack_expr, ctx)
+        {
+            if negated {
+                Self::apply_instanceof_exclusion(&element_type, ctx, results);
+            } else {
+                Self::apply_instanceof_inclusion(&element_type, ctx, results);
+            }
+        }
+    }
+
+    /// Inverse of [`try_apply_in_array_narrowing`] -- used for the `else`
+    /// branch of an `if (in_array(…))` check.
+    ///
+    /// A positive `in_array` in the condition means the variable is NOT
+    /// one of the haystack's element types inside the else body (exclude),
+    /// and vice-versa for a negated condition (include).
+    pub(super) fn try_apply_in_array_narrowing_inverse(
+        condition: &Expression<'_>,
+        body_span: mago_span::Span,
+        ctx: &VarResolutionCtx<'_>,
+        results: &mut Vec<ClassInfo>,
+    ) {
+        if ctx.cursor_offset < body_span.start.offset || ctx.cursor_offset > body_span.end.offset {
+            return;
+        }
+        let (inner, negated) = Self::unwrap_condition_negation(condition);
+        if let Some(haystack_expr) = Self::try_extract_in_array(inner, ctx.var_name)
+            && let Some(element_type) = Self::resolve_in_array_element_type(haystack_expr, ctx)
+        {
+            // Flip polarity for the else branch.
+            if negated {
+                Self::apply_instanceof_inclusion(&element_type, ctx, results);
+            } else {
+                Self::apply_instanceof_exclusion(&element_type, ctx, results);
+            }
+        }
+    }
+
+    /// Apply `in_array` guard clause narrowing after an `if` statement
+    /// whose then-body unconditionally exits.
+    ///
+    /// When a guard clause like:
+    /// ```text
+    /// if (!in_array($var, $haystack, true)) { return; }
+    /// ```
+    /// appears before the cursor, the code after it can only be reached
+    /// when the condition was *false* -- so we apply the inverse narrowing.
+    pub(super) fn apply_guard_clause_in_array_narrowing(
+        if_stmt: &If<'_>,
+        ctx: &VarResolutionCtx<'_>,
+        results: &mut Vec<ClassInfo>,
+    ) {
+        if !Self::then_body_unconditionally_exits(&if_stmt.body) {
+            return;
+        }
+        if if_stmt.body.has_else_clause() || if_stmt.body.has_else_if_clauses() {
+            return;
+        }
+
+        let (inner, condition_negated) = Self::unwrap_condition_negation(if_stmt.condition);
+        if let Some(haystack_expr) = Self::try_extract_in_array(inner, ctx.var_name)
+            && let Some(element_type) = Self::resolve_in_array_element_type(haystack_expr, ctx)
+        {
+            // The then-body exits, so subsequent code is the "else".
+            // Positive in_array + exit → exclude (var is NOT in haystack)
+            // Negated in_array + exit → include (var IS in haystack)
+            if condition_negated {
+                Self::apply_instanceof_inclusion(&element_type, ctx, results);
+            } else {
+                Self::apply_instanceof_exclusion(&element_type, ctx, results);
             }
         }
     }

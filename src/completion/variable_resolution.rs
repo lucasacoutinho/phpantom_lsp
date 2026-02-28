@@ -855,6 +855,13 @@ impl Backend {
                     results,
                     false, // not inverted — this is the then-body
                 );
+                // ── in_array strict-mode narrowing for then-body ──
+                Self::try_apply_in_array_narrowing(
+                    if_stmt.condition,
+                    body.statement.span(),
+                    ctx,
+                    results,
+                );
                 Self::check_statement_for_assignments(body.statement, ctx, results, true);
 
                 for else_if in body.else_if_clauses.iter() {
@@ -871,6 +878,12 @@ impl Backend {
                         ctx,
                         results,
                         false,
+                    );
+                    Self::try_apply_in_array_narrowing(
+                        else_if.condition,
+                        else_if.statement.span(),
+                        ctx,
+                        results,
                     );
                     Self::check_statement_for_assignments(else_if.statement, ctx, results, true);
                 }
@@ -890,6 +903,12 @@ impl Backend {
                         ctx,
                         results,
                         true, // inverted — this is the else-body
+                    );
+                    Self::try_apply_in_array_narrowing_inverse(
+                        if_stmt.condition,
+                        else_clause.statement.span(),
+                        ctx,
+                        results,
                     );
                     Self::check_statement_for_assignments(
                         else_clause.statement,
@@ -928,6 +947,7 @@ impl Backend {
                     results,
                     false,
                 );
+                Self::try_apply_in_array_narrowing(if_stmt.condition, then_span, ctx, results);
                 Self::walk_statements_for_assignments(body.statements.iter(), ctx, results, true);
                 for else_if in body.else_if_clauses.iter() {
                     let ei_span = mago_span::Span::new(
@@ -949,6 +969,7 @@ impl Backend {
                         results,
                         false,
                     );
+                    Self::try_apply_in_array_narrowing(else_if.condition, ei_span, ctx, results);
                     Self::walk_statements_for_assignments(
                         else_if.statements.iter(),
                         ctx,
@@ -982,6 +1003,12 @@ impl Backend {
                         results,
                         true, // inverted — else-body
                     );
+                    Self::try_apply_in_array_narrowing_inverse(
+                        if_stmt.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
                     Self::walk_statements_for_assignments(
                         else_clause.statements.iter(),
                         ctx,
@@ -1004,6 +1031,7 @@ impl Backend {
         //   $var-> // narrowed to Foo here
         if enclosing_stmt.span().end.offset < ctx.cursor_offset {
             Self::apply_guard_clause_narrowing(if_stmt, ctx, results);
+            Self::apply_guard_clause_in_array_narrowing(if_stmt, ctx, results);
         }
     }
 
@@ -1084,6 +1112,12 @@ impl Backend {
                     results,
                     false,
                 );
+                Self::try_apply_in_array_narrowing(
+                    while_stmt.condition,
+                    inner.span(),
+                    ctx,
+                    results,
+                );
                 Self::check_statement_for_assignments(inner, ctx, results, true);
             }
             WhileBody::ColonDelimited(body) => {
@@ -1100,6 +1134,7 @@ impl Backend {
                     results,
                     false,
                 );
+                Self::try_apply_in_array_narrowing(while_stmt.condition, body_span, ctx, results);
                 Self::walk_statements_for_assignments(body.statements.iter(), ctx, results, true);
             }
         }
@@ -1979,7 +2014,7 @@ impl Backend {
     /// Handles `$variable` (via docblock scanning) and delegates to
     /// `extract_rhs_iterable_raw_type` for method calls, property access,
     /// etc.
-    fn resolve_arg_raw_type<'b>(
+    pub(super) fn resolve_arg_raw_type<'b>(
         arg_expr: &'b Expression<'b>,
         ctx: &VarResolutionCtx<'_>,
     ) -> Option<String> {
