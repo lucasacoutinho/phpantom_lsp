@@ -1,6 +1,6 @@
 # PHPantom — Laravel Support: Remaining Work
 
-> Last updated: 2026-02-27
+> Last updated: 2026-02-28
 
 This document tracks bugs, known gaps, and missing features in
 PHPantom's Laravel Eloquent support. For the general architecture and
@@ -284,3 +284,89 @@ value type.
 closures instead. Requires synthesizing virtual properties on
 collection classes that return a proxy type parameterised with the
 collection's value type.
+
+#### 11. `collect()` and other helper functions lose generic type info
+
+Laravel's `collect()` helper is annotated with function-level
+`@template` parameters:
+
+```php
+/**
+ * @template TKey of array-key
+ * @template TValue
+ * @param array<TKey, TValue> $value
+ * @return \Illuminate\Support\Collection<TKey, TValue>
+ */
+function collect($value = []) { ... }
+```
+
+We correctly resolve the return type as `Collection`, but the
+generic arguments `TKey` and `TValue` are lost — the result is an
+unparameterised `Collection`, so `$users = collect($array)` followed
+by `$users->first()->` produces no completions for the element type.
+
+**Root cause:** `FunctionInfo` has no `template_params` or
+`template_bindings` fields (unlike `MethodInfo`, which has both).
+The `synthesize_template_conditional` function only handles the
+narrow pattern `@return T` where `T` is a bare template param bound
+via `@param class-string<T>`.  It does **not** handle `@return
+Collection<TKey, TValue>` where multiple template params appear
+inside a generic return type.
+
+This affects every Laravel helper that uses function-level generics:
+`collect()`, `value()`, `retry()`, `tap()`, `with()`, `transform()`,
+`data_get()`, plus non-Laravel functions with the same pattern.
+
+**Where to change:** Add `template_params: Vec<String>` and
+`template_bindings: Vec<(String, String)>` to `FunctionInfo` (mirror
+the existing fields on `MethodInfo`).  Populate them in
+`parser/functions.rs` from `@template` and `@param` annotations.
+In `resolve_rhs_function_call` (in `variable_resolution.rs`), after
+loading the `FunctionInfo`, build a substitution map from template
+bindings → call-site argument types and apply it to the return type
+before passing it to `type_hint_to_classes`.  See the general TODO
+item (§ PHP Language Feature Gaps, "Function-level `@template`
+generic resolution") for the full implementation plan.
+
+**Priority:** Medium-high.  `collect()` alone is used in virtually
+every Laravel codebase, and the loss of element types breaks
+completion chains on the resulting collection.
+
+#### 12. `$this` in inferred callable parameter types resolves to wrong class
+
+When a closure parameter is untyped and the inference system extracts
+callable param types from the called method's signature, `$this` in
+the extracted type resolves to the **calling class** (the class
+containing the user's code) instead of the class that declares the
+method.
+
+```php
+// Builder::when() signature (from Conditionable trait):
+// @param callable($this, mixed): $this $callback
+
+// In a controller:
+User::when($active, function ($query) {
+    $query->  // $query inferred as Controller, not Builder<User>
+});
+```
+
+The callable param types are extracted as raw strings by
+`extract_callable_param_types`.  When `$this` appears in these
+strings, `resolve_closure_params_with_inferred` passes them to
+`type_hint_to_classes`, which resolves `$this` relative to
+`ctx.current_class` — the class the user is editing, not the class
+that owns the method.
+
+In practice, most users type-hint the closure parameter explicitly
+(`function (Builder $query) { ... }`), which bypasses the inference
+entirely.  The gap only manifests for untyped closure params.
+
+**Where to change:** In `infer_callable_params_from_receiver` (and
+the static variant), after extracting callable param types, replace
+any literal `$this` or `static` tokens with the FQN of the receiver
+class before returning them.  This ensures the inferred types
+reference the declaring class rather than the calling class.
+
+**Priority:** Low.  The explicit type-hint workaround is standard
+practice, and most IDE-aware codebases already type their closure
+parameters.

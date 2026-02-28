@@ -1907,33 +1907,40 @@ async fn test_completion_variables_at_eof_real_file_scenario() {
 }
 
 #[tokio::test]
-async fn test_completion_variables_at_eof_with_actual_example_php() {
-    // Use the actual example.php content to reproduce the real-world issue
+async fn test_completion_variables_at_eof_of_braced_namespace() {
+    // Reproduces the scenario where a braced namespace block contains
+    // top-level variables and is followed by additional namespace blocks.
+    // Variable suggestions at the end of the first block must still
+    // find all variables declared within it.
     let backend = create_test_backend();
-    let uri = Url::parse("file:///example_eof.php").unwrap();
+    let uri = Url::parse("file:///braced_ns_eof.php").unwrap();
 
-    let base_content =
-        std::fs::read_to_string("example.php").expect("example.php must exist in the project root");
+    let text = r#"<?php
+namespace Demo {
 
-    // Scenario: user types "$" at the end of the main namespace block.
-    // example.php uses braced `namespace Demo { ... }` with Illuminate
-    // stubs in separate namespace blocks after it.  Insert "$\n" just
-    // before the closing "} // end namespace Demo" line so the cursor
-    // is inside the Demo namespace where the top-level variables live.
-    let marker = "} // end namespace Demo";
-    let insert_pos = base_content
-        .find(marker)
-        .expect("example.php must contain '} // end namespace Demo'");
-    let text = format!(
-        "{}$\n{}",
-        &base_content[..insert_pos],
-        &base_content[insert_pos..]
-    );
+class User {
+    public string $email;
+    public function getEmail(): string { return ''; }
+    public function getName(): string { return ''; }
+}
 
-    // Count lines up to the inserted "$" to find its 0-indexed line number.
-    let dollar_line = base_content[..insert_pos].matches('\n').count() as u32;
+class AdminUser extends User {
+    public function grantPermission(string $perm): void {}
+}
 
-    let items = complete_at(&backend, &uri, &text, dollar_line, 1).await;
+$found = new User();
+$users = [new User()];
+$admins = [new AdminUser()];
+
+$
+} // end namespace Demo
+
+namespace Other {
+    class Helper {}
+}
+"#;
+
+    let items = complete_at(&backend, &uri, text, 17, 1).await;
 
     let var_labels: Vec<&str> = items
         .iter()
@@ -1943,17 +1950,17 @@ async fn test_completion_variables_at_eof_with_actual_example_php() {
 
     assert!(
         var_labels.contains(&"$found"),
-        "$found should be visible at EOF of example.php. Got: {:?}",
+        "$found should be visible at end of braced namespace. Got: {:?}",
         var_labels
     );
     assert!(
         var_labels.contains(&"$users"),
-        "$users should be visible at EOF of example.php. Got: {:?}",
+        "$users should be visible at end of braced namespace. Got: {:?}",
         var_labels
     );
     assert!(
         var_labels.contains(&"$admins"),
-        "$admins should be visible at EOF of example.php. Got: {:?}",
+        "$admins should be visible at end of braced namespace. Got: {:?}",
         var_labels
     );
 }
@@ -2021,4 +2028,144 @@ async fn test_completion_variables_at_eof_inside_namespace() {
         "$user should NOT leak out of foreach. Got: {:?}",
         var_labels
     );
+}
+
+// ── @var docblock variable name suggestions ─────────────────────────────────
+
+/// A `/** @var Type $varName */` docblock should make `$varName` appear
+/// in variable name suggestions when typing the variable name.
+#[tokio::test]
+async fn test_var_docblock_variable_name_suggested() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///var_docblock_varname.php").unwrap();
+
+    // The docblock declares `$test`, and the next line assigns it.
+    // When typing `$t` on a later line, `$test` should be suggested.
+    let text = concat!(
+        "<?php\n",
+        "$existing = 'hello';\n",
+        "/** @var AdminUser $test */\n",
+        "$test = getUnknownValue();\n",
+        "$t\n",
+    );
+
+    // Cursor is at line 4, after `$t` (character 2)
+    let items = complete_at(&backend, &uri, text, 4, 2).await;
+
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$test"),
+        "$test should be suggested from @var docblock. Got: {:?}",
+        var_labels
+    );
+}
+
+/// The @var docblock variable name should be suggested even when the
+/// assignment uses a different (shorter) name on the LHS — the docblock
+/// variable name acts as a declaration.
+#[tokio::test]
+async fn test_var_docblock_variable_name_before_assignment() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///var_docblock_before_assign.php").unwrap();
+
+    // The docblock names `$adminUser` but the next statement assigns `$x`.
+    // Both `$adminUser` (from docblock) and `$x` (from assignment) should
+    // be offered when typing `$a`.
+    let text = concat!(
+        "<?php\n",
+        "/** @var AdminUser $adminUser */\n",
+        "$x = getUnknownValue();\n",
+        "$a\n",
+    );
+
+    // Cursor is at line 3, after `$a` (character 2)
+    let items = complete_at(&backend, &uri, text, 3, 2).await;
+
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$adminUser"),
+        "$adminUser should be suggested from @var docblock. Got: {:?}",
+        var_labels
+    );
+}
+
+/// When the @var docblock names a variable, it should appear even inside
+/// a method body.
+#[tokio::test]
+async fn test_var_docblock_variable_name_in_method() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///var_docblock_method.php").unwrap();
+
+    let text = concat!(
+        "<?php\n",
+        "class Foo {\n",
+        "    public function bar(): void {\n",
+        "        $known = 1;\n",
+        "        /** @var \\App\\User $myUser */\n",
+        "        $m\n",
+        "    }\n",
+        "}\n",
+    );
+
+    // Cursor at line 5, after `$m`
+    let items = complete_at(&backend, &uri, text, 5, 10).await;
+
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    assert!(
+        var_labels.contains(&"$myUser"),
+        "$myUser should be suggested from @var docblock inside method. Got: {:?}",
+        var_labels
+    );
+}
+
+/// A @var docblock WITHOUT a variable name should NOT inject a phantom variable.
+#[tokio::test]
+async fn test_var_docblock_without_name_no_phantom_variable() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///var_docblock_no_name.php").unwrap();
+
+    let text = concat!(
+        "<?php\n",
+        "/** @var string */\n",
+        "$val = getValue();\n",
+        "$\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 3, 1).await;
+
+    let var_labels: Vec<&str> = items
+        .iter()
+        .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
+        .map(|i| i.label.as_str())
+        .collect();
+
+    // $val should be there (from the assignment), but no phantom variable
+    assert!(
+        var_labels.contains(&"$val"),
+        "$val should be suggested. Got: {:?}",
+        var_labels
+    );
+    // No entry like "$" or empty — just make sure only known names appear
+    for label in &var_labels {
+        assert!(
+            label.len() > 1,
+            "Should not have a bare '$' entry. Got: {:?}",
+            var_labels
+        );
+    }
 }

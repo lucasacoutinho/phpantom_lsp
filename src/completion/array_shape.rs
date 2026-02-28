@@ -1093,6 +1093,54 @@ pub(super) fn collect_push_assignments(
 ///
 /// Deduplicates types and joins them with `|` inside the generic parameter.
 /// Returns `None` if the input is empty or all types are `mixed`.
+/// Extract inferred element types from positional (non-keyed) entries in
+/// an array literal.
+///
+/// Given `[new Customer(), new Customer()]`, this returns
+/// `vec!["Customer", "Customer"]`.  Given `['a' => 1, new Foo()]`, this
+/// returns `vec!["Foo"]` (only the positional entry).
+///
+/// This is used by `extract_raw_type_from_assignment_text` to build a
+/// `list<Type>` annotation when the array literal has positional entries
+/// but no string-keyed entries (and no explicit `@var` annotation).
+pub(super) fn infer_positional_element_types(rhs: &str) -> Vec<String> {
+    let inner = if rhs.starts_with('[') && rhs.ends_with(']') {
+        &rhs[1..rhs.len() - 1]
+    } else {
+        let lower = rhs.to_ascii_lowercase();
+        if lower.starts_with("array(") && rhs.ends_with(')') {
+            &rhs[6..rhs.len() - 1]
+        } else {
+            return vec![];
+        }
+    };
+
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return vec![];
+    }
+
+    let parts = split_array_literal_elements(inner);
+    let mut types = Vec::new();
+
+    for part in &parts {
+        let part = part.trim();
+        if part.is_empty() || part.starts_with("...") {
+            continue;
+        }
+        // Skip keyed entries — we only want positional ones.
+        if split_on_fat_arrow(part).is_some() {
+            continue;
+        }
+        let inferred = infer_literal_type(part);
+        if inferred != "mixed" {
+            types.push(inferred);
+        }
+    }
+
+    types
+}
+
 pub(super) fn build_list_type_from_push_types(types: &[String]) -> Option<String> {
     if types.is_empty() {
         return None;

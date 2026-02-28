@@ -409,6 +409,11 @@ pub fn find_iterable_raw_type_in_source(
     let mut min_depth = 0i32;
     let mut seen_sibling_scope = false;
 
+    // Track the previous non-empty line we saw while scanning backward.
+    // This lets us match `/** @var Type */` (no variable name) when the
+    // *next* line is an assignment to our variable.
+    let mut prev_non_empty_line: Option<&str> = None;
+
     for line in search_area.lines().rev() {
         let trimmed = line.trim();
 
@@ -435,50 +440,103 @@ pub fn find_iterable_raw_type_in_source(
             seen_sibling_scope = true;
         }
         if seen_sibling_scope {
+            if !trimmed.is_empty() {
+                prev_non_empty_line = Some(trimmed);
+            }
             continue;
         }
 
         // Skip annotations that belong to a deeper (inner) scope.
         if brace_depth > 0 {
-            continue;
-        }
-
-        // Quick reject: must mention the variable name.
-        if !trimmed.contains(var_name) {
-            continue;
-        }
-
-        // Strip docblock delimiters — handles single-line `/** @var … */`
-        // and multi-line `* @param …` lines.
-        let inner = trimmed
-            .strip_prefix("/**")
-            .unwrap_or(trimmed)
-            .strip_suffix("*/")
-            .unwrap_or(trimmed);
-        let inner = inner.trim().trim_start_matches('*').trim();
-
-        // Try @var first, then @param.
-        let rest = if let Some(r) = inner.strip_prefix("@var") {
-            Some(r)
-        } else {
-            inner.strip_prefix("@param")
-        };
-
-        if let Some(rest) = rest {
-            let rest = rest.trim_start();
-            if rest.is_empty() {
-                continue;
+            if !trimmed.is_empty() {
+                prev_non_empty_line = Some(trimmed);
             }
+            continue;
+        }
 
-            // Extract the full type token (respects `<…>` nesting).
-            let (type_token, remainder) = split_type_token(rest);
+        // ── Named annotation: line mentions the variable name ───────
+        if trimmed.contains(var_name) {
+            // Strip docblock delimiters — handles single-line `/** @var … */`
+            // and multi-line `* @param …` lines.
+            let inner = trimmed
+                .strip_prefix("/**")
+                .unwrap_or(trimmed)
+                .strip_suffix("*/")
+                .unwrap_or(trimmed);
+            let inner = inner.trim().trim_start_matches('*').trim();
 
-            // The next token must be our variable name.
-            if let Some(name) = remainder.split_whitespace().next()
-                && name == var_name
+            // Try @var first, then @param.
+            let rest = if let Some(r) = inner.strip_prefix("@var") {
+                Some(r)
+            } else {
+                inner.strip_prefix("@param")
+            };
+
+            if let Some(rest) = rest {
+                let rest = rest.trim_start();
+                if !rest.is_empty() {
+                    // Extract the full type token (respects `<…>` nesting).
+                    let (type_token, remainder) = split_type_token(rest);
+
+                    // The next token must be our variable name.
+                    if let Some(name) = remainder.split_whitespace().next()
+                        && name == var_name
+                    {
+                        return Some(type_token.to_string());
+                    }
+                }
+            }
+        }
+
+        // ── No-variable-name annotation: `/** @var Type */` ─────────
+        // When the annotation has no variable name, check whether the
+        // line immediately following it assigns to our target variable.
+        // This handles the common pattern:
+        //   /** @var array<int, Customer> */
+        //   $thing = [];
+        //   $thing[0]->
+        if is_comment_line
+            && trimmed.contains("@var")
+            && let Some(next_line) = prev_non_empty_line
+            && next_line.contains(var_name)
+        {
+            // Verify the next line is an assignment to the variable
+            // (e.g. `$thing = …;` or `$thing;`).
+            let next_trimmed = next_line.trim();
+            if next_trimmed.starts_with(var_name)
+                && next_trimmed[var_name.len()..]
+                    .trim_start()
+                    .starts_with('=')
             {
-                return Some(type_token.to_string());
+                let inner = trimmed
+                    .strip_prefix("/**")
+                    .unwrap_or(trimmed)
+                    .strip_suffix("*/")
+                    .unwrap_or(trimmed);
+                let inner = inner.trim().trim_start_matches('*').trim();
+
+                if let Some(rest) = inner.strip_prefix("@var") {
+                    let rest = rest.trim_start();
+                    if !rest.is_empty() {
+                        let (type_token, remainder) = split_type_token(rest);
+
+                        // Only match when there is no variable name in
+                        // the annotation (otherwise the named check above
+                        // would have matched already).
+                        let has_var_name = remainder
+                            .split_whitespace()
+                            .next()
+                            .is_some_and(|t| t.starts_with('$'));
+                        if !has_var_name {
+                            return Some(type_token.to_string());
+                        }
+                    }
+                }
             }
+        }
+
+        if !trimmed.is_empty() {
+            prev_non_empty_line = Some(trimmed);
         }
     }
 

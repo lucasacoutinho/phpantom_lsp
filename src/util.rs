@@ -137,7 +137,20 @@ pub(crate) const ARRAY_PRESERVING_FUNCS: &[&str] = &[
     "array_splice",
     "array_chunk",
     "array_diff",
+    "array_diff_assoc",
+    "array_diff_key",
+    "array_diff_uassoc",
+    "array_diff_ukey",
+    "array_udiff",
+    "array_udiff_assoc",
+    "array_udiff_uassoc",
     "array_intersect",
+    "array_intersect_assoc",
+    "array_intersect_uassoc",
+    "array_intersect_ukey",
+    "array_uintersect",
+    "array_uintersect_assoc",
+    "array_uintersect_uassoc",
     "array_merge",
 ];
 
@@ -151,6 +164,9 @@ pub(crate) const ARRAY_ELEMENT_FUNCS: &[&str] = &[
     "reset",
     "next",
     "prev",
+    "array_first",
+    "array_last",
+    "array_find",
 ];
 
 /// Find the position of the closing delimiter that matches the opening

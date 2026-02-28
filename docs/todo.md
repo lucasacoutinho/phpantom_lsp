@@ -1,6 +1,6 @@
 # PHPantom — Remaining Work
 
-> Last updated: 2026-02-27
+> Last updated: 2026-02-28
 
 Items are ordered by recommended implementation sequence: quick wins
 first, then high-impact items, then competitive-parity features, then
@@ -310,6 +310,213 @@ new function. The LSP would need to:
 
 ---
 
+## PHP Language Feature Gaps
+
+### 39. Property hooks (PHP 8.4)
+**Priority: Medium**
+
+PHP 8.4 introduced property hooks (`get` / `set`):
+
+```php
+class User {
+    public string $name {
+        get => strtoupper($this->name);
+        set => trim($value);
+    }
+}
+```
+
+The mago parser (v1.8) already produces `Property::Hooked` and
+`PropertyHook` AST nodes, and the generic `.modifiers()`, `.hint()`,
+`.variables()` methods mean hooked properties are extracted for basic
+completion. However:
+
+- **Hook bodies are never walked.** Variables and anonymous classes
+  inside `get`/`set` bodies are invisible to resolution.
+- **`$value` parameter** inside `set` hooks is not offered for
+  variable completion.
+- **Asymmetric visibility** (`public private(set) string $name`) is
+  not recognised — the `set` visibility is ignored, so filtering
+  may incorrectly allow setting a property that should be
+  write-restricted.
+
+**Fix:** In `extract_class_like_members`, match `Property::Hooked`
+explicitly, walk hook bodies for anonymous classes and variable
+scopes, and parse the set-visibility modifier into a new
+`set_visibility` field on `PropertyInfo`.
+
+---
+
+### 40. Asymmetric visibility (PHP 8.4)
+**Priority: Low-Medium**
+
+Separate from property hooks, PHP 8.4 allows asymmetric visibility on
+plain and promoted properties. PHP 8.5 extended this to static
+properties as well.
+
+```php
+class Settings {
+    public private(set) string $name;
+
+    public function __construct(
+        public protected(set) int $retries = 3,
+    ) {}
+}
+```
+
+PHPantom currently extracts a single `Visibility` per property.
+Completion filtering uses this to decide whether a property should
+appear. A `public private(set)` property should appear for reading
+from outside the class but not for assignment contexts.
+
+**Fix:** Add an optional `set_visibility: Option<Visibility>` to
+`PropertyInfo`. Populate it from the AST modifier list (the parser
+exposes the set-visibility keyword). Completion filtering does not
+currently distinguish read vs write contexts, so the immediate fix
+is just to store the value; context-aware filtering can follow later.
+
+---
+
+### 41. Pipe operator (PHP 8.5)
+**Priority: Medium**
+
+PHP 8.5 introduced the pipe operator (`|>`):
+
+```php
+$result = $input
+    |> htmlspecialchars(...)
+    |> strtoupper(...)
+    |> fn($s) => "<b>$s</b>";
+```
+
+The mago parser already produces `Expression::Pipe` nodes, and the
+closure resolution module walks into pipe sub-expressions to find
+closures. However, **no type resolution** is performed for the pipe
+result — the RHS callable's return type is never resolved, so
+`$result->` after a pipe chain produces no completions.
+
+**Fix:** In `resolve_rhs_expression`, add a `Expression::Pipe` arm
+that resolves the RHS callable (function reference, closure, or
+arrow function) and returns its return type. For first-class
+callable syntax (`htmlspecialchars(...)`), reuse the existing
+`extract_first_class_callable_return_type` logic.
+
+---
+
+### 42. Fiber type resolution
+**Priority: Low**
+
+`Generator<TKey, TValue, TSend, TReturn>` has dedicated support for
+extracting each type parameter (value type for foreach, send type
+for `$var = yield`, return type for `getReturn()`). `Fiber` has no
+equivalent handling — `Fiber::start()`, `Fiber::resume()`, and
+`Fiber::getReturn()` don't resolve their generic types.
+
+PHP userland rarely annotates Fiber with generics (unlike Generator),
+so this is low priority. If demand appears, the fix would mirror the
+Generator extraction in `docblock/types.rs`.
+
+### 43. Function-level `@template` generic resolution
+**Priority: Medium-High**
+
+`MethodInfo` has `template_params` and `template_bindings` fields that
+enable method-level generic resolution at call sites (e.g.
+`@template T` + `@param class-string<T> $class` + `@return T`).
+`FunctionInfo` has **neither** field, so standalone functions that use
+`@template` lose their generic type information entirely.
+
+The only function-level template handling today is
+`synthesize_template_conditional` in `parser/functions.rs`, which
+converts the narrow `@return T` + `@param class-string<T>` pattern
+into a `ConditionalReturnType`.  This does not cover the general case
+where template params appear inside a generic return type:
+
+```php
+/**
+ * @template TKey of array-key
+ * @template TValue
+ * @param  array<TKey, TValue>  $value
+ * @return \Illuminate\Support\Collection<TKey, TValue>
+ */
+function collect($value = []) { ... }
+
+/**
+ * @template TValue
+ * @param  TValue  $value
+ * @param  callable(TValue): TValue  $callback
+ * @return TValue
+ */
+function tap($value, $callback = null) { ... }
+```
+
+After `$users = collect($userArray)`, the result is an unparameterised
+`Collection` — element type information is lost, and
+`$users->first()->` produces no completions.
+
+This affects Laravel helpers (`collect`, `value`, `retry`, `tap`,
+`with`, `transform`, `data_get`), PHPStan/Psalm helper libraries, and
+any userland function using `@template`.
+
+#### Implementation plan
+
+1. **Add fields to `FunctionInfo`** (in `types.rs`):
+
+   ```text
+   pub template_params: Vec<String>,
+   pub template_bindings: Vec<(String, String)>,
+   ```
+
+   Mirror the existing `MethodInfo` fields.
+
+2. **Populate during parsing** (in `parser/functions.rs`):
+
+   Extract `@template` tags via `extract_template_params` and
+   `@param`-based bindings via `extract_template_param_bindings`,
+   the same functions already used for method-level templates in
+   `parser/classes.rs`.
+
+3. **Resolve at call sites** (in `variable_resolution.rs`,
+   `resolve_rhs_function_call`):
+
+   After loading the `FunctionInfo` and before falling through to
+   `type_hint_to_classes`, check whether the function has
+   `template_params`.  If so:
+
+   a. For each template param, try to infer the concrete type from
+      the call-site arguments using `template_bindings` (positional
+      match between `$paramName` and the `ArgumentList`).  Reuse
+      the existing `resolve_rhs_expression` / `type_hint_to_classes`
+      to get the argument's type.
+
+   b. Build a substitution map `{T => ConcreteType, ...}`.
+
+   c. Apply the substitution to `return_type` via
+      `apply_substitution` before passing it to
+      `type_hint_to_classes`.
+
+   This mirrors what `apply_generic_args` does for class-level
+   templates, but applied to a function call.
+
+4. **Text-based path** (in `text_resolution.rs`):
+
+   The inline chain resolver (`resolve_raw_type_from_call_chain`)
+   also needs the same treatment for chains like
+   `collect($arr)->first()->`.  After resolving the function's
+   return type, apply template substitution before continuing the
+   chain.
+
+**Note:** The existing `synthesize_template_conditional` path for
+`@return T` + `@param class-string<T>` should be kept as-is — it
+handles the special case where the return type is the template param
+itself, which is common for container-style `resolve()`/`app()`
+functions.  The new general path handles the remaining cases.
+
+See also: `todo-laravel.md` gap 11 (`collect()` and other helper
+functions lose generic type info), which is the Laravel-specific
+manifestation of this gap.
+
+---
+
 ## Infrastructure Cleanup
 
 ### Remove deprecated text-search fallbacks
@@ -422,3 +629,71 @@ developer arrive before vendor matches, even within a single phase.
 3. Return `null` as the final response.
 4. If no token was provided, fall back to the current behaviour: collect
    everything, return once.
+
+---
+
+## Array Function Type Preservation — Future Work
+
+PHPStan provides `DynamicFunctionReturnTypeExtension` for many more
+functions than we currently handle.  The items below require new code
+paths (not just adding entries to the existing constant lists).
+
+### 44. Array functions needing new code paths
+**Priority: Medium**
+
+These functions have return type semantics that don't fit into either
+`ARRAY_PRESERVING_FUNCS` (same array type out) or `ARRAY_ELEMENT_FUNCS`
+(single element out).  Each needs its own mini-resolver.
+
+| Function | Return type logic | PHPStan extension |
+|---|---|---|
+| `array_keys` | Returns `list<TKey>` — extracts the *key* type, not value type | `ArrayKeysFunctionDynamicReturnTypeExtension` |
+| `array_column` | Extracts a column from a 2D array, preserving types | `ArrayColumnFunctionReturnTypeExtension` |
+| `array_combine` | Keys from first array arg, values from second | `ArrayCombineFunctionReturnTypeExtension` |
+| `array_fill` | `array<int, TValue>` preserving the fill value type | `ArrayFillFunctionReturnTypeExtension` |
+| `array_fill_keys` | Preserves key array type + value type | `ArrayFillKeysFunctionReturnTypeExtension` |
+| `array_flip` | Swaps key↔value types | `ArrayFlipFunctionReturnTypeExtension` |
+| `array_pad` | Union of existing value type + pad value type | `ArrayPadDynamicReturnTypeExtension` |
+| `array_replace` | Merge-like, preserving types from all args | `ArrayReplaceFunctionReturnTypeExtension` |
+| `array_change_key_case` | Preserves value type, transforms key type | `ArrayChangeKeyCaseFunctionReturnTypeExtension` |
+| `array_intersect_key` | Preserves first array's types (dedicated extension) | `ArrayIntersectKeyFunctionReturnTypeExtension` |
+| `array_reduce` | Returns the callback's return type (like `array_map`) | `ArrayReduceFunctionReturnTypeExtension` |
+| `array_search` | Returns key type of the haystack array | `ArraySearchFunctionDynamicReturnTypeExtension` |
+| `array_rand` | Returns key type of the input array | `ArrayRandFunctionReturnTypeExtension` |
+| `array_sum` | Computes numeric return type from value types | `ArraySumFunctionDynamicReturnTypeExtension` |
+| `array_count_values` | Returns `array<TValue, int>` | `ArrayCountValuesDynamicReturnTypeExtension` |
+| `array_key_first` / `array_key_last` | Returns key type (usually scalar, low completion value) | `ArrayFirstLastDynamicReturnTypeExtension` |
+| `array_find_key` | Returns key type (PHP 8.4) | `ArrayFindKeyFunctionReturnTypeExtension` |
+| `iterator_to_array` | Preserves iterable key/value types into array | `IteratorToArrayFunctionReturnTypeExtension` |
+| `compact` | Builds typed array from variable names | `CompactFunctionReturnTypeExtension` |
+| `count` / `sizeof` | Returns precise int range based on array size | `CountFunctionReturnTypeExtension` |
+| `min` / `max` | Returns union of argument types | `MinMaxFunctionReturnTypeExtension` |
+
+### 45. Non-array functions with dynamic return types
+**Priority: Low**
+
+PHPStan also provides dynamic return type extensions for many non-array
+functions.  These are lower priority because they mostly refine scalar
+return types (less impactful for class-based completion).
+
+| Function | Return type logic | PHPStan extension |
+|---|---|---|
+| `abs` | Preserves int/float return type | `AbsFunctionDynamicReturnTypeExtension` |
+| `base64_decode` | `string\|false` based on strict param | `Base64DecodeDynamicFunctionReturnTypeExtension` |
+| `explode` | `list<string>` / `non-empty-list<string>` / `false` | `ExplodeFunctionDynamicReturnTypeExtension` |
+| `filter_var` | Return type depends on filter constant | `FilterVarDynamicReturnTypeExtension` |
+| `filter_input` | Same as `filter_var` | `FilterInputDynamicReturnTypeExtension` |
+| `filter_var_array` / `filter_input_array` | Typed array based on filter definitions | `FilterVarArrayDynamicReturnTypeExtension` |
+| `get_class` | Returns `class-string<T>` | `GetClassDynamicReturnTypeExtension` |
+| `get_called_class` | Returns `class-string<static>` | `GetCalledClassDynamicReturnTypeExtension` |
+| `get_parent_class` | Returns parent class-string | `GetParentClassDynamicFunctionReturnTypeExtension` |
+| `gettype` | Returns specific string literal for known types | `GettypeFunctionReturnTypeExtension` |
+| `get_debug_type` | Returns specific string literal | `GetDebugTypeFunctionReturnTypeExtension` |
+| `constant` | Resolves named constant to its type | `ConstantFunctionReturnTypeExtension` |
+| `date` / `date_format` | Precise string return types | `DateFunctionReturnTypeExtension` |
+| `date_create` / `date_create_immutable` | `DateTime\|false` | `DateTimeCreateDynamicReturnTypeExtension` |
+| `hash` / `hash_file` / etc. | Precise return types | `HashFunctionsReturnTypeExtension` |
+| `sprintf` / `vsprintf` | Non-empty-string preservation | `SprintfFunctionDynamicReturnTypeExtension` |
+| `preg_split` | `list<string>\|false` based on flags | `PregSplitDynamicReturnTypeExtension` |
+| `str_split` / `mb_str_split` | Non-empty-list | `StrSplitFunctionReturnTypeExtension` |
+| `class_implements` / `class_uses` / `class_parents` | `array<string, string>\|false` | `ClassImplementsFunctionReturnTypeExtension` |

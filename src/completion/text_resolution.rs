@@ -26,7 +26,7 @@ use super::resolver::FunctionLoaderFn;
 
 use super::array_shape::{
     build_list_type_from_push_types, collect_incremental_key_assignments, collect_push_assignments,
-    extract_spread_expressions, parse_array_literal_entries,
+    extract_spread_expressions, infer_positional_element_types, parse_array_literal_entries,
 };
 use super::conditional_resolution::split_call_subject;
 
@@ -237,6 +237,20 @@ impl Backend {
             // No string-keyed entries — try push-style list inference.
             if let Some(list_type) = build_list_type_from_push_types(&push_types) {
                 return Some(list_type);
+            }
+
+            // No string-keyed entries and no push types — try inferring
+            // element types from positional entries in the array literal
+            // (e.g. `[new Customer(), new Customer()]` → `list<Customer>`).
+            let positional_types = infer_positional_element_types(rhs_text);
+            if !positional_types.is_empty() {
+                // Merge with any existing push types (should be empty here,
+                // but defensive).
+                let mut all_types = push_types.clone();
+                all_types.extend(positional_types);
+                if let Some(list_type) = build_list_type_from_push_types(&all_types) {
+                    return Some(list_type);
+                }
             }
         }
 

@@ -28,7 +28,7 @@ use crate::docblock::types::{
 };
 use crate::inheritance::{apply_generic_args, apply_substitution};
 use crate::types::*;
-use crate::util::short_name;
+use crate::util::{ARRAY_ELEMENT_FUNCS, ARRAY_PRESERVING_FUNCS, short_name};
 use crate::virtual_members::laravel::{ELOQUENT_BUILDER_FQN, build_scope_methods_for_builder};
 
 use super::conditional_resolution::{
@@ -236,6 +236,52 @@ impl Backend {
         }
 
         let function_loader = ctx.function_loader;
+
+        // ── Inline array literal with index access: `[expr][0]->` ───
+        // When the subject starts with `[` and contains `][`, the base
+        // is an inline array literal and the trailing brackets are index
+        // accesses.  Resolve each element expression inside the literal
+        // and return the result.
+        //
+        // This must run before the enum-case / static-member check
+        // because subjects like `[Customer::first()][]` contain `::`
+        // and would otherwise be misinterpreted as a static member
+        // access on `[Customer`.
+        if subject.starts_with('[') && subject.contains("][") {
+            if let Some(split_pos) = subject.find("][") {
+                let literal_text = &subject[..split_pos + 1];
+                if literal_text.starts_with('[') && literal_text.ends_with(']') {
+                    let inner = literal_text[1..literal_text.len() - 1].trim();
+
+                    let mut element_classes = Vec::new();
+                    for element in split_text_args(inner) {
+                        let elem = element.trim();
+                        if elem.is_empty() {
+                            continue;
+                        }
+                        if elem.ends_with(')') {
+                            if let Some((cb, ca)) = split_call_subject(elem) {
+                                let resolved =
+                                    Self::resolve_call_return_types(cb, ca, ctx);
+                                ClassInfo::extend_unique(&mut element_classes, resolved);
+                            }
+                        } else if let Some(class_name) =
+                            Self::extract_new_expression_class(elem)
+                        {
+                            let resolved = find_class_by_name(all_classes, &class_name)
+                                .cloned()
+                                .or_else(|| class_loader(&class_name));
+                            if let Some(cls) = resolved {
+                                ClassInfo::extend_unique(&mut element_classes, vec![cls]);
+                            }
+                        }
+                    }
+                    if !element_classes.is_empty() {
+                        return element_classes;
+                    }
+                }
+            }
+        }
 
         // ── Enum case / static member access: `ClassName::CaseName` ──
         // When an enum case or static member is used with `->`, resolve to
@@ -552,6 +598,48 @@ impl Backend {
                 );
             }
             return vec![];
+        }
+
+        // ── Known array element/preserving functions (inline) ───────────
+        // When an array function is used inline (e.g.
+        // `end(Customer::get()->all())->` or `end($customers)->`),
+        // resolve the first argument's iterable type and extract the
+        // element type so that member completion works.
+        let is_array_element_func = ARRAY_ELEMENT_FUNCS
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(call_body));
+        let is_array_preserving_func = ARRAY_PRESERVING_FUNCS
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(call_body));
+
+        if (is_array_element_func || is_array_preserving_func) && !text_args.is_empty() {
+            // Extract the first argument text (respecting nested parens).
+            if let Some(first_arg) = Self::extract_first_arg_text(text_args) {
+                let arg_raw_type =
+                    Self::resolve_inline_arg_raw_type(&first_arg, ctx);
+
+                if let Some(ref raw) = arg_raw_type {
+                    // Element-extracting funcs → unwrap one level of generics.
+                    // Preserving funcs used inline with `->` also need
+                    // the element type (the caller already dereferenced
+                    // the array via `func(...)->`).
+                    if let Some(element_type) =
+                        docblock::types::extract_generic_value_type(raw)
+                    {
+                        let owner_name =
+                            current_class.map(|c| c.name.as_str()).unwrap_or("");
+                        let classes = Self::type_hint_to_classes(
+                            &element_type,
+                            owner_name,
+                            all_classes,
+                            class_loader,
+                        );
+                        if !classes.is_empty() {
+                            return classes;
+                        }
+                    }
+                }
+            }
         }
 
         // ── Standalone function call: app / myHelper ──
@@ -1330,6 +1418,140 @@ impl Backend {
     ///
     /// Loads the source class and looks up the original alias in its
     /// `type_aliases` map.
+
+    /// Extract the first argument from a comma-separated argument text,
+    /// respecting nested parentheses, brackets, and braces.
+    fn extract_first_arg_text(args_text: &str) -> Option<String> {
+        let trimmed = args_text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let mut depth = 0i32;
+        for (i, ch) in trimmed.char_indices() {
+            match ch {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    let arg = trimmed[..i].trim();
+                    if !arg.is_empty() {
+                        return Some(arg.to_string());
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        // Single (or last) argument.
+        let arg = trimmed.trim();
+        if !arg.is_empty() {
+            Some(arg.to_string())
+        } else {
+            None
+        }
+    }
+
+    /// Resolve the raw return type string of an inline argument expression.
+    ///
+    /// Handles plain variables (`$customers`), call chains
+    /// (`Customer::get()->all()`), and static calls (`ClassName::method()`).
+    ///
+    /// Returns the raw type string (e.g. `"array<int, Customer>"`) so
+    /// that the caller can extract element types from it.
+    fn resolve_inline_arg_raw_type(
+        arg_text: &str,
+        ctx: &ResolutionCtx<'_>,
+    ) -> Option<String> {
+        let current_class = ctx.current_class;
+        let all_classes = ctx.all_classes;
+        let class_loader = ctx.class_loader;
+
+        // ── Plain variable: `$customers` ────────────────────────────────
+        if arg_text.starts_with('$')
+            && arg_text[1..].chars().all(|c| c.is_alphanumeric() || c == '_')
+        {
+            // Try docblock annotation first (@var / @param).
+            if let Some(raw) = docblock::find_iterable_raw_type_in_source(
+                ctx.content,
+                ctx.cursor_offset as usize,
+                arg_text,
+            ) {
+                return Some(raw);
+            }
+            // Fall back to assignment scanning.
+            return Self::extract_raw_type_from_assignment_text(
+                arg_text,
+                ctx.content,
+                ctx.cursor_offset as usize,
+                current_class,
+                all_classes,
+                class_loader,
+            );
+        }
+
+        // ── Call expression ending with `)` ─────────────────────────────
+        if arg_text.ends_with(')') {
+            if let Some((call_body, _args)) = split_call_subject(arg_text) {
+                // Instance method chain: `expr->method()`
+                if let Some(pos) = call_body.rfind("->") {
+                    let lhs = &call_body[..pos];
+                    let method_name = &call_body[pos + 2..];
+
+                    let lhs_classes =
+                        Self::resolve_target_classes(lhs, AccessKind::Arrow, ctx);
+                    for cls in &lhs_classes {
+                        if let Some(rt) =
+                            Self::resolve_method_return_type(&cls, method_name, class_loader)
+                        {
+                            return Some(rt);
+                        }
+                    }
+                }
+
+                // Static call: `ClassName::method()`
+                if let Some(pos) = call_body.rfind("::") {
+                    let class_part = &call_body[..pos];
+                    let method_name = &call_body[pos + 2..];
+
+                    let owner = if class_part == "self" || class_part == "static" {
+                        current_class.cloned()
+                    } else {
+                        find_class_by_name(all_classes, class_part)
+                            .cloned()
+                            .or_else(|| class_loader(class_part))
+                    };
+                    if let Some(ref cls) = owner {
+                        if let Some(rt) =
+                            Self::resolve_method_return_type(cls, method_name, class_loader)
+                        {
+                            return Some(rt);
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Property access: `$this->prop` or `$var->prop` ──────────────
+        if let Some(pos) = arg_text.rfind("->") {
+            let lhs = &arg_text[..pos];
+            let prop_name = &arg_text[pos + 2..];
+            if !prop_name.is_empty()
+                && prop_name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                let lhs_classes =
+                    Self::resolve_target_classes(lhs, AccessKind::Arrow, ctx);
+                for cls in &lhs_classes {
+                    if let Some(rt) =
+                        Self::resolve_property_type_hint(&cls, prop_name, class_loader)
+                    {
+                        return Some(rt);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
     pub(crate) fn resolve_imported_type_alias(
         import_ref: &str,
         all_classes: &[ClassInfo],

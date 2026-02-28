@@ -236,6 +236,9 @@ pub(crate) fn extract_arrow_subject(chars: &[char], arrow_pos: usize) -> String 
     // reversed at the end so the final subject reads left-to-right.
     if i > 0 && chars[i - 1] == ']' {
         let mut segments: Vec<String> = Vec::new();
+        // Track the raw bracket ranges so we can reconstruct the
+        // array literal base when there is no `$var` prefix.
+        let mut bracket_ranges: Vec<(usize, usize)> = Vec::new();
         let mut pos = i;
 
         while pos > 0
@@ -254,6 +257,7 @@ pub(crate) fn extract_arrow_subject(chars: &[char], arrow_pos: usize) -> String 
                 // Generic / numeric index → strip to `[]`.
                 segments.push("[]".to_string());
             }
+            bracket_ranges.push((bracket_open, pos));
             pos = bracket_open;
         }
 
@@ -263,6 +267,30 @@ pub(crate) fn extract_arrow_subject(chars: &[char], arrow_pos: usize) -> String 
                 // Reverse so segments read left-to-right.
                 segments.reverse();
                 return format!("{}{}", before, segments.join(""));
+            }
+
+            // ── Inline array literal: `[expr][0]->` ──────────────
+            // When there is no `$var` base and we consumed at least
+            // two bracket pairs, the outermost (last-consumed) bracket
+            // pair is the array literal itself.  Treat it as the base
+            // and the remaining bracket pairs as index accesses.
+            //
+            // Example: `[Customer::first()][0]->`
+            //   bracket_ranges (innermost-first): [(pos_of_[0], ...), (pos_of_[literal], ...)]
+            //   segments  (innermost-first):       ["[]",              "[]"]
+            //   → base = "[Customer::first()]", index segments = ["[]"]
+            if segments.len() >= 2 {
+                // The last entry in bracket_ranges is the outermost
+                // (leftmost) bracket pair — the array literal.
+                let (lit_open, lit_close) = bracket_ranges[bracket_ranges.len() - 1];
+                let literal: String = chars[lit_open..lit_close].iter().collect();
+
+                // The remaining segments (all but the last) are the
+                // index accesses, in innermost-first order → reverse.
+                let mut index_segs: Vec<String> =
+                    segments[..segments.len() - 1].to_vec();
+                index_segs.reverse();
+                return format!("{}{}", literal, index_segs.join(""));
             }
         }
     }
@@ -948,6 +976,32 @@ mod tests {
             col <= chars.len(),
             "col {col} should be within collapsed len {}",
             chars.len()
+        );
+    }
+
+    #[test]
+    fn test_inline_array_literal_with_index_access() {
+        // [Customer::first()][0]->
+        let input = "[Customer::first()][0]->";
+        let chars: Vec<char> = input.chars().collect();
+        let arrow_pos = input.rfind("->").unwrap();
+        let result = extract_arrow_subject(&chars, arrow_pos);
+        assert_eq!(
+            result, "[Customer::first()][]",
+            "Subject should be the literal base plus index segment"
+        );
+    }
+
+    #[test]
+    fn test_inline_array_literal_new_expression() {
+        // [new Foo()][0]->
+        let input = "[new Foo()][0]->";
+        let chars: Vec<char> = input.chars().collect();
+        let arrow_pos = input.rfind("->").unwrap();
+        let result = extract_arrow_subject(&chars, arrow_pos);
+        assert_eq!(
+            result, "[new Foo()][]",
+            "Subject should be the literal base plus index segment"
         );
     }
 

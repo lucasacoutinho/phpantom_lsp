@@ -69,6 +69,8 @@ $user->render();             // @method (Renderable interface)
 
 // ── @var Docblock Override ──────────────────────────────────────────────────
 // The variable name in @var is optional. Both forms work for completion and go-to-definition.
+// When the @var includes a variable name (e.g. `/** @var AdminUser $inlineHinted */`),
+// that name also appears in $-triggered variable name suggestions.
 
 /** @var AdminUser $inlineHinted */
 $inlineHinted = getUnknownValue();
@@ -387,12 +389,28 @@ foreach ($members as $member) {
 }
 $members[0]->getName();                   // array access element type
 
+
 /** @var array<int, AdminUser> $admins */
 $admins = getUnknownValue();
 foreach ($admins as $admin) {
     $admin->grantPermission('x');
 }
 $admins[0]->grantPermission('y');         // variable key works too
+
+/** @var array<int, User> */
+$annotated = [];                          // @var without variable name
+$annotated[0]->getEmail();                // type from next-line annotation
+
+/** @var list<AdminUser> */
+$listed = [];
+$listed[0]->grantPermission('z');         // list<> without variable name
+
+$inferred = [new User('', ''), new AdminUser('', '')];
+$inferred[0]->getName();                  // element type inferred from literal
+
+[User::findByEmail('a@b.com')][0]->getEmail();  // inline array literal access
+
+end($admins)->grantPermission('w');       // inline end() element extraction
 
 
 // ── Array Destructuring ────────────────────────────────────────────────────
@@ -1639,6 +1657,9 @@ class ArrayFuncDemo
 
         $last = end($this->users);
         $last->getEmail();                // User from end()
+
+        end($this->users)->getName();     // inline end() without variable
+        current($this->users)->getEmail();// inline current() without variable
     }
 
     public function foreachOverFiltered(): void
