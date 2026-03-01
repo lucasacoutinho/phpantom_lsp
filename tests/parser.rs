@@ -1607,14 +1607,18 @@ async fn test_parse_php_enum_with_trait_also_has_implicit_interface() {
 async fn test_parse_defines_single_quoted() {
     let backend = create_test_backend();
     let defines = backend.parse_defines("<?php\ndefine('MY_CONST', 42);\n");
-    assert_eq!(defines, vec!["MY_CONST"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["MY_CONST"]);
+    // The offset should point to the `define` keyword on line 1.
+    assert!(defines[0].1 > 0, "define keyword offset should be non-zero");
 }
 
 #[tokio::test]
 async fn test_parse_defines_double_quoted() {
     let backend = create_test_backend();
     let defines = backend.parse_defines("<?php\ndefine(\"MY_CONST\", 'hello');\n");
-    assert_eq!(defines, vec!["MY_CONST"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["MY_CONST"]);
 }
 
 #[tokio::test]
@@ -1627,14 +1631,16 @@ async fn test_parse_defines_multiple() {
         "define('SORT_ASC', 4);\n",
     );
     let defines = backend.parse_defines(content);
-    assert_eq!(defines, vec!["PHP_EOL", "PHP_INT_MAX", "SORT_ASC"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["PHP_EOL", "PHP_INT_MAX", "SORT_ASC"]);
 }
 
 #[tokio::test]
 async fn test_parse_defines_with_third_argument() {
     let backend = create_test_backend();
     let defines = backend.parse_defines("<?php\ndefine('__DIR__', '', true);\n");
-    assert_eq!(defines, vec!["__DIR__"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["__DIR__"]);
 }
 
 #[tokio::test]
@@ -1647,7 +1653,8 @@ async fn test_parse_defines_skips_non_define_calls() {
         "define('REAL_CONST', 3);\n",
     );
     let defines = backend.parse_defines(content);
-    assert_eq!(defines, vec!["REAL_CONST"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["REAL_CONST"]);
 }
 
 #[tokio::test]
@@ -1659,7 +1666,8 @@ async fn test_parse_defines_skips_dynamic_names() {
         "define('GOOD_CONST', 1);\n",
     );
     let defines = backend.parse_defines(content);
-    assert_eq!(defines, vec!["GOOD_CONST"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["GOOD_CONST"]);
 }
 
 #[tokio::test]
@@ -1686,7 +1694,8 @@ async fn test_parse_defines_inside_if_guard() {
         "}\n",
     );
     let defines = backend.parse_defines(content);
-    assert_eq!(defines, vec!["MY_CONST"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["MY_CONST"]);
 }
 
 #[tokio::test]
@@ -1698,7 +1707,8 @@ async fn test_parse_defines_inside_namespace() {
         "define('APP_VERSION', '2.0');\n",
     );
     let defines = backend.parse_defines(content);
-    assert_eq!(defines, vec!["APP_VERSION"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["APP_VERSION"]);
 }
 
 #[tokio::test]
@@ -1706,7 +1716,8 @@ async fn test_parse_defines_inside_block() {
     let backend = create_test_backend();
     let content = concat!("<?php\n", "{\n", "    define('BLOCK_CONST', 1);\n", "}\n",);
     let defines = backend.parse_defines(content);
-    assert_eq!(defines, vec!["BLOCK_CONST"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["BLOCK_CONST"]);
 }
 
 #[tokio::test]
@@ -1721,7 +1732,8 @@ async fn test_parse_defines_mixed_with_classes_and_functions() {
         "define('MAX_RETRIES', 3);\n",
     );
     let defines = backend.parse_defines(content);
-    assert_eq!(defines, vec!["VERSION", "DEBUG", "MAX_RETRIES"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["VERSION", "DEBUG", "MAX_RETRIES"]);
 }
 
 #[tokio::test]
@@ -1733,5 +1745,6 @@ async fn test_parse_defines_ignores_method_calls_named_define() {
         "define('REAL_CONST', 2);\n",
     );
     let defines = backend.parse_defines(content);
-    assert_eq!(defines, vec!["REAL_CONST"]);
+    let names: Vec<&str> = defines.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, vec!["REAL_CONST"]);
 }

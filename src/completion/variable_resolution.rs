@@ -38,14 +38,143 @@ use crate::Backend;
 use crate::docblock;
 use crate::parser::with_parsed_program;
 use crate::types::ClassInfo;
-use crate::util::{
-    ARRAY_ELEMENT_FUNCS, ARRAY_PRESERVING_FUNCS, find_semicolon_balanced, short_name,
-};
+use crate::util::{ARRAY_ELEMENT_FUNCS, ARRAY_PRESERVING_FUNCS, short_name};
 
+use super::array_shape::build_list_type_from_push_types;
 use super::conditional_resolution::{
-    extract_class_string_from_expr, resolve_conditional_with_args, split_call_subject,
+    extract_class_string_from_expr, resolve_conditional_with_args,
 };
 use super::resolver::{FunctionLoaderFn, VarResolutionCtx};
+
+/// Accumulates base assignments, incremental key assignments, and push
+/// assignments for a single variable while scanning statements.
+///
+/// When a new base assignment (`$var = expr;`) is found, previously
+/// collected incremental/push entries are discarded.  Incremental key
+/// assignments (`$var['key'] = expr;`) and push assignments
+/// (`$var[] = expr;`) are merged into the base type at finalisation.
+struct AssignmentAccumulator {
+    /// Raw type string from the most recent `$var = expr;`.
+    base_type: Option<String>,
+    /// `(key, type)` pairs from `$var['key'] = expr;` after the base.
+    incremental_keys: Vec<(String, String)>,
+    /// Type strings from `$var[] = expr;` after the base.
+    push_types: Vec<String>,
+}
+
+impl AssignmentAccumulator {
+    fn new() -> Self {
+        Self {
+            base_type: None,
+            incremental_keys: Vec::new(),
+            push_types: Vec::new(),
+        }
+    }
+
+    /// Record a new base assignment, clearing previous incremental/push
+    /// entries since they preceded this assignment.
+    fn set_base(&mut self, raw_type: String) {
+        self.base_type = Some(raw_type);
+        self.incremental_keys.clear();
+        self.push_types.clear();
+    }
+
+    /// Record an incremental key assignment (`$var['key'] = expr;`).
+    /// If the key already exists, the type is overridden.
+    fn add_incremental_key(&mut self, key: String, value_type: String) {
+        if let Some(existing) = self.incremental_keys.iter_mut().find(|(k, _)| *k == key) {
+            existing.1 = value_type;
+        } else {
+            self.incremental_keys.push((key, value_type));
+        }
+    }
+
+    /// Record a push assignment (`$var[] = expr;`).
+    fn add_push_type(&mut self, value_type: String) {
+        self.push_types.push(value_type);
+    }
+
+    /// Merge another accumulator's results into this one.
+    ///
+    /// Used when recursing into block-like constructs (if/else, loops,
+    /// try/catch).  The inner accumulator's base replaces ours if
+    /// present; incremental/push entries are appended.
+    fn merge(&mut self, other: AssignmentAccumulator) {
+        if let Some(base) = other.base_type {
+            self.set_base(base);
+        }
+        for (k, v) in other.incremental_keys {
+            self.add_incremental_key(k, v);
+        }
+        self.push_types.extend(other.push_types);
+    }
+
+    /// Produce the final raw type string by merging base, incremental
+    /// keys, and push types.
+    ///
+    /// Logic mirrors what the former `extract_raw_type_from_assignment_text`
+    /// did in the now-removed `text_resolution.rs`:
+    /// - Parse the base type as an array shape and merge incremental keys
+    /// - If string-keyed entries exist, produce `array{…}`
+    /// - Otherwise, if push types exist, produce `list<…>`
+    /// - Otherwise, return the base type as-is
+    fn finalize(self) -> Option<String> {
+        if self.base_type.is_none()
+            && self.incremental_keys.is_empty()
+            && self.push_types.is_empty()
+        {
+            return None;
+        }
+
+        let has_modifications = !self.incremental_keys.is_empty() || !self.push_types.is_empty();
+        if !has_modifications {
+            return self.base_type;
+        }
+
+        // Start from the base type's shape entries (if any).
+        let mut entries: Vec<(String, String)> = Vec::new();
+        let mut positional_types: Vec<String> = Vec::new();
+
+        if let Some(ref base) = self.base_type {
+            // Try to parse as an array shape to extract existing entries.
+            if let Some(parsed) = crate::docblock::parse_array_shape(base) {
+                for entry in &parsed {
+                    entries.push((entry.key.clone(), entry.value_type.clone()));
+                }
+            } else if let Some(elem) = crate::docblock::types::extract_generic_value_type(base) {
+                // Base is `list<Type>` — seed positional types.
+                positional_types.push(elem);
+            }
+        }
+
+        // Merge incremental key assignments.
+        for (k, v) in &self.incremental_keys {
+            if let Some(existing) = entries.iter_mut().find(|(ek, _)| ek == k) {
+                existing.1 = v.clone();
+            } else {
+                entries.push((k.clone(), v.clone()));
+            }
+        }
+
+        // If there are string-keyed entries, prefer the array shape.
+        if !entries.is_empty() {
+            let shape_parts: Vec<String> = entries
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, v))
+                .collect();
+            return Some(format!("array{{{}}}", shape_parts.join(", ")));
+        }
+
+        // No string-keyed entries — try push-style list inference.
+        let mut all_types = positional_types;
+        all_types.extend(self.push_types.clone());
+        if let Some(list_type) = build_list_type_from_push_types(&all_types) {
+            return Some(list_type);
+        }
+
+        self.base_type
+    }
+}
 
 /// Build a [`VarClassStringResolver`] closure from a [`VarResolutionCtx`].
 ///
@@ -1630,19 +1759,20 @@ impl Backend {
                 );
             }
 
-            // Strategy 2: resolve the base variable's type via assignment
-            // scanning (text path) and extract the iterable element type.
+            // Strategy 2: resolve the base variable's type via AST-based
+            // assignment scanning and extract the iterable element type.
             // This handles cases like `$attrs = $ref->getAttributes();`
             // where there is no explicit `@var` annotation but the method
             // return type is `ReflectionAttribute[]`.
             let current_class = Some(ctx.current_class);
-            if let Some(raw_type) = Self::extract_raw_type_from_assignment_text(
+            if let Some(raw_type) = Self::resolve_variable_assignment_raw_type(
                 &base_var,
                 ctx.content,
-                access_offset,
+                access_offset as u32,
                 current_class,
                 ctx.all_classes,
                 ctx.class_loader,
+                ctx.function_loader,
             ) && let Some(element_type) = docblock::types::extract_generic_value_type(&raw_type)
             {
                 return Self::type_hint_to_classes(
@@ -1803,62 +1933,71 @@ impl Backend {
         vec![]
     }
 
-    /// Resolve an instance method call: `$this->method()` (fast path) or
-    /// general `$obj->method()` (text-based fallback).
+    /// Resolve an instance method call: `$this->method()`, `$var->method()`,
+    /// chained calls, and other object expressions via AST-based resolution.
     fn resolve_rhs_method_call<'b>(
         method_call: &'b MethodCall<'b>,
-        expr: &'b Expression<'b>,
+        _expr: &'b Expression<'b>,
         ctx: &VarResolutionCtx<'_>,
     ) -> Vec<ClassInfo> {
-        if let Expression::Variable(Variable::Direct(dv)) = method_call.object
+        let method_name = match &method_call.method {
+            ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+            // Variable method name (`$obj->$method()`) — can't resolve statically.
+            _ => return vec![],
+        };
+
+        // Resolve the object expression to candidate owner classes.
+        let owner_classes: Vec<ClassInfo> = if let Expression::Variable(Variable::Direct(dv)) =
+            method_call.object
             && dv.name == "$this"
-            && let ClassLikeMemberSelector::Identifier(ident) = &method_call.method
         {
-            let method_name = ident.value.to_string();
-            if let Some(owner) = ctx
-                .all_classes
+            ctx.all_classes
                 .iter()
                 .find(|c| c.name == ctx.current_class.name)
-            {
-                let text_args =
-                    Self::extract_argument_text(&method_call.argument_list, ctx.content);
-                let rctx = ctx.as_resolution_ctx();
-                let template_subs = if !text_args.is_empty() {
-                    Self::build_method_template_subs(
-                        owner,
-                        &method_name,
-                        &text_args,
-                        &rctx,
-                        ctx.class_loader,
-                    )
-                } else {
-                    HashMap::new()
-                };
-                let var_resolver = build_var_resolver_from_ctx(ctx);
-                return Self::resolve_method_return_types_with_args(
+                .cloned()
+                .into_iter()
+                .collect()
+        } else if let Expression::Variable(Variable::Direct(dv)) = method_call.object {
+            let var = dv.name.to_string();
+            Self::resolve_target_classes(
+                &var,
+                crate::types::AccessKind::Arrow,
+                &ctx.as_resolution_ctx(),
+            )
+        } else {
+            // Handle non-variable object expressions like
+            // `(new Factory())->create()`, `getService()->method()`,
+            // or chained calls by recursively resolving the expression.
+            Self::resolve_rhs_expression(method_call.object, ctx)
+        };
+
+        let text_args = Self::extract_argument_text(&method_call.argument_list, ctx.content);
+        let rctx = ctx.as_resolution_ctx();
+        let var_resolver = build_var_resolver_from_ctx(ctx);
+
+        for owner in &owner_classes {
+            let template_subs = if !text_args.is_empty() {
+                Self::build_method_template_subs(
                     owner,
                     &method_name,
                     &text_args,
-                    ctx.all_classes,
+                    &rctx,
                     ctx.class_loader,
-                    &template_subs,
-                    Some(&var_resolver),
-                );
-            }
-        } else {
-            // General case: extract the call expression text and
-            // delegate to text-based resolution.
-            let rhs_span = expr.span();
-            let start = rhs_span.start.offset as usize;
-            let end = rhs_span.end.offset as usize;
-            if end <= ctx.content.len() {
-                let rhs_text = ctx.content[start..end].trim();
-                if rhs_text.ends_with(')')
-                    && let Some((call_body, args_text)) = split_call_subject(rhs_text)
-                {
-                    let rctx = ctx.as_resolution_ctx();
-                    return Self::resolve_call_return_types(call_body, args_text, &rctx);
-                }
+                )
+            } else {
+                HashMap::new()
+            };
+            let results = Self::resolve_method_return_types_with_args(
+                owner,
+                &method_name,
+                &text_args,
+                ctx.all_classes,
+                ctx.class_loader,
+                &template_subs,
+                Some(&var_resolver),
+            );
+            if !results.is_empty() {
+                return results;
             }
         }
         vec![]
@@ -2048,8 +2187,8 @@ impl Backend {
                 return from_docblock;
             }
 
-            // No docblock — chase the variable's assignment to extract
-            // the raw iterable type.  This handles cases like
+            // No docblock — walk the AST for the variable's assignment
+            // to extract the raw iterable type.  This handles cases like
             // `$users = $this->getUsers(); array_pop($users)` where
             // `$users` has no `@var` annotation but was assigned from a
             // method returning `list<User>`.
@@ -2057,13 +2196,14 @@ impl Backend {
                 .all_classes
                 .iter()
                 .find(|c| c.name == ctx.current_class.name);
-            if let Some(raw) = Self::chase_var_assignment_raw_type(
+            if let Some(raw) = Self::resolve_variable_assignment_raw_type(
                 &var_text,
                 ctx.content,
-                offset,
+                offset as u32,
                 current_class,
                 ctx.all_classes,
                 ctx.class_loader,
+                ctx.function_loader,
             ) && docblock::types::extract_generic_value_type(&raw).is_some()
             {
                 return Some(raw);
@@ -2073,97 +2213,515 @@ impl Backend {
         Self::extract_rhs_iterable_raw_type(arg_expr, ctx)
     }
 
-    /// Text-based fallback for resolving a variable's raw iterable type
-    /// by scanning backward for its assignment and extracting the RHS
-    /// return type.
+    /// Resolve a variable's raw type string by walking the AST.
     ///
-    /// Used by `resolve_arg_raw_type` when a variable argument to an
-    /// array function has no `@var` / `@param` docblock but was assigned
-    /// from a method call (e.g. `$users = $this->getUsers()`).
-    fn chase_var_assignment_raw_type(
+    /// Re-parses the file and searches for the most recent assignment to
+    /// `var_name` before `cursor_offset`.  When the RHS is an array
+    /// literal (`[new Foo(), new Bar()]`), infers the element types and
+    /// returns a `list<Foo|Bar>` string.  For call expressions and
+    /// property access, delegates to [`extract_rhs_iterable_raw_type`].
+    ///
+    /// This is the AST-based variable assignment scanner, used as a
+    /// candidate source for
+    /// [`try_chained_array_access_with_candidates`](super::source_helpers)
+    /// when resolving array access chains.
+    pub(super) fn resolve_variable_assignment_raw_type(
         var_name: &str,
         content: &str,
-        before_offset: usize,
+        cursor_offset: u32,
         current_class: Option<&ClassInfo>,
         all_classes: &[ClassInfo],
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+        function_loader: FunctionLoaderFn<'_>,
     ) -> Option<String> {
-        let search_area = content.get(..before_offset)?;
+        let dummy_class;
+        let effective_class = match current_class {
+            Some(cc) => cc,
+            None => {
+                dummy_class = ClassInfo::default();
+                &dummy_class
+            }
+        };
 
-        // Find the most recent assignment to this variable.
-        let assign_pattern = format!("{} = ", var_name);
-        let assign_pos = search_area.rfind(&assign_pattern)?;
-        let rhs_start = assign_pos + assign_pattern.len();
+        with_parsed_program(
+            content,
+            "resolve_variable_assignment_raw_type",
+            |program, _content| {
+                let ctx = VarResolutionCtx {
+                    var_name,
+                    current_class: effective_class,
+                    all_classes,
+                    content,
+                    cursor_offset,
+                    class_loader,
+                    function_loader,
+                    enclosing_return_type: None,
+                };
 
-        // Extract the RHS up to the next `;`
-        let remaining = &content[rhs_start..];
-        let semi_pos = find_semicolon_balanced(remaining)?;
-        let rhs_text = remaining[..semi_pos].trim();
+                Self::find_variable_assignment_raw_type(program.statements.iter(), &ctx)
+            },
+        )
+    }
 
-        // Only handle call expressions — that's the common case for
-        // `$users = $this->getUsers()` or `$users = getUsers()`.
-        if !rhs_text.ends_with(')') {
-            return None;
-        }
+    /// Walk statements to find the enclosing scope and the most recent
+    /// assignment to the target variable, returning its raw type string.
+    fn find_variable_assignment_raw_type<'b>(
+        statements: impl Iterator<Item = &'b Statement<'b>>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Option<String> {
+        let stmts: Vec<&Statement> = statements.collect();
 
-        let (callee, _args_text) = split_call_subject(rhs_text)?;
-
-        // Method call: `$this->methodName(…)`
-        if let Some(method_name) = callee
-            .strip_prefix("$this->")
-            .or_else(|| callee.strip_prefix("$this?->"))
-        {
-            let owner = current_class?;
-            return Self::resolve_method_return_type(owner, method_name, class_loader);
-        }
-
-        // Static call: `ClassName::methodName(…)`
-        if let Some((class_part, method_part)) = callee.rsplit_once("::") {
-            let resolved_class = if class_part == "self" || class_part == "static" {
-                current_class.cloned()
-            } else {
-                let lookup = short_name(class_part);
-                all_classes
-                    .iter()
-                    .find(|c| c.name == lookup)
-                    .cloned()
-                    .or_else(|| class_loader(class_part))
-            };
-            if let Some(cls) = resolved_class {
-                return Self::resolve_method_return_type(&cls, method_part, class_loader);
+        // Check if the cursor is inside a class/function body and recurse.
+        for &stmt in &stmts {
+            match stmt {
+                Statement::Class(class) => {
+                    let start = class.left_brace.start.offset;
+                    let end = class.right_brace.end.offset;
+                    if ctx.cursor_offset >= start && ctx.cursor_offset <= end {
+                        return Self::find_assignment_raw_type_in_members(
+                            class.members.iter(),
+                            ctx,
+                        );
+                    }
+                }
+                Statement::Trait(trait_def) => {
+                    let start = trait_def.left_brace.start.offset;
+                    let end = trait_def.right_brace.end.offset;
+                    if ctx.cursor_offset >= start && ctx.cursor_offset <= end {
+                        return Self::find_assignment_raw_type_in_members(
+                            trait_def.members.iter(),
+                            ctx,
+                        );
+                    }
+                }
+                Statement::Enum(enum_def) => {
+                    let start = enum_def.left_brace.start.offset;
+                    let end = enum_def.right_brace.end.offset;
+                    if ctx.cursor_offset >= start && ctx.cursor_offset <= end {
+                        return Self::find_assignment_raw_type_in_members(
+                            enum_def.members.iter(),
+                            ctx,
+                        );
+                    }
+                }
+                Statement::Interface(iface) => {
+                    let start = iface.left_brace.start.offset;
+                    let end = iface.right_brace.end.offset;
+                    if ctx.cursor_offset >= start && ctx.cursor_offset <= end {
+                        return Self::find_assignment_raw_type_in_members(
+                            iface.members.iter(),
+                            ctx,
+                        );
+                    }
+                }
+                Statement::Namespace(ns) => {
+                    if let Some(result) =
+                        Self::find_variable_assignment_raw_type(ns.statements().iter(), ctx)
+                    {
+                        return Some(result);
+                    }
+                }
+                Statement::Function(func) => {
+                    let body_start = func.body.left_brace.start.offset;
+                    let body_end = func.body.right_brace.end.offset;
+                    if ctx.cursor_offset >= body_start && ctx.cursor_offset <= body_end {
+                        return Self::scan_statements_for_assignment_raw_type(
+                            func.body.statements.iter(),
+                            ctx,
+                        );
+                    }
+                }
+                _ => {}
             }
         }
 
-        // Instance method call on a variable: `$var->methodName(…)`
-        // Resolve the variable's type, then look up the method return type.
-        if let Some(arrow_pos) = callee.rfind("->") {
-            let lhs = callee[..arrow_pos]
-                .strip_suffix('?')
-                .unwrap_or(&callee[..arrow_pos])
-                .trim();
-            let method_name = callee[arrow_pos + 2..].trim();
-            if !method_name.is_empty() && lhs.starts_with('$') {
-                // Recursively chase the LHS variable to find its type.
-                let var_classes = Self::resolve_variable_types(
-                    lhs,
-                    current_class.unwrap_or(&ClassInfo::default()),
-                    all_classes,
-                    content,
-                    before_offset as u32,
-                    class_loader,
-                    None,
-                );
-                for cls in &var_classes {
-                    if let Some(rt) =
-                        Self::resolve_method_return_type(cls, method_name, class_loader)
-                    {
-                        return Some(rt);
+        // Top-level code — scan all statements.
+        Self::scan_statements_for_assignment_raw_type(stmts.into_iter(), ctx)
+    }
+
+    /// Scan class-like members for a method body that contains the cursor,
+    /// then search that method's statements for the variable assignment.
+    fn find_assignment_raw_type_in_members<'b>(
+        members: impl Iterator<Item = &'b ClassLikeMember<'b>>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Option<String> {
+        for member in members {
+            if let ClassLikeMember::Method(method) = member
+                && let MethodBody::Concrete(block) = &method.body
+            {
+                let start = block.left_brace.start.offset;
+                let end = block.right_brace.end.offset;
+                if ctx.cursor_offset >= start && ctx.cursor_offset <= end {
+                    return Self::scan_statements_for_assignment_raw_type(
+                        block.statements.iter(),
+                        ctx,
+                    );
+                }
+            }
+        }
+        None
+    }
+
+    /// Walk statements linearly, tracking the most recent assignment to
+    /// the target variable, and return the raw type string of its RHS.
+    fn scan_statements_for_assignment_raw_type<'b>(
+        statements: impl Iterator<Item = &'b Statement<'b>>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Option<String> {
+        let acc = Self::accumulate_assignment_raw_types(statements, ctx);
+        acc.finalize()
+    }
+
+    /// Walk statements linearly, accumulating base, incremental key, and
+    /// push assignments for the target variable.
+    fn accumulate_assignment_raw_types<'b>(
+        statements: impl Iterator<Item = &'b Statement<'b>>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> AssignmentAccumulator {
+        let mut acc = AssignmentAccumulator::new();
+
+        for stmt in statements {
+            if stmt.span().start.offset >= ctx.cursor_offset {
+                break;
+            }
+
+            // Recurse into block-like constructs.
+            match stmt {
+                Statement::Block(block) => {
+                    let inner = Self::accumulate_assignment_raw_types(block.statements.iter(), ctx);
+                    acc.merge(inner);
+                }
+                Statement::If(if_stmt) => {
+                    let inner = Self::accumulate_if_assignment_raw_types(if_stmt, ctx);
+                    acc.merge(inner);
+                }
+                Statement::Foreach(foreach) => {
+                    let body_stmts: Box<dyn Iterator<Item = &Statement>> = match &foreach.body {
+                        ForeachBody::Statement(s) => Box::new(std::iter::once(*s)),
+                        ForeachBody::ColonDelimited(b) => Box::new(b.statements.iter()),
+                    };
+                    let inner = Self::accumulate_assignment_raw_types(body_stmts, ctx);
+                    acc.merge(inner);
+                }
+                Statement::While(while_stmt) => {
+                    let body_stmts: Box<dyn Iterator<Item = &Statement>> = match &while_stmt.body {
+                        WhileBody::Statement(s) => Box::new(std::iter::once(*s)),
+                        WhileBody::ColonDelimited(b) => Box::new(b.statements.iter()),
+                    };
+                    let inner = Self::accumulate_assignment_raw_types(body_stmts, ctx);
+                    acc.merge(inner);
+                }
+                Statement::Try(try_stmt) => {
+                    let inner = Self::accumulate_assignment_raw_types(
+                        try_stmt.block.statements.iter(),
+                        ctx,
+                    );
+                    acc.merge(inner);
+                    for catch in try_stmt.catch_clauses.iter() {
+                        let inner = Self::accumulate_assignment_raw_types(
+                            catch.block.statements.iter(),
+                            ctx,
+                        );
+                        acc.merge(inner);
                     }
+                    if let Some(ref finally) = try_stmt.finally_clause {
+                        let inner = Self::accumulate_assignment_raw_types(
+                            finally.block.statements.iter(),
+                            ctx,
+                        );
+                        acc.merge(inner);
+                    }
+                }
+                Statement::Expression(expr_stmt) => {
+                    Self::check_expression_for_raw_type(expr_stmt.expression, ctx, &mut acc);
+                }
+                _ => {}
+            }
+        }
+
+        acc
+    }
+
+    /// Check a single expression for base, incremental key, or push
+    /// assignments to the target variable, updating the accumulator.
+    fn check_expression_for_raw_type<'b>(
+        expr: &'b Expression<'b>,
+        ctx: &VarResolutionCtx<'_>,
+        acc: &mut AssignmentAccumulator,
+    ) {
+        let assignment = match expr {
+            Expression::Assignment(a) if a.operator.is_assign() => a,
+            _ => return,
+        };
+
+        match assignment.lhs {
+            // ── Base assignment: `$var = expr;` ──
+            Expression::Variable(Variable::Direct(dv)) if dv.name == ctx.var_name => {
+                if let Some(raw) = Self::resolve_rhs_raw_type(assignment.rhs, ctx) {
+                    acc.set_base(raw);
+                }
+            }
+            // ── Incremental key assignment: `$var['key'] = expr;` ──
+            Expression::ArrayAccess(array_access) => {
+                if let Expression::Variable(Variable::Direct(dv)) = array_access.array
+                    && dv.name == ctx.var_name
+                {
+                    let key = Self::extract_array_key_text(array_access.index);
+                    // Skip numeric-only keys — they are not string-keyed shape entries.
+                    if key != "mixed" && !key.chars().all(|c| c.is_ascii_digit()) {
+                        let value_type = Self::infer_expression_type_string(assignment.rhs, ctx);
+                        acc.add_incremental_key(key, value_type);
+                    }
+                }
+            }
+            // ── Push assignment: `$var[] = expr;` ──
+            Expression::ArrayAppend(array_append) => {
+                if let Expression::Variable(Variable::Direct(dv)) = array_append.array
+                    && dv.name == ctx.var_name
+                {
+                    let value_type = Self::infer_expression_type_string(assignment.rhs, ctx);
+                    acc.add_push_type(value_type);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Infer a type string from an AST expression, used for incremental
+    /// key and push assignment values.
+    ///
+    /// Returns a PHPStan-style type string (`"string"`, `"int"`,
+    /// `"ClassName"`, `"array{…}"`, `"mixed"`, etc.).
+    fn infer_expression_type_string<'b>(
+        expr: &'b Expression<'b>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> String {
+        match expr {
+            Expression::Literal(Literal::String(_)) => "string".to_string(),
+            Expression::Literal(Literal::Integer(_)) => "int".to_string(),
+            Expression::Literal(Literal::Float(_)) => "float".to_string(),
+            Expression::Literal(Literal::True(_) | Literal::False(_)) => "bool".to_string(),
+            Expression::Literal(Literal::Null(_)) => "null".to_string(),
+            Expression::Instantiation(inst) => match inst.class {
+                Expression::Identifier(ident) => ident.value().to_string(),
+                Expression::Self_(_) => ctx.current_class.name.clone(),
+                Expression::Static(_) => ctx.current_class.name.clone(),
+                _ => "mixed".to_string(),
+            },
+            Expression::Array(arr) => Self::infer_array_literal_raw_type(arr.elements.iter(), ctx)
+                .unwrap_or_else(|| "array".to_string()),
+            Expression::LegacyArray(arr) => {
+                Self::infer_array_literal_raw_type(arr.elements.iter(), ctx)
+                    .unwrap_or_else(|| "array".to_string())
+            }
+            Expression::Parenthesized(p) => Self::infer_expression_type_string(p.expression, ctx),
+            // For calls and property access, try the iterable extractor.
+            _ => Self::extract_rhs_iterable_raw_type(expr, ctx)
+                .unwrap_or_else(|| "mixed".to_string()),
+        }
+    }
+
+    /// Accumulate assignment raw types from all branches of an if
+    /// statement.
+    fn accumulate_if_assignment_raw_types(
+        if_stmt: &If<'_>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> AssignmentAccumulator {
+        let mut acc = AssignmentAccumulator::new();
+
+        match &if_stmt.body {
+            IfBody::Statement(body) => {
+                let inner =
+                    Self::accumulate_assignment_raw_types(std::iter::once(body.statement), ctx);
+                acc.merge(inner);
+                for else_if in body.else_if_clauses.iter() {
+                    let inner = Self::accumulate_assignment_raw_types(
+                        std::iter::once(else_if.statement),
+                        ctx,
+                    );
+                    acc.merge(inner);
+                }
+                if let Some(ref else_clause) = body.else_clause {
+                    let inner = Self::accumulate_assignment_raw_types(
+                        std::iter::once(else_clause.statement),
+                        ctx,
+                    );
+                    acc.merge(inner);
+                }
+            }
+            IfBody::ColonDelimited(body) => {
+                let inner = Self::accumulate_assignment_raw_types(body.statements.iter(), ctx);
+                acc.merge(inner);
+                for else_if in body.else_if_clauses.iter() {
+                    let inner =
+                        Self::accumulate_assignment_raw_types(else_if.statements.iter(), ctx);
+                    acc.merge(inner);
+                }
+                if let Some(ref else_clause) = body.else_clause {
+                    let inner =
+                        Self::accumulate_assignment_raw_types(else_clause.statements.iter(), ctx);
+                    acc.merge(inner);
                 }
             }
         }
 
-        None
+        acc
+    }
+
+    /// Extract a raw type string from an expression.
+    ///
+    /// Handles array literals (producing `list<Type>`), instantiations,
+    /// call expressions, and property access.  For call expressions and
+    /// property access, delegates to [`extract_rhs_iterable_raw_type`].
+    fn resolve_rhs_raw_type<'b>(
+        rhs: &'b Expression<'b>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Option<String> {
+        match rhs {
+            // ── Array literal: `[new Foo(), new Bar()]` → `list<Foo|Bar>` ──
+            Expression::Array(arr) => Self::infer_array_literal_raw_type(arr.elements.iter(), ctx),
+            Expression::LegacyArray(arr) => {
+                Self::infer_array_literal_raw_type(arr.elements.iter(), ctx)
+            }
+            // ── `new ClassName(…)` → class name ──
+            Expression::Instantiation(inst) => match inst.class {
+                Expression::Identifier(ident) => Some(ident.value().to_string()),
+                Expression::Self_(_) => Some(ctx.current_class.name.clone()),
+                Expression::Static(_) => Some(ctx.current_class.name.clone()),
+                _ => None,
+            },
+            // ── Parenthesized: unwrap ──
+            Expression::Parenthesized(p) => Self::resolve_rhs_raw_type(p.expression, ctx),
+            // ── Call / property access — delegate to iterable extractor,
+            //    with a source-scan fallback for standalone function calls
+            //    when no `function_loader` is available. ──
+            _ => Self::extract_rhs_iterable_raw_type(rhs, ctx).or_else(|| {
+                // When function_loader is None, standalone function calls
+                // like `$user = getUser()` won't resolve through the
+                // iterable extractor.  Fall back to scanning the source
+                // for the function's @return docblock.
+                if ctx.function_loader.is_none()
+                    && let Expression::Call(Call::Function(func_call)) = rhs
+                    && let Expression::Identifier(ident) = func_call.function
+                {
+                    return Self::extract_function_return_from_source(ident.value(), ctx.content);
+                }
+                None
+            }),
+        }
+    }
+
+    /// Infer a `list<Type>` raw type string from an array literal's
+    /// elements by resolving each value expression.
+    fn infer_array_literal_raw_type<'b>(
+        elements: impl Iterator<Item = &'b ArrayElement<'b>>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Option<String> {
+        let mut types: Vec<String> = Vec::new();
+        let mut has_string_keys = false;
+        let mut shape_parts: Vec<String> = Vec::new();
+
+        for elem in elements {
+            match elem {
+                ArrayElement::KeyValue(kv) => {
+                    has_string_keys = true;
+                    // Extract key text.
+                    let key_text = Self::extract_array_key_text(kv.key);
+                    // Resolve value type.
+                    let value_type = Self::infer_element_type(kv.value, ctx)
+                        .unwrap_or_else(|| "mixed".to_string());
+                    shape_parts.push(format!("{}: {}", key_text, value_type));
+                }
+                ArrayElement::Value(v) => {
+                    if let Some(t) = Self::infer_element_type(v.value, ctx)
+                        && !types.contains(&t)
+                    {
+                        types.push(t);
+                    }
+                }
+                ArrayElement::Variadic(v) => {
+                    // Spread: `...$other` — try to resolve iterable element type.
+                    if let Some(raw) = Self::resolve_rhs_raw_type(v.value, ctx)
+                        && let Some(elem) = docblock::types::extract_generic_value_type(&raw)
+                        && !types.contains(&elem)
+                    {
+                        types.push(elem);
+                    }
+                }
+                ArrayElement::Missing(_) => {}
+            }
+        }
+
+        if has_string_keys && !shape_parts.is_empty() {
+            return Some(format!("array{{{}}}", shape_parts.join(", ")));
+        }
+
+        if types.is_empty() {
+            return None;
+        }
+
+        let union = types.join("|");
+        Some(format!("list<{}>", union))
+    }
+
+    /// Extract a string representation of an array key expression.
+    fn extract_array_key_text<'b>(key: &'b Expression<'b>) -> String {
+        match key {
+            Expression::Literal(Literal::String(s)) => {
+                // `value` is the unquoted content; fall back to `raw` trimmed.
+                s.value.map(|v| v.to_string()).unwrap_or_else(|| {
+                    let raw = s.raw;
+                    raw.strip_prefix('\'')
+                        .and_then(|r| r.strip_suffix('\''))
+                        .or_else(|| raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')))
+                        .unwrap_or(raw)
+                        .to_string()
+                })
+            }
+            Expression::Literal(Literal::Integer(i)) => i.raw.to_string(),
+            _ => "mixed".to_string(),
+        }
+    }
+
+    /// Infer the type of a single array element value expression.
+    fn infer_element_type<'b>(
+        value: &'b Expression<'b>,
+        ctx: &VarResolutionCtx<'_>,
+    ) -> Option<String> {
+        match value {
+            // ── Scalar literals ──
+            Expression::Literal(Literal::String(_)) => Some("string".to_string()),
+            Expression::Literal(Literal::Integer(_)) => Some("int".to_string()),
+            Expression::Literal(Literal::Float(_)) => Some("float".to_string()),
+            Expression::Literal(Literal::True(_) | Literal::False(_)) => Some("bool".to_string()),
+            Expression::Literal(Literal::Null(_)) => Some("null".to_string()),
+            // ── Nested array literals ──
+            Expression::Array(arr) => Self::infer_array_literal_raw_type(arr.elements.iter(), ctx)
+                .or_else(|| Some("array".to_string())),
+            Expression::LegacyArray(arr) => {
+                Self::infer_array_literal_raw_type(arr.elements.iter(), ctx)
+                    .or_else(|| Some("array".to_string()))
+            }
+            // ── Object instantiation ──
+            Expression::Instantiation(inst) => match inst.class {
+                Expression::Identifier(ident) => Some(ident.value().to_string()),
+                Expression::Self_(_) => Some(ctx.current_class.name.clone()),
+                Expression::Static(_) => Some(ctx.current_class.name.clone()),
+                _ => None,
+            },
+            Expression::Call(_) => {
+                // Resolve call return type via the iterable extractor.
+                Self::extract_rhs_iterable_raw_type(value, ctx)
+            }
+            Expression::Variable(Variable::Direct(dv)) => {
+                let var_text = dv.name.to_string();
+                let offset = value.span().start.offset as usize;
+                docblock::find_iterable_raw_type_in_source(ctx.content, offset, &var_text)
+            }
+            // ── Parenthesized ──
+            Expression::Parenthesized(p) => Self::infer_element_type(p.expression, ctx),
+            _ => None,
+        }
     }
 
     /// For known array functions, resolve the **raw output type** string

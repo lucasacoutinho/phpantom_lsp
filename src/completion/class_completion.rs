@@ -1929,7 +1929,7 @@ impl Backend {
 
         // ── 1. User-defined constants (from parsed files) ───────────
         if let Ok(dmap) = self.global_defines.lock() {
-            for (name, _uri) in dmap.iter() {
+            for (name, _) in dmap.iter() {
                 if !name.to_lowercase().contains(&prefix_lower) {
                     continue;
                 }

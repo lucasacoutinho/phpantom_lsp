@@ -2554,7 +2554,10 @@ async fn test_use_const_shows_only_constants() {
 
     // Register a constant that will match our partial.
     if let Ok(mut dmap) = backend.global_defines().lock() {
-        dmap.insert("APP_VERSION".to_string(), "file:///config.php".to_string());
+        dmap.insert(
+            "APP_VERSION".to_string(),
+            ("file:///config.php".to_string(), 0),
+        );
     }
 
     let uri = Url::parse("file:///use_const.php").unwrap();

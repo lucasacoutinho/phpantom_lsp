@@ -824,39 +824,7 @@ See `ClosureBindDynamicReturnTypeExtension` and
 
 ---
 
-### 27. Remove deprecated text-search fallbacks
-**Impact: Low · Effort: Medium**
-
-The go-to-definition subsystem now uses the precomputed `SymbolMap` as
-its primary path and stored byte offsets (`name_offset`, `keyword_offset`)
-for cross-file jumps. The original line-by-line text scanners are marked
-`#[deprecated]` and retained only as fallbacks for:
-
-- Stubs and synthetic members where `name_offset == 0`
-- Files where the parser panicked and no symbol map exists
-- The go-to-implementation subsystem (not yet migrated)
-
-Once the AST-based paths have been stable for a release cycle, these
-deprecated functions can be removed:
-
-| Function | File | Replacement |
-|---|---|---|
-| `find_definition_position` | `definition/resolve.rs` | `ClassInfo::keyword_offset` + `offset_to_position` |
-| `find_function_position` | `definition/resolve.rs` | `FunctionInfo::name_offset` + `offset_to_position` |
-| `find_define_position` | `definition/resolve.rs` | Store `define()` offset during parsing |
-| `extract_word_at_position` | `definition/resolve.rs` | `SymbolMap::lookup` |
-| `resolve_variable_definition_text` | `definition/variable.rs` | `SymbolMap::find_var_definition` + AST walk |
-| `line_defines_variable` | `definition/variable.rs` | (only used by `resolve_variable_definition_text`) |
-| `find_member_position_in_range` text path | `definition/member.rs` | `name_offset` + `offset_to_position` |
-
-The go-to-implementation subsystem (`resolve_implementation` in
-`definition/implementation.rs`) still uses `extract_word_at_position`
-for cursor context detection. Migrating it to use `SymbolMap::lookup`
-would let that deprecated function be removed entirely.
-
----
-
-### 28. Non-array functions with dynamic return types
+### 27. Non-array functions with dynamic return types
 **Impact: Low · Effort: High**
 
 PHPStan also provides dynamic return type extensions for many non-array
@@ -887,7 +855,7 @@ return types (less impactful for class-based completion).
 
 ---
 
-### 29. Language construct signature help and hover
+### 28. Language construct signature help and hover
 **Impact: Low · Effort: Low**
 
 PHP language constructs that use parentheses (`unset()`, `isset()`, `empty()`,
@@ -904,14 +872,14 @@ need a similar hardcoded lookup.
 
 ---
 
-### 30. Diagnostics
+### 29. Diagnostics
 **Impact: Low (large scope) · Effort: Very High**
 
 No error reporting (undefined methods, type mismatches, etc.).
 
 ---
 
-### 31. Code Actions
+### 30. Code Actions
 **Impact: Low · Effort: Very High**
 
 No quick fixes or refactoring suggestions. No `codeActionProvider` in
@@ -919,7 +887,7 @@ No quick fixes or refactoring suggestions. No `codeActionProvider` in
 `WorkspaceEdit` generation infrastructure beyond trivial `TextEdit`s for
 use-statement insertion.
 
-#### 31a. Extract Function refactoring
+#### 30a. Extract Function refactoring
 
 Select a range of statements inside a method/function and extract them into a
 new function. The LSP would need to:

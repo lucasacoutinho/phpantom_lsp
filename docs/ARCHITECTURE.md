@@ -19,7 +19,7 @@ src/
 ├── lib.rs                  # Backend struct, state, constructors
 ├── main.rs                 # Entry point (stdin/stdout LSP transport)
 ├── server.rs               # LSP protocol handlers (initialize, didOpen, completion, …)
-├── types.rs                # Data structures (ClassInfo, MethodInfo, PropertyInfo, …)
+├── types.rs                # Data structures (ClassInfo, MethodInfo, SubjectExpr, ResolvedCallableTarget, …)
 ├── composer.rs             # composer.json / PSR-4 autoload parsing
 ├── stubs.rs                # Embedded phpstorm-stubs (build-time generated index)
 ├── resolution.rs           # Multi-phase class/function lookup and name resolution
@@ -48,8 +48,8 @@ src/
 │   ├── mod.rs              # Submodule declarations
 │   ├── handler.rs          # Top-level completion request orchestration
 │   ├── target.rs           # Extract what the user is completing (subject + access kind)
-│   ├── resolver.rs         # Resolve subject → ClassInfo (type resolution engine)
-│   ├── text_resolution.rs  # Text-based type resolution (assignment scanning, call chains)
+│   ├── resolver.rs         # Resolve subject → ClassInfo (type resolution engine), shared resolve_callable_target
+│   ├── source_helpers.rs   # Source-text scanning helpers (closure/callable return types, new-expression parsing, array access)
 │   ├── builder.rs          # Build LSP CompletionItems from resolved ClassInfo
 │   ├── class_completion.rs # Class name, constant, and function completions
 │   ├── variable_completion.rs  # Variable name completions and scope collection
@@ -129,21 +129,19 @@ A value of `0` means "not available" (stubs parsed before offsets were stored, s
 
 ### Tier 3: Text-Based Fallback (deprecated)
 
-The original line-by-line text scanners (`extract_word_at_position`, `find_member_position_in_range` text search, `line_defines_variable`, `find_definition_position`, `find_function_position`) are retained as fallbacks for:
+The remaining line-by-line text scanners (`extract_word_at_position`, `find_member_position_in_range` text search, `find_definition_position`, `find_function_position`) are retained as fallbacks for:
 
-- Stubs and synthetic members where `name_offset == 0`
+- Stubs and synthetic members where `name_offset == 0` or `keyword_offset == 0`
 - Files where the parser panicked (malformed PHP) and no symbol map exists
-- The go-to-implementation subsystem (not yet migrated to the symbol map)
 
-These functions are marked `#[deprecated]` with phase notes. They will be removed once the AST-based paths have been stable for a release cycle.
+These functions are marked `#[deprecated]` with phase notes. They will be removed once stubs and synthetic members store valid byte offsets during parsing.
 
 ### Variable Definition Resolution
 
-Variable go-to-definition (`$var` → jump to definition) uses three layers:
+Variable go-to-definition (`$var` → jump to definition) uses two layers:
 
 1. **Symbol map** (`var_defs`): the primary path. Finds the most recent `VarDefSite` before the cursor within the enclosing scope. When the cursor is physically on a definition token (parameter, foreach binding, catch variable), it returns `None` so the caller can fall through to type-hint resolution.
-2. **AST-based search** (`resolve_variable_definition_ast`): parses the file and walks the enclosing scope to find the definition site. Handles destructuring (`[$a, $b] = ...`, `list($a, $b) = ...`) and nested scopes correctly. Used as a fallback when the symbol map doesn't have a match.
-3. **Text-based search** (`resolve_variable_definition_text`): the original heuristic line scanner. Only activated when the AST parse fails.
+2. **AST-based search** (`resolve_variable_definition_ast`): parses the file and walks the enclosing scope to find the definition site. Handles destructuring (`[$a, $b] = ...`, `list($a, $b) = ...`) and nested scopes correctly. Used as a fallback when the symbol map doesn't have a match. Returns `None` when the AST parse fails.
 
 ## Signature Help Architecture
 

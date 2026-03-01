@@ -64,7 +64,7 @@ impl Backend {
         // that Ctrl+Click doesn't navigate to itself.
         //
         // Special case: zero-width (point) locations arise from
-        // `find_define_position` and similar helpers that return the
+        // `offset_to_position` and similar helpers that return the
         // start of a construct (e.g. the `define` keyword) but the
         // cursor may be anywhere on the same line (e.g. on the
         // constant name inside the string argument).  For these we
@@ -98,7 +98,11 @@ impl Backend {
     ///
     /// Returns a cloned [`SymbolKind`] to avoid holding the mutex lock
     /// across the resolution logic.
-    fn lookup_symbol_map(&self, uri: &str, offset: u32) -> Option<crate::symbol_map::SymbolSpan> {
+    pub(super) fn lookup_symbol_map(
+        &self,
+        uri: &str,
+        offset: u32,
+    ) -> Option<crate::symbol_map::SymbolSpan> {
         let maps = self.symbol_maps.lock().ok()?;
         let map = maps.get(uri)?;
         map.lookup(offset).cloned()
@@ -459,7 +463,7 @@ impl Backend {
         // a standalone function / class / constant.  Without this guard,
         // `collect($x)->map(` would fall through and resolve `map` to a
         // global `map()` helper function — or even crash while trying.
-        let is_member_access = Self::is_member_access_context(content, position);
+        let is_member_access = self.check_member_access_context(uri, content, position);
         if let Some(location) = self.resolve_member_definition(uri, content, position, &word) {
             return Some(location);
         }
@@ -570,65 +574,34 @@ impl Backend {
     /// `stub_constant_index` are not navigable (they have no real file).
     fn resolve_constant_definition(&self, candidates: &[String]) -> Option<Location> {
         // Look up the constant in global_defines.
-        let file_uri = {
+        let found = {
             let dmap = self.global_defines.lock().ok()?;
             let mut result = None;
             for candidate in candidates {
-                if let Some(uri) = dmap.get(candidate.as_str()) {
-                    result = Some((candidate.clone(), uri.clone()));
+                if let Some((uri, offset)) = dmap.get(candidate.as_str()) {
+                    result = Some((uri.clone(), *offset));
                     break;
                 }
             }
             result
         };
 
-        let (const_name, file_uri) = file_uri?;
+        let (file_uri, name_offset) = found?;
 
         // Read the file content (try open files first, then disk).
         let file_content = self.get_file_content(&file_uri)?;
 
-        #[allow(deprecated)] // no AST-based define() offset yet
-        let position = Self::find_define_position(&file_content, &const_name)?;
+        // Use the stored byte offset.  An offset of 0 means "not
+        // available" — return None in that case (should not happen for
+        // constants discovered via `update_ast` since the parser always
+        // sets the offset).
+        if name_offset == 0 {
+            return None;
+        }
+        let position = crate::util::offset_to_position(&file_content, name_offset as usize);
         let parsed_uri = Url::parse(&file_uri).ok()?;
 
         Some(point_location(parsed_uri, position))
-    }
-
-    /// Find the position of a `define('NAME'` or `define("NAME"` call in
-    /// file content.
-    ///
-    /// Searches each line for a `define(` keyword followed (possibly with
-    /// whitespace) by a string literal containing the constant name.
-    /// Returns the position of the `define` keyword on the matching line.
-    ///
-    /// **Deprecated:** This text-search helper will be replaced by an
-    /// AST-based `define()` offset once constant definition sites are
-    /// stored during parsing.
-    #[deprecated(note = "replace with AST-based define() offset lookup")]
-    fn find_define_position(content: &str, constant_name: &str) -> Option<Position> {
-        // Patterns: `'NAME'` and `"NAME"` — we search for these after
-        // the `define(` token, allowing optional whitespace.
-        let single_q = format!("'{}'", constant_name);
-        let double_q = format!("\"{}\"", constant_name);
-
-        for (line_idx, line) in content.lines().enumerate() {
-            // Find `define(` anywhere on the line.
-            let Some(def_pos) = line.find("define(") else {
-                continue;
-            };
-
-            // Extract the text after `define(` and trim leading whitespace
-            // to allow `define( 'NAME'` with spaces.
-            let after_paren = line[def_pos + 7..].trim_start();
-            if after_paren.starts_with(&single_q) || after_paren.starts_with(&double_q) {
-                return Some(Position {
-                    line: line_idx as u32,
-                    character: def_pos as u32,
-                });
-            }
-        }
-
-        None
     }
 
     // ─── Function Definition Resolution ─────────────────────────────────────
@@ -693,59 +666,17 @@ impl Backend {
         // Read the file content (try open files first, then disk).
         let file_content = self.get_file_content(&file_uri)?;
 
-        // Fast path: use the stored byte offset when available.
-        // A name_offset of 0 means "not available" (stubs, synthetic entries)
-        // — fall back to the text-search helper in that case.
-        let position = if func_info.name_offset > 0 {
-            crate::util::offset_to_position(&file_content, func_info.name_offset as usize)
-        } else {
-            #[allow(deprecated)] // fallback for stubs/synthetic (name_offset == 0)
-            Self::find_function_position(&file_content, &func_info.name)?
-        };
+        // Use the stored byte offset.  A name_offset of 0 means "not
+        // available" — return None in that case (should not happen for
+        // user code since the parser always sets the offset).
+        if func_info.name_offset == 0 {
+            return None;
+        }
+        let position =
+            crate::util::offset_to_position(&file_content, func_info.name_offset as usize);
         let parsed_uri = Url::parse(&file_uri).ok()?;
 
         Some(point_location(parsed_uri, position))
-    }
-
-    /// Find the position of a standalone `function name(` declaration in
-    /// file content.
-    ///
-    /// This is distinct from `find_member_position` (which searches inside
-    /// a class body) — here we look for top-level or namespace-level
-    /// function declarations.
-    ///
-    /// **Deprecated:** Callers should use `FunctionInfo::name_offset`
-    /// with `offset_to_position` instead.  This text-search fallback is
-    /// only needed when `name_offset == 0` (stubs, synthetic entries).
-    #[deprecated(note = "text-search fallback — prefer FunctionInfo::name_offset")]
-    fn find_function_position(content: &str, function_name: &str) -> Option<Position> {
-        let pattern = format!("function {}", function_name);
-
-        let is_word_boundary = |c: u8| {
-            let ch = c as char;
-            !ch.is_alphanumeric() && ch != '_'
-        };
-
-        for (line_idx, line) in content.lines().enumerate() {
-            if let Some(col) = line.find(&pattern) {
-                // Verify word boundary before `function` keyword.
-                let before_ok = col == 0 || is_word_boundary(line.as_bytes()[col - 1]);
-
-                // Verify word boundary after the function name.
-                let after_pos = col + pattern.len();
-                let after_ok =
-                    after_pos >= line.len() || is_word_boundary(line.as_bytes()[after_pos]);
-
-                if before_ok && after_ok {
-                    return Some(Position {
-                        line: line_idx as u32,
-                        character: col as u32,
-                    });
-                }
-            }
-        }
-
-        None
     }
 
     // ─── Word Extraction & FQN Resolution ───────────────────────────────────
@@ -889,16 +820,13 @@ impl Backend {
     /// This is the cross-file counterpart of [`find_definition_in_ast_map`].
     /// It ensures the target file is parsed and cached in `ast_map`, then
     /// uses the stored `keyword_offset` to produce a precise `Location`
-    /// without text searching.  Falls back to `find_definition_position`
-    /// (text search) only when `keyword_offset` is `0` (stubs, synthetic
-    /// classes) or when the class isn't found in the AST.
+    /// without text searching.
     pub(super) fn resolve_class_in_file(
         &self,
         file_path: &std::path::Path,
         fqn: &str,
     ) -> Option<Location> {
         let target_uri_string = format!("file://{}", file_path.display());
-        let sn = short_name(fqn);
 
         // Ensure the file is parsed and cached.  If the file is already in
         // `ast_map` (opened via `did_open`, loaded from autoload files, or
@@ -916,21 +844,8 @@ impl Backend {
             self.parse_and_cache_file(file_path);
         }
 
-        // Try AST-based lookup first.
-        if let Some(location) = self.find_definition_in_ast_map_cross_file(fqn, &target_uri_string)
-        {
-            return Some(location);
-        }
-
-        // Final fallback: text search (handles edge cases where the parser
-        // failed or the class was not extracted from the AST).
-        let target_content = self
-            .get_file_content(&target_uri_string)
-            .or_else(|| std::fs::read_to_string(file_path).ok())?;
-        #[allow(deprecated)] // fallback when parser failed or class not in AST
-        let target_position = Self::find_definition_position(&target_content, sn)?;
-        let target_uri = Url::from_file_path(file_path).ok()?;
-        Some(point_location(target_uri, target_position))
+        // Use AST-based lookup (keyword_offset).
+        self.find_definition_in_ast_map_cross_file(fqn, &target_uri_string)
     }
 
     /// Like [`find_definition_in_ast_map`] but for cross-file jumps where
@@ -968,12 +883,11 @@ impl Backend {
         let content = self.get_file_content(target_uri)?;
         let parsed_uri = Url::parse(target_uri).ok()?;
 
-        let position = if class_info.keyword_offset > 0 {
-            crate::util::offset_to_position(&content, class_info.keyword_offset as usize)
-        } else {
-            #[allow(deprecated)] // fallback for stubs/synthetic (keyword_offset == 0)
-            Self::find_definition_position(&content, sn)?
-        };
+        if class_info.keyword_offset == 0 {
+            return None;
+        }
+        let position =
+            crate::util::offset_to_position(&content, class_info.keyword_offset as usize);
 
         Some(point_location(parsed_uri, position))
     }
@@ -1014,14 +928,10 @@ impl Backend {
             class_fqn == fqn
         })?;
 
-        // Fast path: use the stored keyword_offset when available.
-        // Falls back to line-by-line text search for stubs / synthetic classes.
-        let position = if class_info.keyword_offset > 0 {
-            crate::util::offset_to_position(content, class_info.keyword_offset as usize)
-        } else {
-            #[allow(deprecated)] // fallback for stubs/synthetic (keyword_offset == 0)
-            Self::find_definition_position(content, short_name)?
-        };
+        if class_info.keyword_offset == 0 {
+            return None;
+        }
+        let position = crate::util::offset_to_position(content, class_info.keyword_offset as usize);
 
         // Build a file URI from the current URI string.
         let parsed_uri = Url::parse(uri).ok()?;
@@ -1067,12 +977,11 @@ impl Backend {
 
         if keyword == "self" || keyword == "static" {
             // Jump to the enclosing class definition in the current file.
-            let target_position = if current_class.keyword_offset > 0 {
-                crate::util::offset_to_position(content, current_class.keyword_offset as usize)
-            } else {
-                #[allow(deprecated)] // fallback for stubs/synthetic (keyword_offset == 0)
-                Self::find_definition_position(content, &current_class.name)?
-            };
+            if current_class.keyword_offset == 0 {
+                return None;
+            }
+            let target_position =
+                crate::util::offset_to_position(content, current_class.keyword_offset as usize);
             let parsed_uri = Url::parse(uri).ok()?;
             return Some(point_location(parsed_uri, target_position));
         }
@@ -1084,20 +993,9 @@ impl Backend {
         // Use keyword_offset when available (the parent class is in the
         // same file's ast_map entry).
         let parent_in_file = classes.iter().find(|c| c.name == *parent_name);
-        let parent_pos = if let Some(pc) = parent_in_file {
-            if pc.keyword_offset > 0 {
-                Some(crate::util::offset_to_position(
-                    content,
-                    pc.keyword_offset as usize,
-                ))
-            } else {
-                #[allow(deprecated)] // fallback for stubs/synthetic (keyword_offset == 0)
-                Self::find_definition_position(content, parent_name)
-            }
-        } else {
-            #[allow(deprecated)] // fallback (parent not in same file's ast_map)
-            Self::find_definition_position(content, parent_name)
-        };
+        let parent_pos = parent_in_file
+            .filter(|pc| pc.keyword_offset > 0)
+            .map(|pc| crate::util::offset_to_position(content, pc.keyword_offset as usize));
         if let Some(pos) = parent_pos {
             let parsed_uri = Url::parse(uri).ok()?;
             return Some(point_location(parsed_uri, pos));
@@ -1109,24 +1007,15 @@ impl Backend {
         let fqn = Self::resolve_to_fqn(parent_name, &ctx.use_map, &ctx.namespace);
 
         // Try class_index / ast_map lookup via find_class_file_content.
-        let sn = short_name(&fqn);
         if let Some((class_uri, class_content)) = self.find_class_file_content(&fqn, uri, content) {
-            // Try keyword_offset from the ast_map entry for the cross-file class.
+            // Use keyword_offset from the ast_map entry for the cross-file class.
             let cross_class = self.find_class_in_ast_map(&fqn);
-            let pos = if let Some(ref cc) = cross_class
+            if let Some(ref cc) = cross_class
                 && cc.keyword_offset > 0
-            {
-                Some(crate::util::offset_to_position(
-                    &class_content,
-                    cc.keyword_offset as usize,
-                ))
-            } else {
-                #[allow(deprecated)] // fallback for stubs/synthetic (keyword_offset == 0)
-                Self::find_definition_position(&class_content, sn)
-            };
-            if let Some(pos) = pos
                 && let Ok(parsed_uri) = Url::parse(&class_uri)
             {
+                let pos =
+                    crate::util::offset_to_position(&class_content, cc.keyword_offset as usize);
                 return Some(point_location(parsed_uri, pos));
             }
         }
@@ -1151,114 +1040,6 @@ impl Backend {
                     && let Some(location) = self.resolve_class_in_file(&file_path, candidate)
                 {
                     return Some(location);
-                }
-            }
-        }
-
-        None
-    }
-
-    /// Find the source position where a class, interface, trait, or enum is
-    /// defined within the given file content.
-    ///
-    /// **Deprecated:** Callers should use `ClassInfo::keyword_offset`
-    /// with `offset_to_position` instead.  This text-search fallback is
-    /// only needed when `keyword_offset == 0` (stubs, synthetic entries,
-    /// or parser failures).
-    #[deprecated(note = "text-search fallback — prefer ClassInfo::keyword_offset")]
-    pub fn find_definition_position(content: &str, class_name: &str) -> Option<Position> {
-        let keywords = ["class", "interface", "trait", "enum"];
-
-        // Track whether we are inside a `/* … */` block comment.
-        let mut in_block_comment = false;
-
-        for (line_idx, line) in content.lines().enumerate() {
-            // ── Block-comment tracking ──────────────────────────────────
-            // Walk through the line handling `/*` and `*/` toggles so we
-            // know whether the keyword match is inside a comment.
-            let mut effective_line = String::new();
-            let line_bytes = line.as_bytes();
-            let mut i = 0;
-            while i < line_bytes.len() {
-                if in_block_comment {
-                    // Look for closing `*/`.
-                    if i + 1 < line_bytes.len()
-                        && line_bytes[i] == b'*'
-                        && line_bytes[i + 1] == b'/'
-                    {
-                        in_block_comment = false;
-                        // Replace the `*/` with spaces to preserve column offsets.
-                        effective_line.push(' ');
-                        effective_line.push(' ');
-                        i += 2;
-                    } else {
-                        effective_line.push(' ');
-                        i += 1;
-                    }
-                } else if i + 1 < line_bytes.len()
-                    && line_bytes[i] == b'/'
-                    && line_bytes[i + 1] == b'*'
-                {
-                    // Opening `/*` — rest of line (until `*/`) is a comment.
-                    in_block_comment = true;
-                    effective_line.push(' ');
-                    effective_line.push(' ');
-                    i += 2;
-                } else if i + 1 < line_bytes.len()
-                    && line_bytes[i] == b'/'
-                    && line_bytes[i + 1] == b'/'
-                {
-                    // Line comment `//` — blank out the rest of the line.
-                    while i < line_bytes.len() {
-                        effective_line.push(' ');
-                        i += 1;
-                    }
-                } else if line_bytes[i] == b'#' {
-                    // Line comment `#` — blank out the rest of the line.
-                    while i < line_bytes.len() {
-                        effective_line.push(' ');
-                        i += 1;
-                    }
-                } else {
-                    effective_line.push(line_bytes[i] as char);
-                    i += 1;
-                }
-            }
-
-            for keyword in &keywords {
-                // Search for `keyword ClassName` making sure ClassName is
-                // followed by a word boundary (whitespace, `{`, `:`, end of
-                // line) so we don't match partial names.
-                let pattern = format!("{} {}", keyword, class_name);
-                if let Some(col) = effective_line.find(&pattern) {
-                    // Verify word boundary before the keyword: either start
-                    // of line or preceded by whitespace / non-alphanumeric.
-                    let before_ok = col == 0 || {
-                        let prev = effective_line
-                            .as_bytes()
-                            .get(col - 1)
-                            .copied()
-                            .unwrap_or(b' ');
-                        !(prev as char).is_alphanumeric() && prev != b'_'
-                    };
-
-                    // Verify word boundary after the class name.
-                    let after_pos = col + pattern.len();
-                    let after_ok = after_pos >= effective_line.len() || {
-                        let next = effective_line
-                            .as_bytes()
-                            .get(after_pos)
-                            .copied()
-                            .unwrap_or(b' ');
-                        !(next as char).is_alphanumeric() && next != b'_'
-                    };
-
-                    if before_ok && after_ok {
-                        return Some(Position {
-                            line: line_idx as u32,
-                            character: col as u32,
-                        });
-                    }
                 }
             }
         }

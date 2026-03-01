@@ -7,8 +7,9 @@
 ///
 /// The resolution logic is split across several sibling modules:
 ///
-/// - [`super::text_resolution`]: Text-based type resolution (scanning raw
-///   source for `$var = …;` assignments, chained calls, array literals).
+/// - [`super::source_helpers`]: Source-text scanning helpers (closure return
+///   types, first-class callable resolution, `new` expression parsing,
+///   array access segment walking).
 /// - [`super::variable_resolution`]: Variable type resolution via
 ///   assignment scanning and parameter type hints.
 /// - [`super::type_narrowing`]: instanceof / assert / custom type guard
@@ -21,6 +22,8 @@
 ///   resolution at call sites.
 use std::collections::HashMap;
 
+use tower_lsp::lsp_types::Position;
+
 use crate::Backend;
 use crate::docblock;
 use crate::docblock::types::{
@@ -29,6 +32,7 @@ use crate::docblock::types::{
 use crate::inheritance::{apply_generic_args, apply_substitution};
 use crate::types::*;
 use crate::util::{ARRAY_ELEMENT_FUNCS, ARRAY_PRESERVING_FUNCS, short_name};
+
 use crate::virtual_members::laravel::{ELOQUENT_BUILDER_FQN, build_scope_methods_for_builder};
 
 use super::conditional_resolution::{
@@ -60,7 +64,6 @@ fn build_var_resolver<'a>(ctx: &'a ResolutionCtx<'a>) -> impl Fn(&str) -> Vec<St
         }
     }
 }
-use super::text_resolution::parse_bracket_segments;
 
 /// Type alias for the optional function-loader closure passed through
 /// the resolution chain.  Reduces clippy `type_complexity` warnings.
@@ -71,7 +74,7 @@ pub(crate) type FunctionLoaderFn<'a> = Option<&'a dyn Fn(&str) -> Option<Functio
 ///
 /// Introduced to replace the 8-parameter signature of
 /// `resolve_target_classes` with a cleaner `(subject, access_kind, ctx)`
-/// triple.  Also used directly by `resolve_call_return_types` and
+/// triple.  Also used directly by `resolve_call_return_types_expr` and
 /// `resolve_arg_text_to_type` (formerly `CallResolutionCtx`).
 pub(crate) struct ResolutionCtx<'a> {
     /// The class the cursor is inside, if any.
@@ -123,54 +126,16 @@ impl<'a> VarResolutionCtx<'a> {
     }
 }
 
-/// Split a subject string at the **last** `->` or `?->` operator,
-/// returning `(base, property_name)`.
+/// Build a fully-qualified name from a short name and optional namespace.
 ///
-/// Only splits at depth 0 (i.e. arrows inside balanced parentheses are
-/// ignored).  Returns `None` if no arrow is found at depth 0.
-///
-/// # Examples
-///
-/// - `"$user->address"` → `Some(("$user", "address"))`
-/// - `"$user->address->city"` → `Some(("$user->address", "city"))`
-/// - `"$user?->address"` → `Some(("$user", "address"))`
-fn split_last_arrow(subject: &str) -> Option<(&str, &str)> {
-    let bytes = subject.as_bytes();
-    let mut depth = 0i32;
-    let mut last_arrow: Option<(usize, usize)> = None; // (start_of_arrow, start_of_prop)
-
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' => depth += 1,
-            b')' => depth -= 1,
-            b'-' if depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b'>' => {
-                // Check for `?->`: the char before `-` might be `?`
-                let arrow_start = if i > 0 && bytes[i - 1] == b'?' {
-                    i - 1
-                } else {
-                    i
-                };
-                let prop_start = i + 2; // skip `->`
-                last_arrow = Some((arrow_start, prop_start));
-                i += 2; // skip past `->`
-                continue;
-            }
-            _ => {}
-        }
-        i += 1;
+/// Used by [`Backend::resolve_callable_target`] to construct human-readable
+/// labels for signature help and named-argument completion.
+fn format_callable_fqn(name: &str, namespace: &Option<String>) -> String {
+    if let Some(ns) = namespace {
+        format!("{}\\{}", ns, name)
+    } else {
+        name.to_string()
     }
-
-    let (arrow_start, prop_start) = last_arrow?;
-    if prop_start >= subject.len() {
-        return None;
-    }
-    let base = &subject[..arrow_start];
-    let prop = &subject[prop_start..];
-    if base.is_empty() || prop.is_empty() {
-        return None;
-    }
-    Some((base, prop))
 }
 
 /// Find a class in `all_classes` by name, preferring namespace-aware
@@ -207,265 +172,678 @@ impl Backend {
     /// When a variable is assigned different types in conditional branches
     /// (e.g. an `if` block reassigns `$thing`), this returns every possible
     /// type so the caller can try each one when looking up members.
+    ///
+    /// Internally parses the subject string into a [`SubjectExpr`] and
+    /// dispatches via `match` for exhaustive, type-safe routing.
     pub(crate) fn resolve_target_classes(
         subject: &str,
-        _access_kind: AccessKind,
+        access_kind: AccessKind,
+        ctx: &ResolutionCtx<'_>,
+    ) -> Vec<ClassInfo> {
+        let expr = SubjectExpr::parse(subject);
+        Self::resolve_target_classes_expr(&expr, subject, access_kind, ctx)
+    }
+
+    /// Core dispatch for [`resolve_target_classes`], operating on a
+    /// pre-parsed [`SubjectExpr`].
+    ///
+    /// The `raw_subject` parameter carries the original string so that
+    /// callees that haven't been migrated to `SubjectExpr` yet can still
+    /// receive the text they expect.
+    fn resolve_target_classes_expr(
+        expr: &SubjectExpr,
+        _raw_subject: &str,
+        access_kind: AccessKind,
         ctx: &ResolutionCtx<'_>,
     ) -> Vec<ClassInfo> {
         let current_class = ctx.current_class;
         let all_classes = ctx.all_classes;
         let class_loader = ctx.class_loader;
-        // ── Keywords that always mean "current class" ──
-        if subject == "$this" || subject == "self" || subject == "static" {
-            return current_class.cloned().into_iter().collect();
-        }
 
-        // ── `parent::` — resolve to the current class's parent ──
-        if subject == "parent" {
-            if let Some(cc) = current_class
-                && let Some(ref parent_name) = cc.parent_class
-            {
-                // Try local lookup first
-                if let Some(cls) = find_class_by_name(all_classes, parent_name) {
-                    return vec![cls.clone()];
-                }
-                // Fall back to cross-file / PSR-4
-                return class_loader(parent_name).into_iter().collect();
+        match expr {
+            // ── Keywords that always mean "current class" ────────────
+            SubjectExpr::This | SubjectExpr::SelfKw | SubjectExpr::StaticKw => {
+                current_class.cloned().into_iter().collect()
             }
-            return vec![];
-        }
 
-        let function_loader = ctx.function_loader;
+            // ── `parent::` — resolve to the current class's parent ──
+            SubjectExpr::Parent => {
+                if let Some(cc) = current_class
+                    && let Some(ref parent_name) = cc.parent_class
+                {
+                    if let Some(cls) = find_class_by_name(all_classes, parent_name) {
+                        return vec![cls.clone()];
+                    }
+                    return class_loader(parent_name).into_iter().collect();
+                }
+                vec![]
+            }
 
-        // ── Inline array literal with index access: `[expr][0]->` ───
-        // When the subject starts with `[` and contains `][`, the base
-        // is an inline array literal and the trailing brackets are index
-        // accesses.  Resolve each element expression inside the literal
-        // and return the result.
-        //
-        // This must run before the enum-case / static-member check
-        // because subjects like `[Customer::first()][]` contain `::`
-        // and would otherwise be misinterpreted as a static member
-        // access on `[Customer`.
-        if subject.starts_with('[')
-            && subject.contains("][")
-            && let Some(split_pos) = subject.find("][")
-        {
-            let literal_text = &subject[..split_pos + 1];
-            if literal_text.starts_with('[') && literal_text.ends_with(']') {
-                let inner = literal_text[1..literal_text.len() - 1].trim();
-
+            // ── Inline array literal with index access ──────────────
+            SubjectExpr::InlineArray { elements, .. } => {
                 let mut element_classes = Vec::new();
-                for element in split_text_args(inner) {
-                    let elem = element.trim();
+                for elem_text in elements {
+                    let elem = elem_text.trim();
                     if elem.is_empty() {
                         continue;
                     }
-                    if elem.ends_with(')') {
-                        if let Some((cb, ca)) = split_call_subject(elem) {
-                            let resolved = Self::resolve_call_return_types(cb, ca, ctx);
-                            ClassInfo::extend_unique(&mut element_classes, resolved);
-                        }
-                    } else if let Some(class_name) = Self::extract_new_expression_class(elem) {
-                        let resolved = find_class_by_name(all_classes, &class_name)
-                            .cloned()
-                            .or_else(|| class_loader(&class_name));
-                        if let Some(cls) = resolved {
-                            ClassInfo::extend_unique(&mut element_classes, vec![cls]);
-                        }
-                    }
+                    let elem_expr = SubjectExpr::parse(elem);
+                    let resolved =
+                        Self::resolve_target_classes_expr(&elem_expr, elem, AccessKind::Arrow, ctx);
+                    ClassInfo::extend_unique(&mut element_classes, resolved);
                 }
-                if !element_classes.is_empty() {
-                    return element_classes;
+                element_classes
+            }
+
+            // ── Enum case / static member access ────────────────────
+            SubjectExpr::StaticAccess { class, .. } => {
+                if let Some(cls) = find_class_by_name(all_classes, class) {
+                    return vec![cls.clone()];
                 }
+                class_loader(class).into_iter().collect()
             }
-        }
 
-        // ── Enum case / static member access: `ClassName::CaseName` ──
-        // When an enum case or static member is used with `->`, resolve to
-        // the class/enum itself (e.g. `Status::Active->label()` → `Status`).
-        // Only match when the part after `::` does NOT contain `->`, which
-        // would indicate a method chain (e.g.
-        // `BlogAuthor::whereIn(…)->first()->posts`) rather than a simple
-        // enum-case or static-property access.
-        if !subject.starts_with('$')
-            && subject.contains("::")
-            && !subject.ends_with(')')
-            && let Some((class_part, case_part)) = subject.split_once("::")
-            && !case_part.contains("->")
-        {
-            if let Some(cls) = find_class_by_name(all_classes, class_part) {
-                return vec![cls.clone()];
-            }
-            return class_loader(class_part).into_iter().collect();
-        }
-
-        // ── Bare class name (for `::` or `->` from `new ClassName()`) ──
-        if !subject.starts_with('$')
-            && !subject.contains("->")
-            && !subject.contains("::")
-            && !subject.ends_with(')')
-        {
-            if let Some(cls) = find_class_by_name(all_classes, subject) {
-                return vec![cls.clone()];
-            }
-            // Try cross-file / PSR-4 with the full subject
-            return class_loader(subject).into_iter().collect();
-        }
-
-        // ── Property chain on non-variable base ──
-        // Handles chains that start with a static call or class name
-        // and end with a property access, e.g.
-        // `BlogAuthor::whereIn(…)->first()->posts` or
-        // `ClassName::make()->config`.
-        // Split at the last `->` and recursively resolve the base
-        // (which typically ends with `)` and goes through the call
-        // expression handler), then look up the trailing property.
-        if !subject.starts_with('$')
-            && subject.contains("->")
-            && !subject.ends_with(')')
-            && let Some((base, prop_name)) = split_last_arrow(subject)
-        {
-            let base_classes = Self::resolve_target_classes(base, _access_kind, ctx);
-            let mut results = Vec::new();
-            for cls in &base_classes {
-                let resolved =
-                    Self::resolve_property_types(prop_name, cls, all_classes, class_loader);
-                ClassInfo::extend_unique(&mut results, resolved);
-            }
-            if !results.is_empty() {
-                return results;
-            }
-            return vec![];
-        }
-
-        // ── Call expression: subject ends with ")" ──
-        // Handles function calls (`app()`, `app(A::class)`),
-        // method calls (`$this->getService()`),
-        // and static method calls (`ClassName::make()`).
-        if subject.ends_with(')')
-            && let Some((call_body, args_text)) = split_call_subject(subject)
-        {
-            return Self::resolve_call_return_types(call_body, args_text, ctx);
-        }
-
-        // ── Property-chain: $this->prop  or  $this?->prop ──
-        if let Some(prop_name) = subject
-            .strip_prefix("$this->")
-            .or_else(|| subject.strip_prefix("$this?->"))
-        {
-            if let Some(cc) = current_class {
-                let resolved =
-                    Self::resolve_property_types(prop_name, cc, all_classes, class_loader);
-                if !resolved.is_empty() {
-                    return resolved;
+            // ── Bare class name ─────────────────────────────────────
+            SubjectExpr::ClassName(name) => {
+                if let Some(cls) = find_class_by_name(all_classes, name) {
+                    return vec![cls.clone()];
                 }
+                class_loader(name).into_iter().collect()
             }
-            return vec![];
-        }
 
-        // ── Property chain on non-`$this` variable: `$var->prop`, `$var->prop->sub` ──
-        // When the subject starts with `$`, contains `->` (or `?->`), and
-        // does not start with `$this->`, split at the last arrow to get
-        // the base expression and the trailing property name, then
-        // recursively resolve the base and look up the property type.
-        if subject.starts_with('$')
-            && !subject.starts_with("$this->")
-            && !subject.starts_with("$this?->")
-            && !subject.ends_with(')')
-            && let Some((base, prop_name)) = split_last_arrow(subject)
-        {
-            let base_classes = Self::resolve_target_classes(base, _access_kind, ctx);
-            let mut results = Vec::new();
-            for cls in &base_classes {
-                let resolved =
-                    Self::resolve_property_types(prop_name, cls, all_classes, class_loader);
-                ClassInfo::extend_unique(&mut results, resolved);
+            // ── `new ClassName` (without trailing call parens) ───────
+            SubjectExpr::NewExpr { class_name } => {
+                if let Some(cls) = find_class_by_name(all_classes, class_name) {
+                    return vec![cls.clone()];
+                }
+                class_loader(class_name).into_iter().collect()
             }
-            if !results.is_empty() {
-                return results;
-            }
-            // If property lookup failed, don't fall through to the
-            // bare `$var` branch — the subject is clearly a chain.
-            return vec![];
-        }
 
-        // ── Chained array access: `$var['key'][]`, `$var['a']['b']` ──
-        // When the subject has multiple bracket segments (e.g. from
-        // `$response['items'][0]->`), walk through each segment to
-        // resolve the final type.  This handles combinations of array
-        // shape key lookups and generic element extraction.
-        if subject.starts_with('$') && subject.contains('[') {
-            let segments = parse_bracket_segments(subject);
-            if let Some(ref segs) = segments {
-                let resolved = Self::resolve_chained_array_access(
-                    &segs.base_var,
-                    &segs.segments,
+            // ── Call expression ─────────────────────────────────────
+            SubjectExpr::CallExpr { callee, args_text } => {
+                Self::resolve_call_return_types_expr(callee, args_text, ctx)
+            }
+
+            // ── Property chain ──────────────────────────────────────
+            SubjectExpr::PropertyChain { base, property } => {
+                let base_text = base.to_subject_text();
+                let base_classes =
+                    Self::resolve_target_classes_expr(base, &base_text, access_kind, ctx);
+                let mut results = Vec::new();
+                for cls in &base_classes {
+                    let resolved =
+                        Self::resolve_property_types(property, cls, all_classes, class_loader);
+                    ClassInfo::extend_unique(&mut results, resolved);
+                }
+                results
+            }
+
+            // ── Array access on variable ────────────────────────────
+            SubjectExpr::ArrayAccess { base, segments } => {
+                let base_var = base.to_subject_text();
+
+                // Build candidate raw types from multiple strategies.
+                // Each is tried as a complete pipeline (raw type →
+                // segment walk → ClassInfo); the first that succeeds
+                // through all segments wins.
+                let docblock_type = docblock::find_iterable_raw_type_in_source(
+                    ctx.content,
+                    ctx.cursor_offset as usize,
+                    &base_var,
+                );
+                let ast_type = Self::resolve_variable_assignment_raw_type(
+                    &base_var,
                     ctx.content,
                     ctx.cursor_offset,
                     current_class,
                     all_classes,
                     class_loader,
+                    ctx.function_loader,
                 );
-                if !resolved.is_empty() {
+
+                let candidates = docblock_type.into_iter().chain(ast_type);
+
+                if let Some(resolved) = Self::try_chained_array_access_with_candidates(
+                    candidates,
+                    segments,
+                    current_class,
+                    all_classes,
+                    class_loader,
+                ) {
                     return resolved;
                 }
+                // Fall through to variable resolution if the base is a bare variable
+                if let SubjectExpr::Variable(_) = **base {
+                    Self::resolve_variable_fallback(&base_var, access_kind, ctx)
+                } else {
+                    vec![]
+                }
+            }
+
+            // ── Bare variable ───────────────────────────────────────
+            SubjectExpr::Variable(var_name) => {
+                Self::resolve_variable_fallback(var_name, access_kind, ctx)
+            }
+
+            // ── Callee-only variants (MethodCall, StaticMethodCall,
+            //    FunctionCall) should not appear as top-level subjects;
+            //    they are wrapped in CallExpr.  If they do appear
+            //    (e.g. from a partial parse), treat as class name. ────
+            SubjectExpr::MethodCall { .. }
+            | SubjectExpr::StaticMethodCall { .. }
+            | SubjectExpr::FunctionCall(_) => {
+                let text = expr.to_subject_text();
+                if let Some(cls) = find_class_by_name(all_classes, &text) {
+                    return vec![cls.clone()];
+                }
+                class_loader(&text).into_iter().collect()
             }
         }
+    }
 
-        // ── Variable like `$var` — resolve via assignments / parameter hints ──
-        if subject.starts_with('$') {
-            // When the cursor is inside a class, use the enclosing class
-            // for `self`/`static` resolution in type hints.  When in
-            // top-level code (`current_class` is `None`), use a dummy
-            // empty class so that assignment scanning still works.
-            let dummy_class;
-            let effective_class = match current_class {
-                Some(cc) => cc,
-                None => {
-                    dummy_class = ClassInfo::default();
-                    &dummy_class
-                }
-            };
+    /// Shared variable-resolution logic extracted from the former
+    /// bare-`$var` branch of `resolve_target_classes`.
+    fn resolve_variable_fallback(
+        var_name: &str,
+        access_kind: AccessKind,
+        ctx: &ResolutionCtx<'_>,
+    ) -> Vec<ClassInfo> {
+        let current_class = ctx.current_class;
+        let all_classes = ctx.all_classes;
+        let class_loader = ctx.class_loader;
+        let function_loader = ctx.function_loader;
 
-            // ── `$var::` where `$var` holds a class-string ──
-            // When the access kind is `::`, the user wants static members
-            // of the class that the variable *references*, not the value
-            // type (`string`).  Scan for `$var = Foo::class` assignments
-            // and resolve to those class(es).
-            if _access_kind == AccessKind::DoubleColon {
-                let class_string_targets = Self::resolve_class_string_targets(
-                    subject,
-                    effective_class,
-                    all_classes,
-                    ctx.content,
-                    ctx.cursor_offset,
-                    class_loader,
-                );
-                if !class_string_targets.is_empty() {
-                    return class_string_targets;
-                }
+        let dummy_class;
+        let effective_class = match current_class {
+            Some(cc) => cc,
+            None => {
+                dummy_class = ClassInfo::default();
+                &dummy_class
             }
+        };
 
-            return Self::resolve_variable_types(
-                subject,
+        // ── `$var::` where `$var` holds a class-string ──
+        if access_kind == AccessKind::DoubleColon {
+            let class_string_targets = Self::resolve_class_string_targets(
+                var_name,
                 effective_class,
                 all_classes,
                 ctx.content,
                 ctx.cursor_offset,
                 class_loader,
-                function_loader,
             );
+            if !class_string_targets.is_empty() {
+                return class_string_targets;
+            }
         }
 
-        vec![]
+        Self::resolve_variable_types(
+            var_name,
+            effective_class,
+            all_classes,
+            ctx.content,
+            ctx.cursor_offset,
+            class_loader,
+            function_loader,
+        )
     }
 
-    /// Resolve the return type of a call expression given its text-based
-    /// subject (`call_body`) and argument text, returning zero or more
+    /// Resolve a call expression string to the callable's owner class and
+    /// method (or standalone function), returning a
+    /// [`ResolvedCallableTarget`] with the label, parameters, and return
+    /// type.
+    ///
+    /// This is the single shared implementation used by both signature
+    /// help (`resolve_callable`) and named-argument completion
+    /// (`resolve_named_arg_params`).  Each caller projects the fields it
+    /// needs from the result.
+    ///
+    /// The `expr` parameter uses the same format as the symbol map's
+    /// `CallSite::call_expression`:
+    ///   - `"functionName"` for standalone function calls
+    ///   - `"$subject->method"` for instance/null-safe method calls
+    ///   - `"ClassName::method"` for static method calls
+    ///   - `"new ClassName"` for constructor calls
+    pub(crate) fn resolve_callable_target(
+        &self,
+        expr: &str,
+        content: &str,
+        position: Position,
+        file_ctx: &FileContext,
+    ) -> Option<ResolvedCallableTarget> {
+        let class_loader = self.class_loader(file_ctx);
+        let function_loader_cl = self.function_loader(file_ctx);
+        let cursor_offset = Self::position_to_offset(content, position);
+        let current_class = Self::find_class_at_offset(&file_ctx.classes, cursor_offset);
+
+        let parsed = SubjectExpr::parse(expr);
+
+        match parsed {
+            // ── Constructor: `new ClassName` or `new ClassName()` ────
+            SubjectExpr::NewExpr { ref class_name } => {
+                let ci = class_loader(class_name)?;
+                let merged = Self::resolve_class_fully(&ci, &class_loader);
+                let fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
+                let (parameters, return_type) =
+                    if let Some(ctor) = merged.methods.iter().find(|m| m.name == "__construct") {
+                        (ctor.parameters.clone(), ctor.return_type.clone())
+                    } else {
+                        (vec![], None)
+                    };
+                Some(ResolvedCallableTarget {
+                    label_prefix: fqn,
+                    parameters,
+                    return_type,
+                })
+            }
+
+            // ── Call wrapping a NewExpr: `new ClassName(args)` ───────
+            SubjectExpr::CallExpr { ref callee, .. }
+                if matches!(**callee, SubjectExpr::NewExpr { .. }) =>
+            {
+                if let SubjectExpr::NewExpr { ref class_name } = **callee {
+                    let ci = class_loader(class_name)?;
+                    let merged = Self::resolve_class_fully(&ci, &class_loader);
+                    let fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
+                    let (parameters, return_type) = if let Some(ctor) =
+                        merged.methods.iter().find(|m| m.name == "__construct")
+                    {
+                        (ctor.parameters.clone(), ctor.return_type.clone())
+                    } else {
+                        (vec![], None)
+                    };
+                    Some(ResolvedCallableTarget {
+                        label_prefix: fqn,
+                        parameters,
+                        return_type,
+                    })
+                } else {
+                    None
+                }
+            }
+
+            // ── Call wrapping a MethodCall: `$subject->method(…)` ────
+            SubjectExpr::CallExpr { ref callee, .. }
+                if matches!(**callee, SubjectExpr::MethodCall { .. }) =>
+            {
+                if let SubjectExpr::MethodCall {
+                    ref base,
+                    ref method,
+                } = **callee
+                {
+                    let subject_text = base.to_subject_text();
+                    let owner_classes: Vec<ClassInfo> = if base.is_self_like() {
+                        current_class.cloned().into_iter().collect()
+                    } else {
+                        let rctx = ResolutionCtx {
+                            current_class,
+                            all_classes: &file_ctx.classes,
+                            content,
+                            cursor_offset,
+                            class_loader: &class_loader,
+                            function_loader: Some(&function_loader_cl),
+                        };
+                        Self::resolve_target_classes(&subject_text, crate::AccessKind::Arrow, &rctx)
+                    };
+
+                    for owner in &owner_classes {
+                        let merged = Self::resolve_class_fully(owner, &class_loader);
+                        if let Some(m) = merged
+                            .methods
+                            .iter()
+                            .find(|m| m.name.eq_ignore_ascii_case(method))
+                        {
+                            let owner_fqn =
+                                format_callable_fqn(&merged.name, &merged.file_namespace);
+                            return Some(ResolvedCallableTarget {
+                                label_prefix: format!("{}::{}", owner_fqn, m.name),
+                                parameters: m.parameters.clone(),
+                                return_type: m.return_type.clone(),
+                            });
+                        }
+                    }
+                    None
+                } else {
+                    None
+                }
+            }
+
+            // ── Call wrapping a StaticMethodCall: `Class::method(…)` ─
+            SubjectExpr::CallExpr { ref callee, .. }
+                if matches!(**callee, SubjectExpr::StaticMethodCall { .. }) =>
+            {
+                if let SubjectExpr::StaticMethodCall {
+                    ref class,
+                    ref method,
+                } = **callee
+                {
+                    let owner_class = if class == "self" || class == "static" {
+                        current_class.cloned()
+                    } else if class == "parent" {
+                        current_class
+                            .and_then(|cc| cc.parent_class.as_ref())
+                            .and_then(|p| class_loader(p))
+                    } else {
+                        class_loader(class).or_else(|| {
+                            let rctx = ResolutionCtx {
+                                current_class,
+                                all_classes: &file_ctx.classes,
+                                content,
+                                cursor_offset,
+                                class_loader: &class_loader,
+                                function_loader: Some(&function_loader_cl),
+                            };
+                            Self::resolve_target_classes(
+                                class,
+                                crate::AccessKind::DoubleColon,
+                                &rctx,
+                            )
+                            .into_iter()
+                            .next()
+                        })
+                    };
+
+                    let owner = owner_class?;
+                    let merged = Self::resolve_class_fully(&owner, &class_loader);
+                    let m = merged
+                        .methods
+                        .iter()
+                        .find(|m| m.name.eq_ignore_ascii_case(method))?;
+                    let owner_fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
+                    Some(ResolvedCallableTarget {
+                        label_prefix: format!("{}::{}", owner_fqn, m.name),
+                        parameters: m.parameters.clone(),
+                        return_type: m.return_type.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+
+            // ── Call wrapping a FunctionCall: `functionName(…)` ──────
+            SubjectExpr::CallExpr { ref callee, .. }
+                if matches!(**callee, SubjectExpr::FunctionCall(_)) =>
+            {
+                if let SubjectExpr::FunctionCall(ref name) = **callee {
+                    let func =
+                        self.resolve_function_name(name, &file_ctx.use_map, &file_ctx.namespace)?;
+                    let fqn = if let Some(ref ns) = func.namespace {
+                        format!("{}\\{}", ns, func.name)
+                    } else {
+                        func.name.clone()
+                    };
+                    Some(ResolvedCallableTarget {
+                        label_prefix: fqn,
+                        parameters: func.parameters.clone(),
+                        return_type: func.return_type.clone(),
+                    })
+                } else {
+                    None
+                }
+            }
+
+            // ── Call wrapping a Variable: `$fn(…)` ──────────────────
+            SubjectExpr::CallExpr { ref callee, .. }
+                if matches!(**callee, SubjectExpr::Variable(_)) =>
+            {
+                if let SubjectExpr::Variable(ref var_name) = **callee
+                    && let Some(callable_target) = Self::extract_callable_target_from_variable(
+                        var_name,
+                        content,
+                        cursor_offset,
+                    )
+                {
+                    return self.resolve_callable_target(
+                        &callable_target,
+                        content,
+                        position,
+                        file_ctx,
+                    );
+                }
+                None
+            }
+
+            // ── Bare function name (no parens — text fallback) ──────
+            SubjectExpr::FunctionCall(ref name) => {
+                let func =
+                    self.resolve_function_name(name, &file_ctx.use_map, &file_ctx.namespace)?;
+                let fqn = if let Some(ref ns) = func.namespace {
+                    format!("{}\\{}", ns, func.name)
+                } else {
+                    func.name.clone()
+                };
+                Some(ResolvedCallableTarget {
+                    label_prefix: fqn,
+                    parameters: func.parameters.clone(),
+                    return_type: func.return_type.clone(),
+                })
+            }
+
+            // ── Instance method callee without parens (text fallback):
+            //    `$subject->method` ──────────────────────────────────
+            SubjectExpr::MethodCall {
+                ref base,
+                ref method,
+            } => {
+                let subject_text = base.to_subject_text();
+                let owner_classes: Vec<ClassInfo> = if base.is_self_like() {
+                    current_class.cloned().into_iter().collect()
+                } else {
+                    let rctx = ResolutionCtx {
+                        current_class,
+                        all_classes: &file_ctx.classes,
+                        content,
+                        cursor_offset,
+                        class_loader: &class_loader,
+                        function_loader: Some(&function_loader_cl),
+                    };
+                    Self::resolve_target_classes(&subject_text, crate::AccessKind::Arrow, &rctx)
+                };
+
+                for owner in &owner_classes {
+                    let merged = Self::resolve_class_fully(owner, &class_loader);
+                    if let Some(m) = merged
+                        .methods
+                        .iter()
+                        .find(|m| m.name.eq_ignore_ascii_case(method))
+                    {
+                        let owner_fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
+                        return Some(ResolvedCallableTarget {
+                            label_prefix: format!("{}::{}", owner_fqn, m.name),
+                            parameters: m.parameters.clone(),
+                            return_type: m.return_type.clone(),
+                        });
+                    }
+                }
+                None
+            }
+
+            // ── Static method callee without parens (text fallback):
+            //    `ClassName::method` ─────────────────────────────────
+            SubjectExpr::StaticMethodCall {
+                ref class,
+                ref method,
+            } => {
+                let owner_class = if class == "self" || class == "static" {
+                    current_class.cloned()
+                } else if class == "parent" {
+                    current_class
+                        .and_then(|cc| cc.parent_class.as_ref())
+                        .and_then(|p| class_loader(p))
+                } else {
+                    class_loader(class).or_else(|| {
+                        let rctx = ResolutionCtx {
+                            current_class,
+                            all_classes: &file_ctx.classes,
+                            content,
+                            cursor_offset,
+                            class_loader: &class_loader,
+                            function_loader: Some(&function_loader_cl),
+                        };
+                        Self::resolve_target_classes(class, crate::AccessKind::DoubleColon, &rctx)
+                            .into_iter()
+                            .next()
+                    })
+                };
+
+                let owner = owner_class?;
+                let merged = Self::resolve_class_fully(&owner, &class_loader);
+                let m = merged
+                    .methods
+                    .iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(method))?;
+                let owner_fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
+                Some(ResolvedCallableTarget {
+                    label_prefix: format!("{}::{}", owner_fqn, m.name),
+                    parameters: m.parameters.clone(),
+                    return_type: m.return_type.clone(),
+                })
+            }
+
+            // ── Constructor without call parens: `new ClassName` ─────
+            // (handled above, but listed for exhaustiveness of text
+            // fallback paths)
+
+            // ── Bare variable used as a callable target: `$fn` ──────
+            // Signature help and named-arg contexts may pass `"$fn"`
+            // (without trailing `()`) when the call site is `$fn()`.
+            // Check for a first-class callable assignment and recurse.
+            SubjectExpr::Variable(ref var_name) => {
+                if let Some(callable_target) =
+                    Self::extract_callable_target_from_variable(var_name, content, cursor_offset)
+                {
+                    return self.resolve_callable_target(
+                        &callable_target,
+                        content,
+                        position,
+                        file_ctx,
+                    );
+                }
+                None
+            }
+
+            // ── Bare class name used as a function name ─────────────
+            // Named-arg and signature-help contexts pass bare function
+            // names like `"foo"` which `SubjectExpr::parse` produces
+            // as `ClassName` (since it can't distinguish class names
+            // from function names without context).
+            SubjectExpr::ClassName(ref name) => {
+                let func =
+                    self.resolve_function_name(name, &file_ctx.use_map, &file_ctx.namespace)?;
+                let fqn = if let Some(ref ns) = func.namespace {
+                    format!("{}\\{}", ns, func.name)
+                } else {
+                    func.name.clone()
+                };
+                Some(ResolvedCallableTarget {
+                    label_prefix: fqn,
+                    parameters: func.parameters.clone(),
+                    return_type: func.return_type.clone(),
+                })
+            }
+
+            // ── PropertyChain used as a callable target ──────────────
+            // Named-arg and signature-help contexts pass expressions
+            // like `"$this->method"` (without trailing `()`), which
+            // `SubjectExpr::parse` produces as `PropertyChain`.  Treat
+            // the trailing property as a method name.
+            SubjectExpr::PropertyChain {
+                ref base,
+                ref property,
+            } => {
+                let subject_text = base.to_subject_text();
+                let owner_classes: Vec<ClassInfo> = if base.is_self_like() {
+                    current_class.cloned().into_iter().collect()
+                } else {
+                    let rctx = ResolutionCtx {
+                        current_class,
+                        all_classes: &file_ctx.classes,
+                        content,
+                        cursor_offset,
+                        class_loader: &class_loader,
+                        function_loader: Some(&function_loader_cl),
+                    };
+                    Self::resolve_target_classes(&subject_text, crate::AccessKind::Arrow, &rctx)
+                };
+
+                for owner in &owner_classes {
+                    let merged = Self::resolve_class_fully(owner, &class_loader);
+                    if let Some(m) = merged
+                        .methods
+                        .iter()
+                        .find(|m| m.name.eq_ignore_ascii_case(property))
+                    {
+                        let owner_fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
+                        return Some(ResolvedCallableTarget {
+                            label_prefix: format!("{}::{}", owner_fqn, m.name),
+                            parameters: m.parameters.clone(),
+                            return_type: m.return_type.clone(),
+                        });
+                    }
+                }
+                None
+            }
+
+            // ── StaticAccess used as a callable target ──────────────
+            // Same situation: `"ClassName::method"` without `()` parses
+            // as `StaticAccess` rather than `StaticMethodCall`.
+            SubjectExpr::StaticAccess {
+                ref class,
+                ref member,
+            } => {
+                let owner_class = if class == "self" || class == "static" {
+                    current_class.cloned()
+                } else if class == "parent" {
+                    current_class
+                        .and_then(|cc| cc.parent_class.as_ref())
+                        .and_then(|p| class_loader(p))
+                } else {
+                    class_loader(class).or_else(|| {
+                        let rctx = ResolutionCtx {
+                            current_class,
+                            all_classes: &file_ctx.classes,
+                            content,
+                            cursor_offset,
+                            class_loader: &class_loader,
+                            function_loader: Some(&function_loader_cl),
+                        };
+                        Self::resolve_target_classes(class, crate::AccessKind::DoubleColon, &rctx)
+                            .into_iter()
+                            .next()
+                    })
+                };
+
+                let owner = owner_class?;
+                let merged = Self::resolve_class_fully(&owner, &class_loader);
+                let m = merged
+                    .methods
+                    .iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(member))?;
+                let owner_fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
+                Some(ResolvedCallableTarget {
+                    label_prefix: format!("{}::{}", owner_fqn, m.name),
+                    parameters: m.parameters.clone(),
+                    return_type: m.return_type.clone(),
+                })
+            }
+
+            // ── Anything else doesn't resolve to a callable ─────────
+            _ => None,
+        }
+    }
+
+    /// Resolve the return type of a call expression given a structured
+    /// [`SubjectExpr`] callee and argument text, returning zero or more
     /// `ClassInfo` values.
-    pub(super) fn resolve_call_return_types(
-        call_body: &str,
+    ///
+    /// This is the primary entry point for call return type resolution.
+    /// The callee should be one of the "callee" variants produced by
+    /// `parse_callee`: [`SubjectExpr::MethodCall`],
+    /// [`SubjectExpr::StaticMethodCall`], [`SubjectExpr::FunctionCall`],
+    /// [`SubjectExpr::Variable`], or [`SubjectExpr::NewExpr`].
+    /// Any other variant falls through to `resolve_target_classes_expr`.
+    pub(super) fn resolve_call_return_types_expr(
+        callee: &SubjectExpr,
         text_args: &str,
         ctx: &ResolutionCtx<'_>,
     ) -> Vec<ClassInfo> {
@@ -473,158 +851,115 @@ impl Backend {
         let all_classes = ctx.all_classes;
         let class_loader = ctx.class_loader;
         let function_loader = ctx.function_loader;
-        // ── Instance method call: $this->method / $var->method ──
-        if let Some(pos) = call_body.rfind("->") {
-            // Strip trailing `?` from LHS when the operator was `?->`
-            // (e.g. `$maybe?->getCanvas` splits into lhs=`$maybe?`).
-            let lhs = call_body[..pos]
-                .strip_suffix('?')
-                .unwrap_or(&call_body[..pos]);
-            let method_name = &call_body[pos + 2..];
 
-            // Resolve the left-hand side to a class (recursively handles
-            // $this, $var, property chains, nested calls, etc.)
-            //
-            // IMPORTANT: the `ends_with(')')` check must come before the
-            // `$this->` property-chain check, otherwise an LHS like
-            // `$this->getFactory()` would be misinterpreted as a property
-            // access on `getFactory()` instead of a method call.
-            let lhs_classes: Vec<ClassInfo> = if lhs == "$this" || lhs == "self" || lhs == "static"
-            {
-                current_class.cloned().into_iter().collect()
-            } else if let Some(class_name) = Self::extract_new_expression_class(lhs) {
-                // Parenthesized (or bare) `new` expression:
-                //   `(new Builder())`, `(new Builder)`, `new Builder()`
-                // Resolve the class name to a ClassInfo.
-                find_class_by_name(all_classes, &class_name)
-                    .cloned()
-                    .or_else(|| class_loader(&class_name))
-                    .into_iter()
-                    .collect()
-            } else if lhs.ends_with(')') {
-                // LHS is itself a call expression (e.g. `app()` in
-                // `app()->make(…)`, or `$this->getFactory()` in
-                // `$this->getFactory()->create(…)`).
-                // Recursively resolve it.
-                if let Some((inner_body, inner_args)) = split_call_subject(lhs) {
-                    Self::resolve_call_return_types(inner_body, inner_args, ctx)
-                } else {
-                    vec![]
-                }
-            } else if let Some(prop) = lhs
-                .strip_prefix("$this->")
-                .or_else(|| lhs.strip_prefix("$this?->"))
-            {
-                current_class
-                    .map(|cc| Self::resolve_property_types(prop, cc, all_classes, class_loader))
-                    .unwrap_or_default()
-            } else if lhs.starts_with('$') {
-                // Bare variable like `$profile` — resolve its type via
-                // assignment scanning so that chains like
-                // `$profile->getUser()->getEmail()` work in both
-                // class-method and top-level contexts.
-                Self::resolve_target_classes(lhs, AccessKind::Arrow, ctx)
-            } else {
-                // Unknown LHS form — skip
-                vec![]
-            };
+        match callee {
+            // ── Instance method call: base->method(…) ───────────────
+            SubjectExpr::MethodCall { base, method } => {
+                let method_name = method.as_str();
 
-            let mut results = Vec::new();
-            for owner in &lhs_classes {
-                // Build template substitution map when the method has
-                // method-level @template params and we have arguments.
-                let template_subs = if !text_args.is_empty() {
-                    Self::build_method_template_subs(
-                        owner,
-                        method_name,
-                        text_args,
-                        ctx,
-                        class_loader,
-                    )
-                } else {
-                    HashMap::new()
-                };
-                let var_resolver = build_var_resolver(ctx);
-                results.extend(Self::resolve_method_return_types_with_args(
-                    owner,
-                    method_name,
-                    text_args,
-                    all_classes,
-                    class_loader,
-                    &template_subs,
-                    Some(&var_resolver),
-                ));
-            }
-            return results;
-        }
-
-        // ── Static method call: ClassName::method / self::method ──
-        if let Some(pos) = call_body.rfind("::") {
-            let class_part = &call_body[..pos];
-            let method_name = &call_body[pos + 2..];
-
-            let owner_class = if class_part == "self" || class_part == "static" {
-                current_class.cloned()
-            } else if class_part == "parent" {
-                current_class
-                    .and_then(|cc| cc.parent_class.as_ref())
-                    .and_then(|p| class_loader(p))
-            } else {
-                // Bare class name
-                find_class_by_name(all_classes, class_part)
-                    .cloned()
-                    .or_else(|| class_loader(class_part))
-            };
-
-            if let Some(ref owner) = owner_class {
-                let template_subs = if !text_args.is_empty() {
-                    Self::build_method_template_subs(
-                        owner,
-                        method_name,
-                        text_args,
-                        ctx,
-                        class_loader,
-                    )
-                } else {
-                    HashMap::new()
-                };
-                let var_resolver = build_var_resolver(ctx);
-                return Self::resolve_method_return_types_with_args(
-                    owner,
-                    method_name,
-                    text_args,
-                    all_classes,
-                    class_loader,
-                    &template_subs,
-                    Some(&var_resolver),
+                // Resolve the base expression to class(es).
+                let lhs_classes: Vec<ClassInfo> = Self::resolve_target_classes_expr(
+                    base,
+                    &base.to_subject_text(),
+                    AccessKind::Arrow,
+                    ctx,
                 );
+
+                let mut results = Vec::new();
+                for owner in &lhs_classes {
+                    let template_subs = if !text_args.is_empty() {
+                        Self::build_method_template_subs(
+                            owner,
+                            method_name,
+                            text_args,
+                            ctx,
+                            class_loader,
+                        )
+                    } else {
+                        HashMap::new()
+                    };
+                    let var_resolver = build_var_resolver(ctx);
+                    results.extend(Self::resolve_method_return_types_with_args(
+                        owner,
+                        method_name,
+                        text_args,
+                        all_classes,
+                        class_loader,
+                        &template_subs,
+                        Some(&var_resolver),
+                    ));
+                }
+                results
             }
-            return vec![];
-        }
 
-        // ── Known array element/preserving functions (inline) ───────────
-        // When an array function is used inline (e.g.
-        // `end(Customer::get()->all())->` or `end($customers)->`),
-        // resolve the first argument's iterable type and extract the
-        // element type so that member completion works.
-        let is_array_element_func = ARRAY_ELEMENT_FUNCS
-            .iter()
-            .any(|f| f.eq_ignore_ascii_case(call_body));
-        let is_array_preserving_func = ARRAY_PRESERVING_FUNCS
-            .iter()
-            .any(|f| f.eq_ignore_ascii_case(call_body));
+            // ── Static method call: Class::method(…) ────────────────
+            SubjectExpr::StaticMethodCall { class, method } => {
+                let method_name = method.as_str();
 
-        if (is_array_element_func || is_array_preserving_func) && !text_args.is_empty() {
-            // Extract the first argument text (respecting nested parens).
-            if let Some(first_arg) = Self::extract_first_arg_text(text_args) {
-                let arg_raw_type = Self::resolve_inline_arg_raw_type(&first_arg, ctx);
+                let owner_class = if class == "self" || class == "static" {
+                    current_class.cloned()
+                } else if class == "parent" {
+                    current_class
+                        .and_then(|cc| cc.parent_class.as_ref())
+                        .and_then(|p| class_loader(p))
+                } else if class.starts_with('$') {
+                    // Variable holding a class-string (e.g. `$cls::make()`).
+                    Self::resolve_target_classes(class, AccessKind::DoubleColon, ctx)
+                        .into_iter()
+                        .next()
+                } else {
+                    find_class_by_name(all_classes, class)
+                        .cloned()
+                        .or_else(|| class_loader(class))
+                };
 
-                if let Some(ref raw) = arg_raw_type {
-                    // Element-extracting funcs → unwrap one level of generics.
-                    // Preserving funcs used inline with `->` also need
-                    // the element type (the caller already dereferenced
-                    // the array via `func(...)->`).
-                    if let Some(element_type) = docblock::types::extract_generic_value_type(raw) {
+                if let Some(ref owner) = owner_class {
+                    let template_subs = if !text_args.is_empty() {
+                        Self::build_method_template_subs(
+                            owner,
+                            method_name,
+                            text_args,
+                            ctx,
+                            class_loader,
+                        )
+                    } else {
+                        HashMap::new()
+                    };
+                    let var_resolver = build_var_resolver(ctx);
+                    return Self::resolve_method_return_types_with_args(
+                        owner,
+                        method_name,
+                        text_args,
+                        all_classes,
+                        class_loader,
+                        &template_subs,
+                        Some(&var_resolver),
+                    );
+                }
+                vec![]
+            }
+
+            // ── Standalone function call: app(…) / myHelper(…) ──────
+            SubjectExpr::FunctionCall(func_name) => {
+                let func_name = func_name.as_str();
+
+                // Check for array element/preserving functions first.
+                let is_array_element_func = ARRAY_ELEMENT_FUNCS
+                    .iter()
+                    .any(|f| f.eq_ignore_ascii_case(func_name));
+                let is_array_preserving_func = ARRAY_PRESERVING_FUNCS
+                    .iter()
+                    .any(|f| f.eq_ignore_ascii_case(func_name));
+
+                if (is_array_element_func || is_array_preserving_func)
+                    && !text_args.is_empty()
+                    && let Some(first_arg) = Self::extract_first_arg_text(text_args)
+                {
+                    let arg_raw_type = Self::resolve_inline_arg_raw_type(&first_arg, ctx);
+
+                    if let Some(ref raw) = arg_raw_type
+                        && let Some(element_type) = docblock::types::extract_generic_value_type(raw)
+                    {
                         let owner_name = current_class.map(|c| c.name.as_str()).unwrap_or("");
                         let classes = Self::type_hint_to_classes(
                             &element_type,
@@ -637,98 +972,112 @@ impl Backend {
                         }
                     }
                 }
-            }
-        }
 
-        // ── Standalone function call: app / myHelper ──
-        if let Some(fl) = function_loader
-            && let Some(func_info) = fl(call_body)
-        {
-            // If the function has a conditional return type, try to resolve
-            // it using any textual arguments we preserved from the call site
-            // (e.g. `app(SessionManager::class)` → text_args = "SessionManager::class").
-            if let Some(ref cond) = func_info.conditional_return {
-                let var_resolver = build_var_resolver(ctx);
-                let resolved_type = if !text_args.is_empty() {
-                    resolve_conditional_with_text_args(
-                        cond,
-                        &func_info.parameters,
-                        text_args,
-                        Some(&var_resolver),
-                    )
-                } else {
-                    resolve_conditional_without_args(cond, &func_info.parameters)
-                };
-                if let Some(ref ty) = resolved_type {
-                    let classes = Self::type_hint_to_classes(ty, "", all_classes, class_loader);
+                // Regular function lookup.
+                if let Some(fl) = function_loader
+                    && let Some(func_info) = fl(func_name)
+                {
+                    if let Some(ref cond) = func_info.conditional_return {
+                        let var_resolver = build_var_resolver(ctx);
+                        let resolved_type = if !text_args.is_empty() {
+                            resolve_conditional_with_text_args(
+                                cond,
+                                &func_info.parameters,
+                                text_args,
+                                Some(&var_resolver),
+                            )
+                        } else {
+                            resolve_conditional_without_args(cond, &func_info.parameters)
+                        };
+                        if let Some(ref ty) = resolved_type {
+                            let classes =
+                                Self::type_hint_to_classes(ty, "", all_classes, class_loader);
+                            if !classes.is_empty() {
+                                return classes;
+                            }
+                        }
+                    }
+                    if let Some(ref ret) = func_info.return_type {
+                        return Self::type_hint_to_classes(ret, "", all_classes, class_loader);
+                    }
+                }
+
+                vec![]
+            }
+
+            // ── Variable invocation: $fn(…) ─────────────────────────
+            SubjectExpr::Variable(var_name) => {
+                let content = ctx.content;
+                let cursor_offset = ctx.cursor_offset;
+
+                // 1. Try docblock annotation: `@var Closure(): User $fn`
+                if let Some(raw_type) = crate::docblock::find_iterable_raw_type_in_source(
+                    content,
+                    cursor_offset as usize,
+                    var_name,
+                ) && let Some(ret) = crate::docblock::extract_callable_return_type(&raw_type)
+                {
+                    let classes = Self::type_hint_to_classes(&ret, "", all_classes, class_loader);
                     if !classes.is_empty() {
                         return classes;
                     }
                 }
+
+                // 2. Scan for closure/arrow-function literal assignment.
+                if let Some(ret) = Self::extract_closure_return_type_from_assignment(
+                    var_name,
+                    content,
+                    cursor_offset,
+                ) {
+                    let classes = Self::type_hint_to_classes(&ret, "", all_classes, class_loader);
+                    if !classes.is_empty() {
+                        return classes;
+                    }
+                }
+
+                // 3. Scan for first-class callable assignment.
+                if let Some(ret) = Self::extract_first_class_callable_return_type(
+                    var_name,
+                    content,
+                    cursor_offset,
+                    current_class,
+                    all_classes,
+                    class_loader,
+                    function_loader,
+                ) {
+                    let classes = Self::type_hint_to_classes(&ret, "", all_classes, class_loader);
+                    if !classes.is_empty() {
+                        return classes;
+                    }
+                }
+
+                vec![]
             }
-            if let Some(ref ret) = func_info.return_type {
-                return Self::type_hint_to_classes(ret, "", all_classes, class_loader);
+
+            // ── Constructor call: new ClassName(…) ──────────────────
+            // A `NewExpr` callee means the call is `new Foo(…)` — the
+            // return type is always the class itself.
+            SubjectExpr::NewExpr { class_name } => find_class_by_name(all_classes, class_name)
+                .cloned()
+                .or_else(|| class_loader(class_name))
+                .into_iter()
+                .collect(),
+
+            // ── Any other callee form (e.g. a nested CallExpr used as
+            //    a callee, or a ClassName that SubjectExpr::parse
+            //    couldn't distinguish from a function name) ───────────
+            _ => {
+                // Resolve via the target-classes path which handles
+                // all remaining SubjectExpr variants.  This avoids
+                // round-tripping through text and back.
+                Self::resolve_target_classes_expr(
+                    callee,
+                    &callee.to_subject_text(),
+                    AccessKind::Arrow,
+                    ctx,
+                )
             }
         }
-
-        // ── Variable invocation: $fn() ──────────────────────────────────
-        // When the call body is a bare variable (e.g. `$fn`), the variable
-        // holds a closure or callable.  Resolve the variable's type
-        // annotation and extract the callable return type, or look for a
-        // closure/arrow-function literal assignment and extract the native
-        // return type hint from the source text.
-        if call_body.starts_with('$') {
-            let content = ctx.content;
-            let cursor_offset = ctx.cursor_offset;
-
-            // 1. Try docblock annotation: `@var Closure(): User $fn` or
-            //    `@param callable(int): Response $fn`.
-            if let Some(raw_type) = crate::docblock::find_iterable_raw_type_in_source(
-                content,
-                cursor_offset as usize,
-                call_body,
-            ) && let Some(ret) = crate::docblock::extract_callable_return_type(&raw_type)
-            {
-                let classes = Self::type_hint_to_classes(&ret, "", all_classes, class_loader);
-                if !classes.is_empty() {
-                    return classes;
-                }
-            }
-
-            // 2. Scan backward for a closure/arrow-function literal
-            //    assignment: `$fn = function(): User { … }` or
-            //    `$fn = fn(): User => …`.  Extract the native return
-            //    type hint from the source text.
-            if let Some(ret) =
-                Self::extract_closure_return_type_from_assignment(call_body, content, cursor_offset)
-            {
-                let classes = Self::type_hint_to_classes(&ret, "", all_classes, class_loader);
-                if !classes.is_empty() {
-                    return classes;
-                }
-            }
-
-            // 3. Scan backward for a first-class callable assignment:
-            //    `$fn = strlen(...)`, `$fn = $obj->method(...)`, or
-            //    `$fn = ClassName::staticMethod(...)`.
-            //    Resolve the underlying function/method's return type.
-            if let Some(ret) = Self::extract_first_class_callable_return_type(
-                call_body,
-                content,
-                cursor_offset,
-                current_class,
-                all_classes,
-                class_loader,
-                function_loader,
-            ) {
-                let classes = Self::type_hint_to_classes(&ret, "", all_classes, class_loader);
-                if !classes.is_empty() {
-                    return classes;
-                }
-            }
-        }
-
-        vec![]
     }
 
     /// Resolve a method call's return type, taking into account PHPStan
@@ -1469,14 +1818,15 @@ impl Backend {
             ) {
                 return Some(raw);
             }
-            // Fall back to assignment scanning.
-            return Self::extract_raw_type_from_assignment_text(
+            // Fall back to AST-based assignment scanning.
+            return Self::resolve_variable_assignment_raw_type(
                 arg_text,
                 ctx.content,
-                ctx.cursor_offset as usize,
+                ctx.cursor_offset,
                 current_class,
                 all_classes,
                 class_loader,
+                ctx.function_loader,
             );
         }
 

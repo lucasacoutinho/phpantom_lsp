@@ -26,8 +26,8 @@
 /// - **type_narrowing**: instanceof / assert / custom type guard narrowing
 /// - **type_hint_completion**: Type completion inside function/method parameter lists,
 ///   return types, and property declarations (offers native PHP types + class names)
-/// - **text_resolution**: Text-based type resolution (scanning raw source for
-///   `$var = …;` assignments, chained calls, array literals, closures)
+/// - **source_helpers**: Source-text scanning helpers (closure return types,
+///   first-class callable resolution, `new` expression parsing, array access)
 /// - **variable_resolution**: Variable type resolution via assignment scanning
 /// - **closure_resolution**: Closure and arrow-function parameter resolution
 ///
@@ -47,8 +47,8 @@ pub mod named_args;
 pub mod phpdoc;
 pub(crate) mod phpdoc_context;
 pub(crate) mod resolver;
+pub(crate) mod source_helpers;
 pub(crate) mod target;
-pub(crate) mod text_resolution;
 pub(crate) mod throws_analysis;
 pub(crate) mod type_hint_completion;
 pub(crate) mod type_narrowing;

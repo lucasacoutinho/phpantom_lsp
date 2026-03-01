@@ -206,13 +206,14 @@ impl Backend {
         // store them in the global_defines map so they appear in
         // completions.  This reuses the parse pass above rather than
         // doing a separate regex scan over the raw content.
-        let mut define_names = Vec::new();
-        Self::extract_defines_from_statements(program.statements.iter(), &mut define_names);
-        if !define_names.is_empty()
+        let mut define_entries = Vec::new();
+        Self::extract_defines_from_statements(program.statements.iter(), &mut define_entries);
+        if !define_entries.is_empty()
             && let Ok(mut dmap) = self.global_defines.lock()
         {
-            for name in define_names {
-                dmap.entry(name).or_insert_with(|| uri.to_string());
+            for (name, offset) in define_entries {
+                dmap.entry(name)
+                    .or_insert_with(|| (uri.to_string(), offset));
             }
         }
 

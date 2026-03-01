@@ -19,8 +19,7 @@ use crate::docblock;
 use crate::types::ClassInfo;
 use crate::util::short_name;
 
-use super::conditional_resolution::split_call_subject;
-use super::resolver::{ResolutionCtx, VarResolutionCtx};
+use super::resolver::VarResolutionCtx;
 
 impl Backend {
     // ─── Foreach Resolution ─────────────────────────────────────────────
@@ -589,57 +588,53 @@ impl Backend {
 
         // ── Method call RHS: `[$a, $b] = $this->getUsers()` ────────────
         if let Expression::Call(Call::Method(method_call)) = rhs {
-            if let Expression::Variable(Variable::Direct(dv)) = method_call.object
+            let method_name = match &method_call.method {
+                ClassLikeMemberSelector::Identifier(ident) => ident.value.to_string(),
+                // Variable method name (`$obj->$method()`) — can't resolve statically.
+                _ => return None,
+            };
+
+            // Resolve the object expression to candidate owner classes.
+            let owner_classes: Vec<ClassInfo> = if let Expression::Variable(Variable::Direct(dv)) =
+                method_call.object
                 && dv.name == "$this"
-                && let ClassLikeMemberSelector::Identifier(ident) = &method_call.method
             {
-                let method_name = ident.value.to_string();
-                if let Some(owner) = all_classes.iter().find(|c| c.name == current_class_name)
-                    && let Some(rt) =
-                        Self::resolve_method_return_type(owner, &method_name, class_loader)
+                all_classes
+                    .iter()
+                    .find(|c| c.name == current_class_name)
+                    .cloned()
+                    .into_iter()
+                    .collect()
+            } else if let Expression::Variable(Variable::Direct(dv)) = method_call.object {
+                let var = dv.name.to_string();
+                Self::resolve_target_classes(
+                    &var,
+                    crate::types::AccessKind::Arrow,
+                    &ctx.as_resolution_ctx(),
+                )
+            } else {
+                // Handle non-variable object expressions (chained calls,
+                // `new` expressions, etc.) by extracting the object's
+                // source text and resolving it as a subject string.
+                let obj_span = method_call.object.span();
+                let start = obj_span.start.offset as usize;
+                let end = obj_span.end.offset as usize;
+                if end <= content.len() {
+                    let obj_text = content[start..end].trim();
+                    Self::resolve_target_classes(
+                        obj_text,
+                        crate::types::AccessKind::Arrow,
+                        &ctx.as_resolution_ctx(),
+                    )
+                } else {
+                    vec![]
+                }
+            };
+
+            for cls in &owner_classes {
+                if let Some(rt) = Self::resolve_method_return_type(cls, &method_name, class_loader)
                 {
                     return Some(rt);
-                }
-            } else {
-                // General case: resolve the object, then look up the method.
-                let rhs_span = rhs.span();
-                let start = rhs_span.start.offset as usize;
-                let end = rhs_span.end.offset as usize;
-                if end <= content.len() {
-                    let rhs_text = content[start..end].trim();
-                    if rhs_text.ends_with(')')
-                        && let Some((call_body, _args_text)) = split_call_subject(rhs_text)
-                    {
-                        // Split at the last `->` to get the object and method name.
-                        if let Some(arrow_pos) = call_body.rfind("->") {
-                            let obj_text = call_body[..arrow_pos]
-                                .strip_suffix('?')
-                                .unwrap_or(&call_body[..arrow_pos]);
-                            let method_name = &call_body[arrow_pos + 2..];
-                            let current_class =
-                                all_classes.iter().find(|c| c.name == current_class_name);
-                            let rctx = ResolutionCtx {
-                                current_class,
-                                all_classes,
-                                content,
-                                cursor_offset: ctx.cursor_offset,
-                                class_loader,
-                                function_loader,
-                            };
-                            let obj_classes = Self::resolve_target_classes(
-                                obj_text,
-                                crate::types::AccessKind::Arrow,
-                                &rctx,
-                            );
-                            for cls in &obj_classes {
-                                if let Some(rt) =
-                                    Self::resolve_method_return_type(cls, method_name, class_loader)
-                                {
-                                    return Some(rt);
-                                }
-                            }
-                        }
-                    }
                 }
             }
         }

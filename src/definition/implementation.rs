@@ -6,8 +6,9 @@
 ///
 /// # Resolution strategy
 ///
-/// 1. **Determine the target symbol** — reuse the same word-extraction and
-///    member-access detection logic from go-to-definition.
+/// 1. **Determine the target symbol** — consult the precomputed `SymbolMap`
+///    for the word under the cursor (falling back to `extract_word_at_position`
+///    when no symbol map exists for the file).
 /// 2. **Identify the target type** — resolve the symbol to a `ClassInfo` and
 ///    check whether it is an interface or abstract class.
 /// 3. **Scan for implementors** — walk all classes known to the server
@@ -25,6 +26,7 @@ use super::member::MemberKind;
 use super::point_location;
 use crate::Backend;
 use crate::completion::resolver::ResolutionCtx;
+use crate::symbol_map::SymbolKind;
 use crate::types::{ClassInfo, ClassLikeKind, FileContext, MAX_INHERITANCE_DEPTH};
 use crate::util::short_name;
 
@@ -61,7 +63,60 @@ impl Backend {
         position: Position,
     ) -> Option<Vec<Location>> {
         // ── 1. Extract the word under the cursor ────────────────────────
-        #[allow(deprecated)] // text-based fallback; not yet migrated to symbol map
+        // Primary path: consult the precomputed symbol map.
+        let offset = Self::position_to_offset(content, position);
+        let symbol = self.lookup_symbol_map(uri, offset).or_else(|| {
+            if offset > 0 {
+                self.lookup_symbol_map(uri, offset - 1)
+            } else {
+                None
+            }
+        });
+
+        if let Some(ref sym) = symbol {
+            match &sym.kind {
+                // Member access — delegate directly to member implementation
+                // resolution using the structured symbol information.
+                SymbolKind::MemberAccess { member_name, .. } => {
+                    let ctx = self.file_context(uri);
+                    return self.resolve_member_implementations(
+                        uri,
+                        content,
+                        position,
+                        member_name.as_str(),
+                        &ctx,
+                    );
+                }
+                // Class reference or declaration — resolve as a class/interface name.
+                SymbolKind::ClassReference { name, .. } | SymbolKind::ClassDeclaration { name } => {
+                    let ctx = self.file_context(uri);
+                    return self.resolve_class_implementation(uri, content, name, &ctx);
+                }
+                // self/static/parent — resolve the keyword to the current
+                // class and check whether it is an interface/abstract.
+                SymbolKind::SelfStaticParent { keyword } => {
+                    let ctx = self.file_context(uri);
+                    let class_loader = self.class_loader(&ctx);
+                    let current_class = Self::find_class_at_offset(&ctx.classes, offset);
+                    let target = match keyword.as_str() {
+                        "parent" => current_class
+                            .and_then(|cc| cc.parent_class.as_ref())
+                            .and_then(|p| class_loader(p)),
+                        _ => current_class.cloned(),
+                    };
+                    if let Some(ref t) = target {
+                        return self.resolve_class_implementation(uri, content, &t.name, &ctx);
+                    }
+                    return None;
+                }
+                // Other symbol kinds (variables, function calls, etc.)
+                // are not meaningful for go-to-implementation.
+                _ => return None,
+            }
+        }
+
+        // Fallback: text-based extraction when no symbol map exists.
+        #[allow(deprecated)]
         let word = Self::extract_word_at_position(content, position)?;
         if word.is_empty() {
             return None;
@@ -71,17 +126,31 @@ impl Backend {
         let ctx = self.file_context(uri);
 
         // ── 3. Check for member access context (->method, ::method) ─────
-        let is_member_access = Self::is_member_access_context(content, position);
+        let is_member_access = self.check_member_access_context(uri, content, position);
         if is_member_access {
             return self.resolve_member_implementations(uri, content, position, &word, &ctx);
         }
 
-        let class_loader = self.class_loader(&ctx);
-
         // ── 4. Not a member access — the cursor is on a class/interface name ─
-        // Resolve the word to a fully-qualified class name.
-        let fqn = Self::resolve_to_fqn(&word, &ctx.use_map, &ctx.namespace);
-        let target = class_loader(&fqn).or_else(|| class_loader(&word))?;
+        self.resolve_class_implementation(uri, content, &word, &ctx)
+    }
+
+    /// Resolve go-to-implementation for a class/interface name.
+    ///
+    /// Resolves `name` to a fully-qualified class, checks that it is an
+    /// interface or abstract class, finds all concrete implementors, and
+    /// returns their declaration locations.
+    fn resolve_class_implementation(
+        &self,
+        uri: &str,
+        content: &str,
+        name: &str,
+        ctx: &FileContext,
+    ) -> Option<Vec<Location>> {
+        let class_loader = self.class_loader(ctx);
+
+        let fqn = Self::resolve_to_fqn(name, &ctx.use_map, &ctx.namespace);
+        let target = class_loader(&fqn).or_else(|| class_loader(name))?;
 
         // Only interfaces and abstract classes are meaningful targets.
         if target.kind != ClassLikeKind::Interface && !target.is_abstract {
@@ -123,7 +192,7 @@ impl Backend {
         ctx: &FileContext,
     ) -> Option<Vec<Location>> {
         // Extract the subject (left side of -> or ::).
-        let (subject, access_kind) = Self::extract_member_access_context(content, position)?;
+        let (subject, access_kind) = self.lookup_member_access_context(uri, content, position)?;
 
         let cursor_offset = Self::position_to_offset(content, position);
         let current_class = Self::find_class_at_offset(&ctx.classes, cursor_offset);
@@ -674,13 +743,10 @@ impl Backend {
         let (class_uri, class_content) =
             self.find_class_file_content(&cls.name, current_uri, current_content)?;
 
-        // Fast path: use stored keyword_offset when available.
-        let position = if cls.keyword_offset > 0 {
-            crate::util::offset_to_position(&class_content, cls.keyword_offset as usize)
-        } else {
-            #[allow(deprecated)] // fallback for stubs/synthetic (keyword_offset == 0)
-            Self::find_definition_position(&class_content, &cls.name)?
-        };
+        if cls.keyword_offset == 0 {
+            return None;
+        }
+        let position = crate::util::offset_to_position(&class_content, cls.keyword_offset as usize);
         let parsed_uri = Url::parse(&class_uri).ok()?;
 
         Some(point_location(parsed_uri, position))

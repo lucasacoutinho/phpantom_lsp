@@ -394,6 +394,24 @@ impl Backend {
         {
             return Some(content);
         }
+
+        // Embedded class stubs live under synthetic `phpantom-stub://`
+        // URIs and have no on-disk file.  Retrieve the raw source from
+        // the stub_index keyed by the class short name (the URI path).
+        if let Some(class_name) = uri.strip_prefix("phpantom-stub://") {
+            return self.stub_index.get(class_name).map(|s| s.to_string());
+        }
+
+        // Embedded function stubs use `phpantom-stub-fn://` URIs.
+        // The path component is the function name used as key in
+        // stub_function_index.
+        if let Some(func_name) = uri.strip_prefix("phpantom-stub-fn://") {
+            return self
+                .stub_function_index
+                .get(func_name)
+                .map(|s| s.to_string());
+        }
+
         let path = Url::parse(uri).ok()?.to_file_path().ok()?;
         std::fs::read_to_string(path).ok()
     }

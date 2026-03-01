@@ -159,7 +159,7 @@ fn filter_current_file_constants(
         .ok()
         .map(|dmap| {
             dmap.iter()
-                .filter(|(_, uri)| uri.as_str() == current_uri)
+                .filter(|(_, (uri, _))| uri.as_str() == current_uri)
                 .map(|(name, _)| name.clone())
                 .collect()
         })
@@ -750,7 +750,7 @@ impl Backend {
         // `collect($x)->`) doesn't crash the LSP server process.
         // The variable-resolution path already has its own
         // catch_unwind, but the direct call-expression path
-        // (resolve_call_return_types → type_hint_to_classes →
+        // (resolve_call_return_types_expr → type_hint_to_classes →
         // class_loader → find_or_load_class → parse_php →
         // resolve_class_with_inheritance) does not.
         let member_items_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
@@ -1274,6 +1274,9 @@ impl Backend {
     ///
     /// Examines the `call_expression` in the context and looks up the
     /// corresponding function or method to extract its parameters.
+    ///
+    /// Delegates to the shared [`Backend::resolve_callable_target`] and
+    /// extracts just the parameters from the result.
     fn resolve_named_arg_params(
         &self,
         ctx: &crate::completion::named_args::NamedArgContext,
@@ -1281,102 +1284,9 @@ impl Backend {
         position: Position,
         file_ctx: &FileContext,
     ) -> Vec<crate::ParameterInfo> {
-        let expr = &ctx.call_expression;
-        let class_loader = self.class_loader(file_ctx);
-        let function_loader_cl = self.function_loader(file_ctx);
-        let cursor_offset = Self::position_to_offset(content, position);
-        let current_class = Self::find_class_at_offset(&file_ctx.classes, cursor_offset);
-
-        // ── Constructor: `new ClassName` ─────────────────────────────
-        if let Some(class_name) = expr.strip_prefix("new ") {
-            let class_name = class_name.trim();
-            if let Some(ci) = class_loader(class_name) {
-                let merged = Self::resolve_class_fully(&ci, &class_loader);
-                if let Some(ctor) = merged.methods.iter().find(|m| m.name == "__construct") {
-                    return ctor.parameters.clone();
-                }
-            }
-            return vec![];
-        }
-
-        // ── Instance method: `$subject->method` ─────────────────────
-        if let Some(pos) = expr.rfind("->") {
-            // Strip trailing `?` from subject when the operator was `?->`
-            let subject = expr[..pos].strip_suffix('?').unwrap_or(&expr[..pos]);
-            let method_name = &expr[pos + 2..];
-
-            // Route all subjects through resolve_target_classes.
-            // This handles $this/self/static, $variables, bare class
-            // names, and chain-result subjects uniformly.
-            let owner_classes: Vec<crate::ClassInfo> =
-                if subject == "$this" || subject == "self" || subject == "static" {
-                    current_class.cloned().into_iter().collect()
-                } else {
-                    let rctx = ResolutionCtx {
-                        current_class,
-                        all_classes: &file_ctx.classes,
-                        content,
-                        cursor_offset,
-                        class_loader: &class_loader,
-                        function_loader: Some(&function_loader_cl),
-                    };
-                    Self::resolve_target_classes(subject, crate::AccessKind::Arrow, &rctx)
-                };
-
-            for owner in &owner_classes {
-                let merged = Self::resolve_class_fully(owner, &class_loader);
-                if let Some(method) = merged.methods.iter().find(|m| m.name == method_name) {
-                    return method.parameters.clone();
-                }
-            }
-            return vec![];
-        }
-
-        // ── Static method: `ClassName::method` ──────────────────────
-        if let Some(pos) = expr.rfind("::") {
-            let class_part = &expr[..pos];
-            let method_name = &expr[pos + 2..];
-
-            let owner_class = if class_part == "self" || class_part == "static" {
-                current_class.cloned()
-            } else if class_part == "parent" {
-                current_class
-                    .and_then(|cc| cc.parent_class.as_ref())
-                    .and_then(|p| class_loader(p))
-            } else {
-                // Try as a literal class name first, then fall back to
-                // resolving as a class-string variable or chain result.
-                class_loader(class_part).or_else(|| {
-                    let rctx = ResolutionCtx {
-                        current_class,
-                        all_classes: &file_ctx.classes,
-                        content,
-                        cursor_offset,
-                        class_loader: &class_loader,
-                        function_loader: Some(&function_loader_cl),
-                    };
-                    Self::resolve_target_classes(class_part, crate::AccessKind::DoubleColon, &rctx)
-                        .into_iter()
-                        .next()
-                })
-            };
-
-            if let Some(ref owner) = owner_class {
-                let merged = Self::resolve_class_fully(owner, &class_loader);
-                if let Some(method) = merged.methods.iter().find(|m| m.name == method_name) {
-                    return method.parameters.clone();
-                }
-            }
-            return vec![];
-        }
-
-        // ── Standalone function: `functionName` ─────────────────────
-        if let Some(func) = self.resolve_function_name(expr, &file_ctx.use_map, &file_ctx.namespace)
-        {
-            return func.parameters.clone();
-        }
-
-        vec![]
+        self.resolve_callable_target(&ctx.call_expression, content, position, file_ctx)
+            .map(|r| r.parameters)
+            .unwrap_or_default()
     }
 
     /// Extract a [`CompletionTarget`] from the symbol map's precomputed

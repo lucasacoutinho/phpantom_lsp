@@ -25,8 +25,8 @@
 /// it extracts the type hint and jumps to the first class-like type
 /// in it (e.g. `HtmlString` in `HtmlString|string $content`).
 ///
-/// The text-based heuristic scanner is kept as a fallback when the
-/// AST parse fails (malformed PHP, parser panic, etc.).
+/// When the AST parse fails (malformed PHP, parser panic), the function
+/// returns `None` rather than falling back to text heuristics.
 use mago_span::HasSpan;
 use mago_syntax::ast::sequence::TokenSeparatedSequence;
 use mago_syntax::ast::*;
@@ -110,27 +110,16 @@ impl Backend {
     /// Find the most recent assignment or declaration of `$var_name` before
     /// `position` and return its location.
     ///
-    /// **Primary path:** Parse the file into an AST and walk the enclosing
-    /// scope to find the definition site with exact byte offsets.
-    ///
-    /// **Fallback:** When the AST parse fails, fall back to the text-based
-    /// heuristic scanner.
+    /// Parses the file into an AST and walks the enclosing scope to find
+    /// the definition site with exact byte offsets.  Returns `None` when
+    /// the AST parse fails or no definition is found.
     pub(super) fn resolve_variable_definition(
         content: &str,
         uri: &str,
         position: Position,
         var_name: &str,
     ) -> Option<Location> {
-        // Try the AST-based path first.
-        if let Some(result) =
-            Self::resolve_variable_definition_ast(content, uri, position, var_name)
-        {
-            return result;
-        }
-
-        // Fallback: text-based heuristic scanner.
-        #[allow(deprecated)] // fallback when AST parse fails
-        Self::resolve_variable_definition_text(content, uri, position, var_name)
+        Self::resolve_variable_definition_ast(content, uri, position, var_name)?
     }
 
     /// AST-based variable definition resolution.
@@ -182,81 +171,6 @@ impl Backend {
         }
     }
 
-    /// Text-based fallback for variable definition resolution.
-    ///
-    /// Recognised definition sites (searched bottom-up):
-    ///   - Assignment:          `$var = …`  (but not `==` / `===`)
-    ///   - Parameter:           `Type $var` in a function/method signature
-    ///   - Foreach:             `as $var`  /  `=> $var`
-    ///   - Catch:               `catch (…Exception $var)`
-    ///   - Static / global:     `static $var` / `global $var`
-    ///
-    /// **Deprecated:** The AST-based `resolve_variable_definition_ast`
-    /// and the precomputed `SymbolMap::find_var_definition` supersede
-    /// this heuristic.  Retained only as a fallback when the AST parse
-    /// fails.
-    #[deprecated(note = "text-search fallback — prefer AST-based variable resolution")]
-    fn resolve_variable_definition_text(
-        content: &str,
-        uri: &str,
-        position: Position,
-        var_name: &str,
-    ) -> Option<Location> {
-        let lines: Vec<&str> = content.lines().collect();
-        let cursor_line = position.line as usize;
-        let cursor_col = position.character as usize;
-
-        // If the cursor line itself defines the variable, the user is
-        // already at a definition site.
-        #[allow(deprecated)]
-        if cursor_line < lines.len()
-            && let Some(def_col) = Self::line_defines_variable(lines[cursor_line], var_name)
-        {
-            let def_end = def_col + var_name.len();
-            if cursor_col >= def_col && cursor_col <= def_end {
-                return None;
-            }
-        }
-
-        let search_end = cursor_line + 1;
-
-        for line_idx in (0..search_end).rev() {
-            let line = lines[line_idx];
-
-            if !line.contains(var_name) {
-                continue;
-            }
-
-            #[allow(deprecated)]
-            if let Some(col) = Self::line_defines_variable(line, var_name) {
-                if line_idx == cursor_line {
-                    if col >= cursor_col {
-                        continue;
-                    }
-                    if Self::line_defines_variable_as_assignment(line, var_name, col) {
-                        continue;
-                    }
-                }
-                let target_uri = Url::parse(uri).ok()?;
-                return Some(Location {
-                    uri: target_uri,
-                    range: Range {
-                        start: Position {
-                            line: line_idx as u32,
-                            character: col as u32,
-                        },
-                        end: Position {
-                            line: line_idx as u32,
-                            character: (col + var_name.len()) as u32,
-                        },
-                    },
-                });
-            }
-        }
-
-        None
-    }
-
     /// Find a whole-word occurrence of `var_name` in `line`, skipping
     /// partial matches like `$item` inside `$items`.
     fn find_whole_var(line: &str, var_name: &str) -> Option<usize> {
@@ -272,69 +186,6 @@ impl Backend {
             }
             start = abs + 1;
         }
-        None
-    }
-
-    /// Returns `true` when the definition at `def_col` is a plain
-    /// assignment (`$var = …`), as opposed to a parameter, foreach,
-    /// catch, or static/global declaration.
-    fn line_defines_variable_as_assignment(line: &str, var_name: &str, def_col: usize) -> bool {
-        let after_var = def_col + var_name.len();
-        if after_var > line.len() {
-            return false;
-        }
-        let rest = &line[after_var..];
-        let rest_trimmed = rest.trim_start();
-        rest_trimmed.starts_with('=') && !rest_trimmed.starts_with("==")
-    }
-
-    /// Heuristically decide whether `line` *defines* (assigns / declares)
-    /// `$var_name`.
-    ///
-    /// Returns `Some(column)` with the byte offset of the variable on the
-    /// line when it is a definition site, or `None` otherwise.
-    ///
-    /// **Deprecated:** Only used by the deprecated
-    /// `resolve_variable_definition_text`.  Will be removed together
-    /// with it once the AST-based paths are stable.
-    #[deprecated(note = "only used by resolve_variable_definition_text")]
-    fn line_defines_variable(line: &str, var_name: &str) -> Option<usize> {
-        let var_pos = Self::find_whole_var(line, var_name)?;
-        let after_var = var_pos + var_name.len();
-        let rest = &line[after_var..];
-
-        // 1. Assignment: `$var =` but NOT `$var ==` / `$var ===`
-        let rest_trimmed = rest.trim_start();
-        if rest_trimmed.starts_with('=') && !rest_trimmed.starts_with("==") {
-            return Some(var_pos);
-        }
-
-        // 2. Foreach value: `as $var` or `=> $var`
-        let before = line[..var_pos].trim_end();
-        if before.ends_with("as") || before.ends_with("=>") {
-            return Some(var_pos);
-        }
-
-        // 3. Function / method parameter
-        if (line.contains("function ")
-            || line.contains("function(")
-            || line.contains("fn ")
-            || line.contains("fn("))
-            && before.contains('(')
-        {
-            return Some(var_pos);
-        }
-
-        // 4. Catch variable: `catch (SomeException $var)`
-        if before.contains("catch") && before.contains('(') {
-            return Some(var_pos);
-        }
-
-        // 5. Static / global declarations
-        if before.ends_with("static") || before.ends_with("global") {
-            return Some(var_pos);
-        }
-
         None
     }
 

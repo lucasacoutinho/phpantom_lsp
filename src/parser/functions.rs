@@ -3,6 +3,7 @@
 /// This module handles extracting standalone (non-method) function
 /// definitions and `define('NAME', value)` constant declarations from
 /// the PHP AST.
+use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
 use crate::Backend;
@@ -216,19 +217,19 @@ impl Backend {
     /// parse pass that `update_ast` already performs.
     pub(crate) fn extract_defines_from_statements<'a>(
         statements: impl Iterator<Item = &'a Statement<'a>>,
-        defines: &mut Vec<String>,
+        defines: &mut Vec<(String, u32)>,
     ) {
         for statement in statements {
             match statement {
                 Statement::Expression(expr_stmt) => {
-                    if let Some(name) = Self::try_extract_define_name(expr_stmt.expression) {
-                        defines.push(name);
+                    if let Some(entry) = Self::try_extract_define_info(expr_stmt.expression) {
+                        defines.push(entry);
                     }
                 }
                 // Handle namespace-level const declarations
                 Statement::Constant(const_decl) => {
                     for item in const_decl.items.iter() {
-                        defines.push(item.name.value.to_string());
+                        defines.push((item.name.value.to_string(), item.name.span.start.offset));
                     }
                 }
                 Statement::Namespace(namespace) => {
@@ -277,7 +278,7 @@ impl Backend {
 
     /// Helper: recurse into an `if` statement body to extract `define()`
     /// calls.  Mirrors `extract_functions_from_if_body`.
-    fn extract_defines_from_if_body<'a>(body: &'a IfBody<'a>, defines: &mut Vec<String>) {
+    fn extract_defines_from_if_body<'a>(body: &'a IfBody<'a>, defines: &mut Vec<(String, u32)>) {
         match body {
             IfBody::Statement(body) => {
                 Self::extract_defines_from_statements(std::iter::once(body.statement), defines);
@@ -306,16 +307,17 @@ impl Backend {
         }
     }
 
-    /// Try to extract the constant name from a `define('NAME', …)` call
-    /// expression.  Returns `Some(name)` if the expression is a function
-    /// call to `define` whose first argument is a string literal.
-    fn try_extract_define_name(expr: &Expression<'_>) -> Option<String> {
+    /// Try to extract the constant name and byte offset from a
+    /// `define('NAME', …)` call expression.  Returns
+    /// `Some((name, define_keyword_offset))` if the expression is a
+    /// function call to `define` whose first argument is a string literal.
+    fn try_extract_define_info(expr: &Expression<'_>) -> Option<(String, u32)> {
         if let Expression::Call(Call::Function(func_call)) = expr {
-            let func_name = match func_call.function {
-                Expression::Identifier(ident) => ident.value(),
+            let ident = match func_call.function {
+                Expression::Identifier(ident) => ident,
                 _ => return None,
             };
-            if !func_name.eq_ignore_ascii_case("define") {
+            if !ident.value().eq_ignore_ascii_case("define") {
                 return None;
             }
             let args: Vec<_> = func_call.argument_list.arguments.iter().collect();
@@ -330,7 +332,8 @@ impl Backend {
                 && let Some(value) = lit_str.value
                 && !value.is_empty()
             {
-                return Some(value.to_string());
+                let offset = ident.span().start.offset;
+                return Some((value.to_string(), offset));
             }
         }
         None

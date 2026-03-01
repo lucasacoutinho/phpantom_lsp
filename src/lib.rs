@@ -65,8 +65,9 @@ pub(crate) mod virtual_members;
 // Re-export public types so that dependents (tests, main) can import them
 // from the crate root, e.g. `use phpantom_lsp::{Backend, AccessKind}`.
 pub use types::{
-    AccessKind, ArrayShapeEntry, AssertionKind, ClassInfo, CompletionTarget, ConstantInfo,
-    FunctionInfo, MethodInfo, ParameterInfo, PropertyInfo, TypeAssertion, Visibility,
+    AccessKind, ArrayShapeEntry, AssertionKind, BracketSegment, ClassInfo, CompletionTarget,
+    ConstantInfo, FunctionInfo, MethodInfo, ParameterInfo, PropertyInfo, SubjectExpr,
+    TypeAssertion, Visibility,
 };
 
 // ─── Backend ────────────────────────────────────────────────────────────────
@@ -122,11 +123,17 @@ pub struct Backend {
     pub(crate) global_functions: Arc<Mutex<HashMap<String, (String, FunctionInfo)>>>,
     /// Global constants defined via `define('NAME', value)` calls.
     ///
-    /// Maps constant name → file URI where it was defined.
-    /// Populated from files listed in Composer's `autoload_files.php` at init
-    /// time, and also from any opened/changed files that contain `define()`
-    /// calls.  Used to offer constant name completions alongside class names.
-    pub(crate) global_defines: Arc<Mutex<HashMap<String, String>>>,
+    /// Maps constant name → `(file_uri, name_offset)` where the constant
+    /// was defined.  The `name_offset` is the byte offset of the `define`
+    /// keyword in the source file, used for fast go-to-definition without
+    /// text searching.  An offset of `0` means "not available" (e.g.
+    /// constants discovered from Composer autoload before parsing).
+    ///
+    /// Populated from files listed in Composer's `autoload_files.php` at
+    /// init time, and also from any opened/changed files that contain
+    /// `define()` calls.  Used to offer constant name completions alongside
+    /// class names.
+    pub(crate) global_defines: Arc<Mutex<HashMap<String, (String, u32)>>>,
     /// Index of fully-qualified class names to file URIs.
     ///
     /// This allows reliable lookup of classes that don't follow PSR-4
@@ -271,7 +278,7 @@ impl Backend {
 
     /// Borrow the global defines mutex (used by integration tests to
     /// inject user-defined constants or inspect the cache).
-    pub fn global_defines(&self) -> &Arc<Mutex<HashMap<String, String>>> {
+    pub fn global_defines(&self) -> &Arc<Mutex<HashMap<String, (String, u32)>>> {
         &self.global_defines
     }
 

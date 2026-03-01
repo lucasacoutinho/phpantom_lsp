@@ -18,7 +18,6 @@ use crate::completion::named_args::{
     extract_call_expression, find_enclosing_open_paren, position_to_char_offset,
     split_args_top_level,
 };
-use crate::completion::resolver::ResolutionCtx;
 use crate::symbol_map::SymbolMap;
 use crate::types::*;
 
@@ -225,6 +224,10 @@ fn build_signature(
 
 /// Resolved callable information ready to be turned into a
 /// `SignatureHelp` response.
+///
+/// This is a thin wrapper around [`ResolvedCallableTarget`] kept for
+/// local use within this module.  The actual resolution logic lives in
+/// [`Backend::resolve_callable_target`](crate::completion::resolver).
 struct ResolvedCallable {
     /// Human-readable label prefix (e.g. `"App\\Service::process"`).
     label_prefix: String,
@@ -232,6 +235,16 @@ struct ResolvedCallable {
     parameters: Vec<ParameterInfo>,
     /// Optional return type string.
     return_type: Option<String>,
+}
+
+impl From<crate::types::ResolvedCallableTarget> for ResolvedCallable {
+    fn from(t: crate::types::ResolvedCallableTarget) -> Self {
+        Self {
+            label_prefix: t.label_prefix,
+            parameters: t.parameters,
+            return_type: t.return_type,
+        }
+    }
 }
 
 impl Backend {
@@ -328,6 +341,9 @@ impl Backend {
     }
 
     /// Resolve a call expression string to the callable's metadata.
+    ///
+    /// Delegates to the shared [`Backend::resolve_callable_target`] and
+    /// converts the result into the local [`ResolvedCallable`] type.
     fn resolve_callable(
         &self,
         expr: &str,
@@ -335,138 +351,8 @@ impl Backend {
         position: Position,
         ctx: &FileContext,
     ) -> Option<ResolvedCallable> {
-        let class_loader = self.class_loader(ctx);
-        let function_loader_cl = self.function_loader(ctx);
-        let cursor_offset = Self::position_to_offset(content, position);
-        let current_class = Self::find_class_at_offset(&ctx.classes, cursor_offset);
-
-        // ── Constructor: `new ClassName` ─────────────────────────────
-        if let Some(class_name) = expr.strip_prefix("new ") {
-            let class_name = class_name.trim();
-            let ci = class_loader(class_name)?;
-            let merged = Self::resolve_class_fully(&ci, &class_loader);
-            let fqn = format_fqn(&merged.name, &merged.file_namespace);
-            // When the class has no explicit __construct, show an
-            // empty-parameter signature so the user still sees the
-            // class name and return type in the signature popup.
-            let (parameters, return_type) =
-                if let Some(ctor) = merged.methods.iter().find(|m| m.name == "__construct") {
-                    (ctor.parameters.clone(), ctor.return_type.clone())
-                } else {
-                    (vec![], None)
-                };
-            return Some(ResolvedCallable {
-                label_prefix: fqn,
-                parameters,
-                return_type,
-            });
-        }
-
-        // ── Instance method: `$subject->method` ─────────────────────
-        if let Some(pos) = expr.rfind("->") {
-            // Strip trailing `?` from subject when the operator was `?->`
-            let subject = expr[..pos].strip_suffix('?').unwrap_or(&expr[..pos]);
-            let method_name = &expr[pos + 2..];
-
-            let owner_classes: Vec<ClassInfo> =
-                if subject == "$this" || subject == "self" || subject == "static" {
-                    current_class.cloned().into_iter().collect()
-                } else {
-                    let rctx = ResolutionCtx {
-                        current_class,
-                        all_classes: &ctx.classes,
-                        content,
-                        cursor_offset,
-                        class_loader: &class_loader,
-                        function_loader: Some(&function_loader_cl),
-                    };
-                    Self::resolve_target_classes(subject, crate::AccessKind::Arrow, &rctx)
-                };
-
-            for owner in &owner_classes {
-                let merged = Self::resolve_class_fully(owner, &class_loader);
-                if let Some(method) = merged
-                    .methods
-                    .iter()
-                    .find(|m| m.name.eq_ignore_ascii_case(method_name))
-                {
-                    let owner_fqn = format_fqn(&merged.name, &merged.file_namespace);
-                    return Some(ResolvedCallable {
-                        label_prefix: format!("{}::{}", owner_fqn, method.name),
-                        parameters: method.parameters.clone(),
-                        return_type: method.return_type.clone(),
-                    });
-                }
-            }
-            return None;
-        }
-
-        // ── Static method: `ClassName::method` ──────────────────────
-        if let Some(pos) = expr.rfind("::") {
-            let class_part = &expr[..pos];
-            let method_name = &expr[pos + 2..];
-
-            let owner_class = if class_part == "self" || class_part == "static" {
-                current_class.cloned()
-            } else if class_part == "parent" {
-                current_class
-                    .and_then(|cc| cc.parent_class.as_ref())
-                    .and_then(|p| class_loader(p))
-            } else {
-                // Try as a literal class name first, then fall back to
-                // resolving as a class-string variable (e.g. `$cls = Pen::class; $cls::make()`).
-                class_loader(class_part).or_else(|| {
-                    let rctx = ResolutionCtx {
-                        current_class,
-                        all_classes: &ctx.classes,
-                        content,
-                        cursor_offset,
-                        class_loader: &class_loader,
-                        function_loader: Some(&function_loader_cl),
-                    };
-                    Self::resolve_target_classes(class_part, crate::AccessKind::DoubleColon, &rctx)
-                        .into_iter()
-                        .next()
-                })
-            };
-
-            let owner = owner_class?;
-            let merged = Self::resolve_class_fully(&owner, &class_loader);
-            let method = merged
-                .methods
-                .iter()
-                .find(|m| m.name.eq_ignore_ascii_case(method_name))?;
-            let owner_fqn = format_fqn(&merged.name, &merged.file_namespace);
-            return Some(ResolvedCallable {
-                label_prefix: format!("{}::{}", owner_fqn, method.name),
-                parameters: method.parameters.clone(),
-                return_type: method.return_type.clone(),
-            });
-        }
-
-        // ── Standalone function: `functionName` ─────────────────────
-        if let Some(func) = self.resolve_function_name(expr, &ctx.use_map, &ctx.namespace) {
-            let fqn = if let Some(ref ns) = func.namespace {
-                format!("{}\\{}", ns, func.name)
-            } else {
-                func.name.clone()
-            };
-            return Some(ResolvedCallable {
-                label_prefix: fqn,
-                parameters: func.parameters.clone(),
-                return_type: func.return_type.clone(),
-            });
-        }
-
-        // ── Variable callable invocation: `$fn()` where `$fn = target(...)` ──
-        if expr.starts_with('$')
-            && let Some(callable_target) =
-                Self::extract_callable_target_from_variable(expr, content, cursor_offset)
-        {
-            return self.resolve_callable(&callable_target, content, position, ctx);
-        }
-
-        None
+        self.resolve_callable_target(expr, content, position, ctx)
+            .map(ResolvedCallable::from)
     }
 
     /// Scan backward from `cursor_offset` for an assignment like
@@ -475,7 +361,7 @@ impl Backend {
     ///
     /// This enables signature help for first-class callable invocations:
     /// `$fn = makePen(...); $fn()` shows `makePen`'s parameters.
-    fn extract_callable_target_from_variable(
+    pub(crate) fn extract_callable_target_from_variable(
         var_name: &str,
         content: &str,
         cursor_offset: u32,
@@ -536,17 +422,6 @@ impl Backend {
         }
 
         result
-    }
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/// Build a fully-qualified name from a short name and optional namespace.
-fn format_fqn(name: &str, namespace: &Option<String>) -> String {
-    if let Some(ns) = namespace {
-        format!("{}\\{}", ns, name)
-    } else {
-        name.to_string()
     }
 }
 

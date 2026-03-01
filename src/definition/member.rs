@@ -79,7 +79,7 @@ impl Backend {
         member_name: &str,
     ) -> Option<Location> {
         // 1. Detect the access operator and extract the subject (left side).
-        let (subject, access_kind) = Self::extract_member_access_context(content, position)?;
+        let (subject, access_kind) = self.lookup_member_access_context(uri, content, position)?;
 
         // Determine whether this looks like a method call or property access.
         let access_hint = Self::detect_member_access_hint(content, position, member_name);
@@ -167,14 +167,10 @@ impl Backend {
                 && Self::classify_member(&trait_info, &effective_name, access_hint).is_some()
                 && let Some((class_uri, class_content)) =
                     self.find_class_file_content(trait_name, uri, content)
-                && let Some(member_position) = Self::find_member_position_in_range(
+                && let Some(member_position) = Self::find_member_position(
                     &class_content,
                     &effective_name,
                     MemberKind::Method,
-                    Some((
-                        trait_info.start_offset as usize,
-                        trait_info.end_offset as usize,
-                    )),
                     trait_info.member_name_offset(&effective_name, "method"),
                 )
                 && let Ok(parsed_uri) = Url::parse(&class_uri)
@@ -283,14 +279,10 @@ impl Backend {
             // Locate the file that contains the declaring class.
             if let Some((class_uri, class_content)) =
                 self.find_class_file_content(&declaring_fqn, uri, content)
-                && let Some(member_position) = Self::find_member_position_in_range(
+                && let Some(member_position) = Self::find_member_position(
                     &class_content,
                     &search_name,
                     member_kind,
-                    Some((
-                        declaring_class.start_offset as usize,
-                        declaring_class.end_offset as usize,
-                    )),
                     declaring_class.member_name_offset(&search_name, member_kind.as_str()),
                 )
                 && let Ok(parsed_uri) = Url::parse(&class_uri)
@@ -349,14 +341,10 @@ impl Backend {
             && let Some(ref trait_info) = class_loader(trait_name)
             && let Some((class_uri, class_content)) =
                 self.find_class_file_content(trait_name, uri, content)
-            && let Some(member_position) = Self::find_member_position_in_range(
+            && let Some(member_position) = Self::find_member_position(
                 &class_content,
                 &effective_name,
                 MemberKind::Method,
-                Some((
-                    trait_info.start_offset as usize,
-                    trait_info.end_offset as usize,
-                )),
                 trait_info.member_name_offset(&effective_name, "method"),
             )
             && let Ok(parsed_uri) = Url::parse(&class_uri)
@@ -488,14 +476,10 @@ impl Backend {
         let (class_uri, class_content) =
             self.find_class_file_content(&declaring_fqn, uri, content)?;
 
-        let member_position = Self::find_member_position_in_range(
+        let member_position = Self::find_member_position(
             &class_content,
             &search_name,
             member_kind,
-            Some((
-                declaring_class.start_offset as usize,
-                declaring_class.end_offset as usize,
-            )),
             declaring_class.member_name_offset(&search_name, member_kind.as_str()),
         )?;
 
@@ -508,20 +492,86 @@ impl Backend {
     /// Check whether the cursor is on the right-hand side of a member
     /// access operator (`->`, `?->`, or `::`).
     ///
-    /// Returns `true` when the word under the cursor is preceded by one
-    /// of these operators — meaning the word is a member name, NOT a
-    /// standalone function / class / constant.  This is used by
-    /// [`resolve_definition`](super::resolve) to prevent falling through
-    /// to standalone symbol resolution when member resolution fails
-    /// (e.g. because the owning class couldn't be determined).
-    pub(crate) fn is_member_access_context(content: &str, position: Position) -> bool {
-        Self::extract_member_access_context(content, position).is_some()
+    /// Consults the precomputed symbol map first (O(log n) lookup), then
+    /// falls back to the text scanner for broken-AST / missing-map cases.
+    pub(crate) fn check_member_access_context(
+        &self,
+        uri: &str,
+        content: &str,
+        position: Position,
+    ) -> bool {
+        self.lookup_member_access_context(uri, content, position)
+            .is_some()
+    }
+
+    /// Extract the subject and access kind for the member access under
+    /// the cursor.
+    ///
+    /// Consults the precomputed symbol map first (O(log n) lookup), then
+    /// falls back to the text scanner for broken-AST / missing-map cases.
+    ///
+    /// Returns `(subject, AccessKind)` or `None` if the cursor is not on
+    /// the RHS of a member access operator.
+    pub(crate) fn lookup_member_access_context(
+        &self,
+        uri: &str,
+        content: &str,
+        position: Position,
+    ) -> Option<(String, AccessKind)> {
+        let offset = Self::position_to_offset(content, position);
+
+        // Try the symbol map first (primary path).
+        if let Some(result) = self.member_access_from_symbol_map(uri, offset) {
+            return Some(result);
+        }
+        // Retry with offset − 1 for the end-of-token edge case (cursor
+        // right after the last character of the member name).
+        if offset > 0
+            && let Some(result) = self.member_access_from_symbol_map(uri, offset - 1)
+        {
+            return Some(result);
+        }
+
+        // Fallback: text-based extraction (parser panicked, map missing,
+        // cursor in a gap between spans, etc.).
+        Self::extract_member_access_context(content, position)
+    }
+
+    /// Look up a `MemberAccess` symbol at `offset` in the symbol map and
+    /// convert it to the `(subject, AccessKind)` pair expected by callers.
+    fn member_access_from_symbol_map(
+        &self,
+        uri: &str,
+        offset: u32,
+    ) -> Option<(String, AccessKind)> {
+        let maps = self.symbol_maps.lock().ok()?;
+        let map = maps.get(uri)?;
+        let span = map.lookup(offset)?;
+        match &span.kind {
+            crate::symbol_map::SymbolKind::MemberAccess {
+                subject_text,
+                is_static,
+                ..
+            } => {
+                let access_kind = if *is_static {
+                    AccessKind::DoubleColon
+                } else {
+                    AccessKind::Arrow
+                };
+                Some((subject_text.clone(), access_kind))
+            }
+            _ => None,
+        }
     }
 
     /// Detect the access operator (`::`, `->`, `?->`) immediately before the
     /// word under the cursor and extract the subject to its left.
     ///
     /// Returns `(subject, AccessKind)` or `None` if no operator is found.
+    ///
+    /// This is the text-based scanner kept as a fallback for the broken-AST
+    /// case.  Prefer [`lookup_member_access_context`] which consults the
+    /// precomputed symbol map first.
     ///
     /// This works by:
     ///   1. Finding the start of the identifier under the cursor.
@@ -1531,40 +1581,18 @@ impl Backend {
     /// Find the position of a member declaration (method, property, or constant)
     /// inside a PHP file.
     ///
+    /// Find the position of a member declaration in source content.
+    ///
     /// When `name_offset` is `Some(off)` with `off > 0`, the position is
     /// computed directly from the stored byte offset (fast path).
-    /// Otherwise falls back to line-by-line text search.
+    ///
+    /// When the offset is unavailable (virtual `@method` / `@property`
+    /// members), falls back to scanning the file's docblock comments for
+    /// the tag that declares the member.
     pub(crate) fn find_member_position(
         content: &str,
         member_name: &str,
         kind: MemberKind,
-        name_offset: Option<u32>,
-    ) -> Option<Position> {
-        Self::find_member_position_in_range(content, member_name, kind, None, name_offset)
-    }
-
-    /// Find the position of a member declaration, optionally scoped to a
-    /// byte range within the file.  When `class_range` is `Some((start, end))`,
-    /// only lines whose starting byte offset falls within `[start, end)` are
-    /// considered.  This prevents jumping to the wrong class when multiple
-    /// classes in the same file declare a member with the same name (e.g.
-    /// `Demo\Builder::where` vs `Illuminate\Database\Eloquent\Builder::where`).
-    ///
-    /// When `name_offset` is `Some(off)` with `off > 0`, the position is
-    /// computed directly from the stored byte offset (fast path), bypassing
-    /// the text search entirely.
-    ///
-    /// The line-by-line text-search slow path below is deprecated.  All
-    /// callers should pass a valid `name_offset` (from
-    /// `MethodInfo::name_offset`, `PropertyInfo::name_offset`, or
-    /// `ConstantInfo::name_offset`).  The text-search branch is retained
-    /// only for stubs and synthetic members where `name_offset == 0` and
-    /// will be removed once those cases store offsets too.
-    pub(crate) fn find_member_position_in_range(
-        content: &str,
-        member_name: &str,
-        kind: MemberKind,
-        class_range: Option<(usize, usize)>,
         name_offset: Option<u32>,
     ) -> Option<Position> {
         // ── Fast path: use stored AST offset ────────────────────────────
@@ -1582,140 +1610,10 @@ impl Backend {
             return Some(pos);
         }
 
-        // ── Slow path: line-by-line text search (deprecated) ────────────
-        // Only reached when name_offset is None or 0 (stubs, synthetic
-        // members). Will be removed once all members store valid byte
-        // offsets during parsing.
         let is_word_boundary = |c: u8| {
             let ch = c as char;
             !ch.is_alphanumeric() && ch != '_'
         };
-
-        let mut byte_offset: usize = 0;
-        for (line_idx, line) in content.lines().enumerate() {
-            let line_len = line.len() + 1; // +1 for the newline
-            let in_range = match class_range {
-                Some((start, end)) => byte_offset >= start && byte_offset < end,
-                None => true,
-            };
-            if !in_range {
-                byte_offset += line_len;
-                continue;
-            }
-            match kind {
-                MemberKind::Method => {
-                    // Look for `function methodName` with word boundaries.
-                    let pattern = format!("function {}", member_name);
-                    if let Some(col) = line.find(&pattern) {
-                        let after_pos = col + pattern.len();
-                        let after_ok =
-                            after_pos >= line.len() || is_word_boundary(line.as_bytes()[after_pos]);
-                        if after_ok {
-                            return Some(Position {
-                                line: line_idx as u32,
-                                character: col as u32,
-                            });
-                        }
-                    }
-                }
-                MemberKind::Constant => {
-                    // Look for the constant name on a line containing `const`.
-                    // Handles both untyped (`const NAME`) and typed
-                    // (`const string NAME`, PHP 8.3+) declarations.
-                    if !line.contains("const ") {
-                        // Fast reject — skip lines without `const` entirely
-                        // before checking for the constant name.
-                    } else if let Some(col) = line.find(member_name) {
-                        let before_ok = col == 0 || is_word_boundary(line.as_bytes()[col - 1]);
-                        let after_pos = col + member_name.len();
-                        let after_ok =
-                            after_pos >= line.len() || is_word_boundary(line.as_bytes()[after_pos]);
-                        if before_ok && after_ok {
-                            return Some(Position {
-                                line: line_idx as u32,
-                                character: col as u32,
-                            });
-                        }
-                    }
-                    // Also look for `case CASE_NAME` (enum cases are stored
-                    // as constants but declared with `case` keyword).
-                    let case_pattern = format!("case {}", member_name);
-                    if let Some(col) = line.find(&case_pattern) {
-                        let before_ok = col == 0 || is_word_boundary(line.as_bytes()[col - 1]);
-                        let after_pos = col + case_pattern.len();
-                        let after_ok =
-                            after_pos >= line.len() || is_word_boundary(line.as_bytes()[after_pos]);
-                        if before_ok && after_ok {
-                            return Some(Position {
-                                line: line_idx as u32,
-                                character: col as u32,
-                            });
-                        }
-                    }
-                }
-                MemberKind::Property => {
-                    // Look for `$propertyName` on a line that looks like a
-                    // property declaration (has a visibility keyword, `var`,
-                    // or `readonly`).
-                    let var_pattern = format!("${}", member_name);
-                    if let Some(col) = line.find(&var_pattern) {
-                        let after_pos = col + var_pattern.len();
-                        let after_ok =
-                            after_pos >= line.len() || is_word_boundary(line.as_bytes()[after_pos]);
-
-                        if after_ok {
-                            let trimmed = line.trim_start();
-                            // A line starting with a visibility keyword is a
-                            // property declaration UNLESS it also contains
-                            // `function` before the `$` — in that case it is
-                            // a method whose parameter happens to share the
-                            // property name (e.g.
-                            // `public static function from(int|string $value)`
-                            // vs `public readonly int|string $value;`).
-                            let prefix = &line[..col];
-                            let is_method_param = prefix.contains("function");
-                            let is_declaration = !is_method_param
-                                && (trimmed.starts_with("public")
-                                    || trimmed.starts_with("protected")
-                                    || trimmed.starts_with("private")
-                                    || trimmed.starts_with("var ")
-                                    || trimmed.starts_with("readonly")
-                                    || trimmed.starts_with("static"));
-
-                            // Also detect promoted constructor properties:
-                            // `public function __construct(private Type $prop)`
-                            // In this case the visibility keyword appears
-                            // inside the parameter list on the same line.
-                            // Only applies to `__construct` — regular method
-                            // parameters like `function from(int|string $value)`
-                            // must not be mistaken for property declarations.
-                            let is_promoted = !is_declaration
-                                && !is_method_param
-                                && prefix.contains("__construct")
-                                && {
-                                    // Check if visibility keyword appears before
-                                    // the `$prop` on the same line (inside parens).
-                                    prefix.contains("public")
-                                        || prefix.contains("protected")
-                                        || prefix.contains("private")
-                                        || prefix.contains("readonly")
-                                };
-
-                            if is_declaration || is_promoted {
-                                // Place the cursor on the first letter after
-                                // `$` so that a second go-to-definition
-                                // triggers type-hint resolution.
-                                return Some(Position {
-                                    line: line_idx as u32,
-                                    character: (col + 1) as u32,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-            byte_offset += line_len;
-        }
 
         // Fallback: for properties, check if this is a magic property
         // declared via a `@property` tag in the class docblock.
