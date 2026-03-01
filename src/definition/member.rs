@@ -915,15 +915,49 @@ impl Backend {
             .iter()
             .find(|m| m.name == member_name && !m.is_static)?;
 
-        // Extract the model name from the scope method's return type.
+        // Extract the model name from a Builder-typed return type.
+        //
         // The return type is typically
         // `\Illuminate\Database\Eloquent\Builder<App\Models\User>`.
-        let ret = scope_method.return_type.as_deref()?;
-        let model_name = crate::docblock::types::parse_generic_args(ret)
-            .1
-            .into_iter()
-            .next()
-            .map(|s| s.strip_prefix('\\').unwrap_or(s).to_string())?;
+        // We specifically look for return types whose base type is
+        // the Eloquent Builder (with or without leading backslash)
+        // and extract the first generic arg as the model name.
+        let extract_model_from_builder_ret = |ret: &str| -> Option<String> {
+            let (base, args) = crate::docblock::types::parse_generic_args(ret);
+            if args.is_empty() {
+                return None;
+            }
+            // Check that the base type is the Eloquent Builder.
+            let base_clean = base.strip_prefix('\\').unwrap_or(base);
+            if base_clean != ELOQUENT_BUILDER_FQN && base_clean != "Builder" {
+                return None;
+            }
+            args.into_iter()
+                .next()
+                .map(|s| s.strip_prefix('\\').unwrap_or(s).to_string())
+        };
+
+        // When a scope declares a bare `Builder` return type (without
+        // generic args like `<Model>`), the extraction above fails.
+        // In that case, scan all other instance methods on the
+        // resolved candidate for a Builder-typed return that carries
+        // the model name.  All scope methods on the same
+        // Builder<Model> instance share the same model, so any match
+        // is valid.
+        let model_name = scope_method
+            .return_type
+            .as_deref()
+            .and_then(&extract_model_from_builder_ret)
+            .or_else(|| {
+                resolved_candidate.methods.iter().find_map(|m| {
+                    if m.is_static {
+                        return None;
+                    }
+                    m.return_type
+                        .as_deref()
+                        .and_then(&extract_model_from_builder_ret)
+                })
+            })?;
 
         // Load the model and verify it extends Eloquent Model.
         let model = class_loader(&model_name)?;

@@ -1855,3 +1855,116 @@ class User extends Model {
         line
     );
 }
+
+#[tokio::test]
+async fn test_goto_definition_scope_after_static_scope_same_model() {
+    // Brand::productInformation()->sortable() — GTD on sortable should
+    // jump to scopeSortable.  Both scopes are on the same model and
+    // productInformation is called statically (not via Builder chain).
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    /**
+     * @param Builder<self> $query
+     * @return Builder<self>
+     */
+    public function scopeProductInformation(Builder $query): Builder {
+        return $query;
+    }
+    public function scopeSortable(Builder $query, $defaultParameters = null): Builder {
+        return $query;
+    }
+    public function demo(): void {
+        Brand::productInformation()->sortable();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // Cursor on "sortable" in `Brand::productInformation()->sortable();`
+    // Line 16 (0-indexed): "        Brand::productInformation()->sortable();"
+    // "sortable" starts at character 37
+    let result =
+        goto_definition_at(&backend, &dir, "src/Models/Brand.php", brand_php, 16, 39).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on ->sortable() after static scope should resolve to scopeSortable"
+    );
+
+    let response = result.unwrap();
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 12,
+        "scopeSortable is on line 12 (0-indexed), got: {}",
+        line
+    );
+}
+
+#[tokio::test]
+async fn test_goto_definition_scope_from_trait_after_scope_chain() {
+    // Brand::productInformation()->sortable() — GTD on sortable should
+    // jump to scopeSortable on the Sortable trait.  The scope comes from
+    // a trait used by the model, not defined directly on the model.
+    let sortable_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Builder;
+trait Sortable {
+    public function scopeSortable(Builder $query, $defaultParameters = null): Builder {
+        return $query;
+    }
+}
+";
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    use Sortable;
+    /**
+     * @param Builder<self> $query
+     * @return Builder<self>
+     */
+    public function scopeProductInformation(Builder $query): Builder {
+        return $query;
+    }
+    public function demo(): void {
+        Brand::productInformation()->sortable();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Sortable.php", sortable_php),
+        ("src/Models/Brand.php", brand_php),
+    ]);
+
+    // Cursor on "sortable" in `Brand::productInformation()->sortable();`
+    // Line 14 (0-indexed): "        Brand::productInformation()->sortable();"
+    // "sortable" starts at character 37
+    let result =
+        goto_definition_at(&backend, &dir, "src/Models/Brand.php", brand_php, 14, 39).await;
+
+    assert!(
+        result.is_some(),
+        "Go-to-definition on ->sortable() after scope chain should resolve to scopeSortable on trait"
+    );
+
+    let response = result.unwrap();
+    let target_uri = definition_uri(&response);
+    assert!(
+        target_uri.as_str().ends_with("Sortable.php"),
+        "Should jump to Sortable.php, got: {}",
+        target_uri
+    );
+    let line = definition_line(&response);
+    assert_eq!(
+        line, 4,
+        "scopeSortable is on line 4 (0-indexed) in Sortable.php, got: {}",
+        line
+    );
+}
