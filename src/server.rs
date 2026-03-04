@@ -109,6 +109,22 @@ impl LanguageServer for Backend {
                 }
             };
 
+            // Store the vendor URI prefix so diagnostics can skip vendor files.
+            let vendor_path = root.join(&vendor_dir);
+            if let Ok(canonical) = vendor_path.canonicalize() {
+                let prefix = format!("file://{}/", canonical.display());
+                if let Ok(mut vp) = self.vendor_uri_prefix.lock() {
+                    *vp = prefix;
+                }
+            } else {
+                // Vendor dir doesn't exist yet — store the non-canonical path
+                // so files opened from that location are still skipped.
+                let prefix = format!("file://{}/", vendor_path.display());
+                if let Ok(mut vp) = self.vendor_uri_prefix.lock() {
+                    *vp = prefix;
+                }
+            }
+
             if let Ok(mut m) = self.psr4_mappings.lock() {
                 *m = mappings;
             }
@@ -197,6 +213,9 @@ impl LanguageServer for Backend {
         // Parse and update AST map, use map, and namespace map
         self.update_ast(&uri, &text);
 
+        // Publish diagnostics (deprecated usage, unused imports, etc.)
+        self.publish_diagnostics_for_file(&uri, &text).await;
+
         self.log(MessageType::INFO, format!("Opened file: {}", uri))
             .await;
     }
@@ -214,6 +233,9 @@ impl LanguageServer for Backend {
 
             // Re-parse and update AST map, use map, and namespace map
             self.update_ast(&uri, text);
+
+            // Re-publish diagnostics after re-parse
+            self.publish_diagnostics_for_file(&uri, text).await;
         }
     }
 
@@ -225,6 +247,9 @@ impl LanguageServer for Backend {
         }
 
         self.clear_file_maps(&uri);
+
+        // Clear diagnostics so stale warnings don't linger after the file is closed
+        self.clear_diagnostics_for_file(&uri).await;
 
         self.log(MessageType::INFO, format!("Closed file: {}", uri))
             .await;

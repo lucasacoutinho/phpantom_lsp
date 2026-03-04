@@ -25,6 +25,13 @@
 //!   class_index → ast_map → classmap → PSR-4 → stubs)
 //! - `subject_extraction` — Shared helpers for extracting the left-hand side of
 //!   `->`, `?->`, and `::` access operators (used by both completion and definition)
+//! - [`diagnostics`] — Diagnostics publishing (`textDocument/publishDiagnostics`).
+//!   Collects and publishes diagnostics on `didOpen` / `didChange`, clears on
+//!   `didClose`.  Currently implemented providers:
+//!   - `diagnostics::deprecated` — `@deprecated` usage diagnostics (strikethrough
+//!     via `DiagnosticTag::Deprecated` on references to deprecated symbols)
+//!   - `diagnostics::unused_imports` — unused `use` dimming
+//!     (`DiagnosticTag::Unnecessary` on imports with no references in the file)
 //! - [`docblock`] — PHPDoc block parsing, split into submodules:
 //!   - `docblock::tags` — tag extraction (`@return`, `@var`, `@property`, `@method`,
 //!     `@mixin`, `@deprecated`, `@phpstan-assert`, docblock text retrieval)
@@ -46,6 +53,7 @@ use tower_lsp::Client;
 pub mod completion;
 pub mod composer;
 mod definition;
+pub mod diagnostics;
 pub mod docblock;
 mod hover;
 pub(crate) mod inheritance;
@@ -94,6 +102,8 @@ pub use virtual_members::resolve_class_fully;
 /// - `util` — module-level `position_to_offset`, `find_class_at_offset`,
 ///   `find_class_by_name`, plus `log`, `get_classes_for_uri`
 /// - `definition` — `resolve_definition`, member resolution, function resolution
+/// - `diagnostics` — `publish_diagnostics_for_file`, `clear_diagnostics_for_file`,
+///   `collect_deprecated_diagnostics`, `collect_unused_import_diagnostics`
 pub struct Backend {
     pub(crate) name: String,
     pub(crate) version: String,
@@ -200,6 +210,15 @@ pub struct Backend {
     /// Wrapped in a `Mutex` so that `set_php_version` can be called
     /// during `initialized` (which receives `&self`, not `&mut self`).
     pub(crate) php_version: Mutex<types::PhpVersion>,
+    /// The `file://` URI prefix for the vendor directory, used to skip
+    /// diagnostics for vendor files.
+    ///
+    /// Built during `initialized` from the workspace root and
+    /// `composer.json`'s `config.vendor-dir` (default `"vendor"`).
+    /// Example: `"file:///home/user/project/vendor/"`.
+    ///
+    /// When empty (no workspace root), vendor-skipping is disabled.
+    pub(crate) vendor_uri_prefix: Mutex<String>,
 }
 
 impl Backend {
@@ -217,6 +236,7 @@ impl Backend {
             symbol_maps: Arc::new(Mutex::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(Mutex::new(None)),
+            vendor_uri_prefix: Mutex::new(String::new()),
             psr4_mappings: Arc::new(Mutex::new(Vec::new())),
             use_map: Arc::new(Mutex::new(HashMap::new())),
             namespace_map: Arc::new(Mutex::new(HashMap::new())),
