@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AST-based array type inference.** Array shape key completion and array element member access resolve through an AST walker that handles literal arrays, `new` expressions, call expressions, spread elements, incremental key assignments, and push-style assignments. Scalar values in array literals are inferred with precise types instead of `mixed`.
 - **Symbol map coverage expanded.** Anonymous classes, top-level `const` declarations, language constructs (`isset`, `empty`, `print`, etc.), string interpolation expressions, first-class callable syntax (`strlen(...)`, `Foo::bar(...)`), standalone constant references, `declare` bodies, short echo tags, array append expressions, and pipe operator expressions now produce navigable symbol spans.
 - **GTD from parameter and property variables.** Clicking a parameter or property variable at its definition site now jumps to the type hint class, matching the behaviour of assignment variables. Catch variables (`catch (Exception $e)`) with single or union type hints are also supported.
+- **Signature help enriched.** The popup is now two lines: a compact parameter list with native PHP types and return type, plus a per-parameter `@param` description that includes the effective docblock type when it differs from the native hint. Optional parameters display their default value in the label (e.g. `int $limit = 25`).
 
 ### Fixed
 

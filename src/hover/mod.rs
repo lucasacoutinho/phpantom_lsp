@@ -22,7 +22,9 @@ use crate::util::{find_class_at_offset, position_to_offset};
 use formatting::*;
 
 // Re-export `pub(crate)` items so external callers keep using `crate::hover::`.
-pub(crate) use formatting::{extract_docblock_description, extract_var_description};
+pub(crate) use formatting::{
+    extract_docblock_description, extract_var_description, types_equivalent,
+};
 
 impl Backend {
     /// Handle a `textDocument/hover` request.

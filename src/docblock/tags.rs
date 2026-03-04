@@ -968,6 +968,13 @@ pub fn should_override_type(docblock_type: &str, native_type: &str) -> bool {
         return !parts.iter().all(|p| is_scalar(strip_nullable(p)));
     }
 
+    // If the docblock type carries generic parameters (e.g.
+    // `class-string<T>`, `non-empty-array<int>`), it refines the
+    // native type even when the native type is scalar.
+    if clean_doc.contains('<') || clean_doc.contains('{') {
+        return true;
+    }
+
     // Simple case: if the native type is a scalar, don't override.
     !is_scalar(clean_native)
 }

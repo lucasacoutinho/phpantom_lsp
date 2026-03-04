@@ -39,16 +39,10 @@ expect. This sprint finishes both features so they feel complete.
 | 1 | Member origin indicators in hover | Low-Medium | Hover | [todo-hover.md §3](todo-hover.md#3-member-origin-indicators) |
 | 2 | Enum case listing in enum hover | Low | Hover | [todo-hover.md §4](todo-hover.md#4-enum-case-listing-in-enum-hover) |
 | 3 | Trait hover shows public method signatures | Low | Hover | [todo-hover.md §5](todo-hover.md#5-trait-hover-shows-public-method-signatures) |
-| 4 | Per-parameter `@param` descriptions in signature help | Trivial | Signature Help | [todo-signatureHelp.md §1](todo-signatureHelp.md#1-per-parameter-param-descriptions) |
-| 5 | Signature-level documentation | Small | Signature Help | [todo-signatureHelp.md §2](todo-signatureHelp.md#2-signature-level-documentation-methodfunction-docblock) |
-| 6 | Default values in signature help parameter labels | Trivial | Signature Help | [todo-signatureHelp.md §3](todo-signatureHelp.md#3-default-values-in-parameter-labels) |
-| 7 | Retrigger on `)` to dismiss signature help | Trivial | Signature Help | [todo-signatureHelp.md §6](todo-signatureHelp.md#6-retrigger-on--to-dismiss) |
 
-**Why this order:** Hover items 1-5 are all low effort and surface data
-we already have or can cheaply derive. Signature help items 6-9 are pure
-wiring (the data already exists on `ParameterInfo`/`MethodInfo`/
-`FunctionInfo`). A few days of work for noticeably richer hover and
-signature popups.
+**Why this order:** Hover items 1-3 are all low effort and surface data
+we already have or can cheaply derive. A few days of work for noticeably
+richer hover popups.
 
 ---
 

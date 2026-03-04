@@ -517,13 +517,9 @@ pub struct CompletionTarget {
 ///
 /// Shared between signature help (`resolve_callable`) and named-argument
 /// completion (`resolve_named_arg_params`).  Each caller projects the
-/// fields it needs: signature help uses all three to build a
-/// `SignatureHelp` response; named-arg completion only reads `parameters`.
+/// fields it needs from the result.
 #[derive(Debug, Clone)]
 pub(crate) struct ResolvedCallableTarget {
-    /// Human-readable label prefix (e.g. `"App\\Service::process"`,
-    /// `"array_map"`).  Used by signature help for the signature label.
-    pub label_prefix: String,
     /// The parameters of the callable.
     pub parameters: Vec<ParameterInfo>,
     /// Optional return type string.

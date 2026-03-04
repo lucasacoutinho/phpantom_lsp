@@ -1321,6 +1321,15 @@ class SignatureHelpDemo
         $user->getProfile()->setBio('Hello');                       // method return chain
         (new User('X', 'x@x.com'))->setStatus(Status::Active);     // (new ...)->method
         new User('X', 'x@x.com')->setStatus(Status::Active);     // PHP 8.4 style
+
+        // Default values appear in parameter labels (e.g. "int $page = 1"):
+        $svc = new ScaffoldingSignatureHelp();
+        $svc->paginate(2, 50);
+
+        // Per-parameter @param descriptions appear next to each parameter.
+        // When the effective docblock type differs from the native PHP type
+        // the description is prefixed with the effective type:
+        $svc->search('php', 1, 25);
     }
 }
 
@@ -1724,6 +1733,28 @@ class DeprecationDemo
 
 
 // ── Demo-Specific Scaffolding ───────────────────────────────────────────────
+
+class ScaffoldingSignatureHelp
+{
+    /**
+     * Paginate a result set.
+     *
+     * @param int $page Current page number.
+     * @param int $limit Max items per page.
+     * @return array The paginated slice of results.
+     */
+    public function paginate(int $page = 1, int $limit = 25): array { return []; }
+
+    /**
+     * Search for items matching a query.
+     *
+     * @param non-empty-string $query The search keywords.
+     * @param positive-int $page Page number to return.
+     * @param int $perPage Results per page.
+     * @return list<array{id: int, title: string}> Matching items.
+     */
+    public function search(string $query, int $page = 1, int $perPage = 20): array { return []; }
+}
 
 class ScaffoldingDeprecation
 {
@@ -2649,7 +2680,7 @@ function getUnknownValue(): mixed
 
 /**
  * @template T
- * @param class-string<T> $class
+ * @param class-string<T> $class The class name
  * @return T
  */
 function resolve(string $class): object

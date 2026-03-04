@@ -518,7 +518,7 @@ pub(super) fn shorten_type_string(ty: &str) -> String {
 /// the other uses the short name (`User`).  Handles nullable (`?`),
 /// union (`|`), and intersection (`&`) types by comparing each component
 /// after stripping namespace prefixes and a leading `\`.
-pub(super) fn types_equivalent(a: &str, b: &str) -> bool {
+pub(crate) fn types_equivalent(a: &str, b: &str) -> bool {
     if a == b {
         return true;
     }

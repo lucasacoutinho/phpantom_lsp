@@ -162,10 +162,14 @@ fn count_top_level_commas(chars: &[char], start: usize, end: usize) -> u32 {
 
 // ─── Signature building ─────────────────────────────────────────────────────
 
-/// Format a single parameter for the signature label.
+/// Format a single parameter for the signature label using the **native**
+/// PHP type hint (not the docblock-enriched effective type).
+///
+/// Optional (non-variadic) parameters with a known default value include
+/// ` = <value>` so the user can see the default at a glance.
 fn format_param_label(param: &ParameterInfo) -> String {
     let mut parts = Vec::new();
-    if let Some(ref th) = param.type_hint {
+    if let Some(ref th) = param.native_type_hint {
         parts.push(th.clone());
     }
     if param.is_variadic {
@@ -175,20 +179,99 @@ fn format_param_label(param: &ParameterInfo) -> String {
     } else {
         parts.push(param.name.clone());
     }
-    parts.join(" ")
+    let base = parts.join(" ");
+    if !param.is_required
+        && !param.is_variadic
+        && let Some(ref dv) = param.default_value
+    {
+        return format!("{} = {}", base, dv);
+    }
+    base
+}
+
+/// Shorten a type string by stripping namespace prefixes from every
+/// fully-qualified name, including names nested inside generic
+/// parameters.
+///
+/// For example `\App\Models\User` → `User`, `string` → `string`,
+/// `\App\User|\App\Admin` → `User|Admin`,
+/// `list<\App\User>` → `list<User>`,
+/// `array<string, \Ns\Cls>` → `array<string, Cls>`.
+fn shorten_type(ty: &str) -> String {
+    // Split on characters that delimit type names in PHP type strings
+    // (|, <, >, comma, space) while preserving the delimiters. Replace
+    // each segment that looks like a FQN with its short name.
+    let mut result = String::with_capacity(ty.len());
+    let mut segment_start = 0;
+    for (i, ch) in ty.char_indices() {
+        if matches!(ch, '|' | '<' | '>' | ',' | ' ') {
+            if i > segment_start {
+                let seg = &ty[segment_start..i];
+                result.push_str(crate::util::short_name(seg));
+            }
+            result.push(ch);
+            segment_start = i + ch.len_utf8();
+        }
+    }
+    // Trailing segment after the last delimiter (or the whole string).
+    if segment_start < ty.len() {
+        result.push_str(crate::util::short_name(&ty[segment_start..]));
+    }
+    result
+}
+
+/// Build per-parameter documentation markdown.
+///
+/// When the effective type (`type_hint`) differs from the native PHP type
+/// (`native_type_hint`), the effective type is shown (shortened to base
+/// names) in an inline code span so the user sees the richer docblock
+/// type.  If a `@param` description is also present it is appended after
+/// the type.
+///
+/// Returns `None` when there is nothing to show (no description and the
+/// types are identical or absent).
+fn build_param_documentation(param: &ParameterInfo) -> Option<Documentation> {
+    let effective = param.type_hint.as_deref();
+    let native = param.native_type_hint.as_deref();
+    let desc = param.description.as_deref();
+
+    let show_effective = match (effective, native) {
+        (Some(e), Some(n)) => !crate::hover::types_equivalent(e, n),
+        (Some(_), None) => true,
+        _ => false,
+    };
+
+    let shortened = effective.map(shorten_type);
+    let value = match (show_effective, desc) {
+        (true, Some(d)) => format!("`{}` {}", shortened.as_deref().unwrap_or(""), d),
+        (true, None) => format!("`{}`", shortened.as_deref().unwrap_or("")),
+        (false, Some(d)) => d.to_string(),
+        (false, None) => return None,
+    };
+
+    Some(Documentation::MarkupContent(MarkupContent {
+        kind: MarkupKind::Markdown,
+        value,
+    }))
 }
 
 /// Build a `SignatureInformation` from a callable's metadata.
-fn build_signature(
-    label_prefix: &str,
-    params: &[ParameterInfo],
-    return_type: Option<&str>,
-) -> SignatureInformation {
-    // Build the full label: `prefix(param1, param2, ...): returnType`
+///
+/// The label uses **native** PHP types for parameters and a shortened
+/// (base-name) effective return type.  Per-parameter documentation shows
+/// the `@param` description, optionally prefixed with the effective type
+/// when it differs from the native type.
+fn build_signature(params: &[ParameterInfo], return_type: Option<&str>) -> SignatureInformation {
+    // Build the label: `(param1, param2, ...): ReturnType`
+    // The callable name is omitted — the user already knows what they
+    // are calling and the editor shows it in the surrounding code.
     let param_labels: Vec<String> = params.iter().map(format_param_label).collect();
     let params_str = param_labels.join(", ");
-    let ret = return_type.map(|r| format!(": {}", r)).unwrap_or_default();
-    let label = format!("{}({}){}", label_prefix, params_str, ret);
+    let ret = format!(
+        ": {}",
+        return_type.map_or("mixed".to_string(), shorten_type)
+    );
+    let label = format!("({}){}", params_str, ret);
 
     // Build ParameterInformation using label offsets.  The offsets are
     // byte offsets into the label string (UTF-16 code unit offsets are
@@ -196,15 +279,14 @@ fn build_signature(
     // offsets match).
     let mut param_infos = Vec::with_capacity(params.len());
     // The parameters start right after the `(`.
-    let params_start = label_prefix.len() + 1; // +1 for `(`
-    let mut offset = params_start;
+    let mut offset = 1; // skip the leading `(`
 
-    for (idx, pl) in param_labels.iter().enumerate() {
+    for (idx, (pl, param)) in param_labels.iter().zip(params.iter()).enumerate() {
         let start = offset as u32;
         let end = (offset + pl.len()) as u32;
         param_infos.push(ParameterInformation {
             label: ParameterLabel::LabelOffsets([start, end]),
-            documentation: None,
+            documentation: build_param_documentation(param),
         });
         // Move past this parameter label and the separator `, `.
         offset += pl.len();
@@ -226,22 +308,19 @@ fn build_signature(
 /// Resolved callable information ready to be turned into a
 /// `SignatureHelp` response.
 ///
-/// This is a thin wrapper around [`ResolvedCallableTarget`] kept for
-/// local use within this module.  The actual resolution logic lives in
-/// [`Backend::resolve_callable_target`](crate::completion::resolver).
+/// This is a thin projection of [`ResolvedCallableTarget`] kept for
+/// local use within this module.  Only the fields actually consumed by
+/// `resolve_signature` are retained.
 struct ResolvedCallable {
-    /// Human-readable label prefix (e.g. `"App\\Service::process"`).
-    label_prefix: String,
     /// The parameters of the callable.
     parameters: Vec<ParameterInfo>,
-    /// Optional return type string.
+    /// Optional return type string (effective / docblock-enriched).
     return_type: Option<String>,
 }
 
 impl From<crate::types::ResolvedCallableTarget> for ResolvedCallable {
     fn from(t: crate::types::ResolvedCallableTarget) -> Self {
         Self {
-            label_prefix: t.label_prefix,
             parameters: t.parameters,
             return_type: t.return_type,
         }
@@ -326,11 +405,8 @@ impl Backend {
         ctx: &FileContext,
     ) -> Option<SignatureHelp> {
         let resolved = self.resolve_callable(&site.call_expression, content, position, ctx)?;
-        let sig = build_signature(
-            &resolved.label_prefix,
-            &resolved.parameters,
-            resolved.return_type.as_deref(),
-        );
+
+        let sig = build_signature(&resolved.parameters, resolved.return_type.as_deref());
         Some(SignatureHelp {
             signatures: vec![sig],
             active_signature: Some(0),

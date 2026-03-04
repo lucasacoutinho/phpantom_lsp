@@ -150,6 +150,68 @@ fn count_commas_in_string() {
 // ── format_param_label ──────────────────────────────────────────
 
 #[test]
+fn format_param_with_default_value() {
+    let p = ParameterInfo {
+        name: "$limit".to_string(),
+        type_hint: Some("int".to_string()),
+        native_type_hint: Some("int".to_string()),
+        description: None,
+        default_value: Some("10".to_string()),
+        is_required: false,
+        is_variadic: false,
+        is_reference: false,
+    };
+    assert_eq!(format_param_label(&p), "int $limit = 10");
+}
+
+#[test]
+fn format_param_with_null_default() {
+    let p = ParameterInfo {
+        name: "$name".to_string(),
+        type_hint: Some("?string".to_string()),
+        native_type_hint: Some("?string".to_string()),
+        description: None,
+        default_value: Some("null".to_string()),
+        is_required: false,
+        is_variadic: false,
+        is_reference: false,
+    };
+    assert_eq!(format_param_label(&p), "?string $name = null");
+}
+
+#[test]
+fn format_param_optional_no_known_default() {
+    // Optional but no default_value extracted — no ` = ...` suffix.
+    let p = ParameterInfo {
+        name: "$x".to_string(),
+        type_hint: Some("int".to_string()),
+        native_type_hint: Some("int".to_string()),
+        description: None,
+        default_value: None,
+        is_required: false,
+        is_variadic: false,
+        is_reference: false,
+    };
+    assert_eq!(format_param_label(&p), "int $x");
+}
+
+#[test]
+fn format_param_variadic_no_default_even_if_set() {
+    // Variadic params should never show a default value.
+    let p = ParameterInfo {
+        name: "$items".to_string(),
+        type_hint: Some("string".to_string()),
+        native_type_hint: Some("string".to_string()),
+        description: None,
+        default_value: Some("[]".to_string()),
+        is_required: false,
+        is_variadic: true,
+        is_reference: false,
+    };
+    assert_eq!(format_param_label(&p), "string ...$items");
+}
+
+#[test]
 fn format_param_simple() {
     let p = ParameterInfo {
         name: "$x".to_string(),
@@ -235,8 +297,8 @@ fn build_signature_label() {
             is_reference: false,
         },
     ];
-    let sig = build_signature("greet", &params, Some("void"));
-    assert_eq!(sig.label, "greet(string $name, int $age): void");
+    let sig = build_signature(&params, Some("void"));
+    assert_eq!(sig.label, "(string $name, int $age): void");
 }
 
 #[test]
@@ -263,19 +325,308 @@ fn build_signature_parameter_offsets() {
             is_reference: false,
         },
     ];
-    let sig = build_signature("f", &params, None);
-    // label: "f($a, $b)"
-    //         0123456789
+    let sig = build_signature(&params, None);
+    // label: "($a, $b): mixed"
+    //         0123456789...
     let pi = sig.parameters.unwrap();
-    assert_eq!(pi[0].label, ParameterLabel::LabelOffsets([2, 4])); // "$a"
-    assert_eq!(pi[1].label, ParameterLabel::LabelOffsets([6, 8])); // "$b"
+    assert_eq!(pi[0].label, ParameterLabel::LabelOffsets([1, 3])); // "$a"
+    assert_eq!(pi[1].label, ParameterLabel::LabelOffsets([5, 7])); // "$b"
 }
 
 #[test]
 fn build_signature_no_params() {
-    let sig = build_signature("foo", &[], Some("void"));
-    assert_eq!(sig.label, "foo(): void");
+    let sig = build_signature(&[], Some("void"));
+    assert_eq!(sig.label, "(): void");
     assert!(sig.parameters.unwrap().is_empty());
+}
+
+#[test]
+fn build_signature_no_return_type_shows_mixed() {
+    let sig = build_signature(&[], None);
+    assert_eq!(sig.label, "(): mixed");
+}
+
+#[test]
+fn build_signature_with_default_values() {
+    let params = vec![
+        ParameterInfo {
+            name: "$name".to_string(),
+            type_hint: Some("string".to_string()),
+            native_type_hint: Some("string".to_string()),
+            description: None,
+            default_value: Some("'World'".to_string()),
+            is_required: false,
+            is_variadic: false,
+            is_reference: false,
+        },
+        ParameterInfo {
+            name: "$count".to_string(),
+            type_hint: Some("int".to_string()),
+            native_type_hint: Some("int".to_string()),
+            description: None,
+            default_value: Some("1".to_string()),
+            is_required: false,
+            is_variadic: false,
+            is_reference: false,
+        },
+    ];
+    let sig = build_signature(&params, Some("void"));
+    assert_eq!(sig.label, "(string $name = 'World', int $count = 1): void");
+    // Verify offsets still track the labels correctly.
+    let pi = sig.parameters.unwrap();
+    // "(" = 1 char, then "string $name = 'World'" = 22 chars
+    assert_eq!(pi[0].label, ParameterLabel::LabelOffsets([1, 23]));
+    // ", " = 2 chars, then "int $count = 1" = 14 chars
+    assert_eq!(pi[1].label, ParameterLabel::LabelOffsets([25, 39]));
+}
+
+#[test]
+fn build_signature_param_documentation_same_types() {
+    // When effective == native, only the description text is shown.
+    let params = vec![
+        ParameterInfo {
+            name: "$callback".to_string(),
+            type_hint: Some("callable".to_string()),
+            native_type_hint: Some("callable".to_string()),
+            description: Some("The callback function to run for each element.".to_string()),
+            default_value: None,
+            is_required: true,
+            is_variadic: false,
+            is_reference: false,
+        },
+        ParameterInfo {
+            name: "$array".to_string(),
+            type_hint: Some("array".to_string()),
+            native_type_hint: Some("array".to_string()),
+            description: None,
+            default_value: None,
+            is_required: true,
+            is_variadic: false,
+            is_reference: false,
+        },
+    ];
+    let sig = build_signature(&params, Some("array"));
+    let pi = sig.parameters.unwrap();
+
+    // First param: effective == native, so just the description.
+    match &pi[0].documentation {
+        Some(Documentation::MarkupContent(mc)) => {
+            assert_eq!(mc.kind, MarkupKind::Markdown);
+            assert_eq!(mc.value, "The callback function to run for each element.");
+        }
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    }
+    // Second param has no documentation.
+    assert!(pi[1].documentation.is_none());
+}
+
+#[test]
+fn build_signature_param_documentation_effective_differs() {
+    // When effective != native, the doc line is prefixed with the shortened effective type.
+    let params = vec![ParameterInfo {
+        name: "$users".to_string(),
+        type_hint: Some("list<User>".to_string()),
+        native_type_hint: Some("array".to_string()),
+        description: Some("The active users.".to_string()),
+        default_value: None,
+        is_required: true,
+        is_variadic: false,
+        is_reference: false,
+    }];
+    let sig = build_signature(&params, Some("void"));
+    let pi = sig.parameters.unwrap();
+
+    match &pi[0].documentation {
+        Some(Documentation::MarkupContent(mc)) => {
+            assert_eq!(mc.value, "`list<User>` The active users."); // already short
+        }
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    }
+    // The label uses native type, not effective.
+    assert_eq!(sig.label, "(array $users): void");
+}
+
+#[test]
+fn build_signature_param_effective_only_no_native() {
+    // When effective exists but native is None, show effective prefix.
+    let params = vec![ParameterInfo {
+        name: "$items".to_string(),
+        type_hint: Some("list<Pen>".to_string()),
+        native_type_hint: None,
+        description: Some("The items.".to_string()),
+        default_value: None,
+        is_required: true,
+        is_variadic: false,
+        is_reference: false,
+    }];
+    let sig = build_signature(&params, None);
+    let pi = sig.parameters.unwrap();
+
+    match &pi[0].documentation {
+        Some(Documentation::MarkupContent(mc)) => {
+            assert_eq!(mc.value, "`list<Pen>` The items."); // already short
+        }
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    }
+    // No native type → label has bare $items.
+    assert_eq!(sig.label, "($items): mixed");
+}
+
+#[test]
+fn build_signature_param_effective_differs_no_description() {
+    // When effective != native but there is no description text,
+    // the shortened effective type alone is shown (e.g. `class-string<T>`).
+    let params = vec![ParameterInfo {
+        name: "$class".to_string(),
+        type_hint: Some("class-string<T>".to_string()),
+        native_type_hint: Some("string".to_string()),
+        description: None,
+        default_value: None,
+        is_required: true,
+        is_variadic: false,
+        is_reference: false,
+    }];
+    let sig = build_signature(&params, Some("object"));
+    let pi = sig.parameters.unwrap();
+
+    match &pi[0].documentation {
+        Some(Documentation::MarkupContent(mc)) => {
+            assert_eq!(mc.value, "`class-string<T>`"); // already short
+        }
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    }
+    // Label uses native type.
+    assert_eq!(sig.label, "(string $class): object");
+}
+
+#[test]
+fn build_signature_no_sig_documentation() {
+    // Signature-level documentation is always None.
+    let sig = build_signature(&[], None);
+    assert!(sig.documentation.is_none());
+    assert_eq!(sig.label, "(): mixed");
+}
+
+#[test]
+fn build_signature_param_effective_fqn_shortened_in_doc() {
+    // FQNs inside the effective type are shortened to base names in param docs.
+    let params = vec![ParameterInfo {
+        name: "$users".to_string(),
+        type_hint: Some("list<\\App\\Models\\User>".to_string()),
+        native_type_hint: Some("array".to_string()),
+        description: Some("The active users.".to_string()),
+        default_value: None,
+        is_required: true,
+        is_variadic: false,
+        is_reference: false,
+    }];
+    let sig = build_signature(&params, Some("void"));
+    let pi = sig.parameters.unwrap();
+
+    match &pi[0].documentation {
+        Some(Documentation::MarkupContent(mc)) => {
+            assert_eq!(mc.value, "`list<User>` The active users.");
+        }
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    }
+}
+
+#[test]
+fn build_signature_param_effective_fqn_no_desc() {
+    // FQN shortened even when there is no description.
+    let params = vec![ParameterInfo {
+        name: "$item".to_string(),
+        type_hint: Some("\\App\\Models\\Item".to_string()),
+        native_type_hint: Some("object".to_string()),
+        description: None,
+        default_value: None,
+        is_required: true,
+        is_variadic: false,
+        is_reference: false,
+    }];
+    let sig = build_signature(&params, None);
+    let pi = sig.parameters.unwrap();
+
+    match &pi[0].documentation {
+        Some(Documentation::MarkupContent(mc)) => {
+            assert_eq!(mc.value, "`Item`");
+        }
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    }
+}
+
+#[test]
+fn build_signature_return_type_shortened() {
+    let sig = build_signature(&[], Some("\\App\\Models\\User"));
+    assert_eq!(sig.label, "(): User");
+}
+
+#[test]
+fn build_signature_return_type_union_shortened() {
+    let sig = build_signature(&[], Some("\\App\\User|\\App\\Admin"));
+    assert_eq!(sig.label, "(): User|Admin");
+}
+
+#[test]
+fn build_signature_return_type_scalar_unchanged() {
+    let sig = build_signature(&[], Some("string"));
+    assert_eq!(sig.label, "(): string");
+}
+
+// ── shorten_type ────────────────────────────────────────────────
+
+#[test]
+fn shorten_plain_scalar() {
+    assert_eq!(shorten_type("int"), "int");
+}
+
+#[test]
+fn shorten_fqn() {
+    assert_eq!(shorten_type("\\App\\Models\\User"), "User");
+}
+
+#[test]
+fn shorten_union() {
+    assert_eq!(shorten_type("\\App\\User|\\App\\Admin"), "User|Admin");
+}
+
+#[test]
+fn shorten_mixed_union() {
+    assert_eq!(shorten_type("string|\\App\\User|null"), "string|User|null");
+}
+
+#[test]
+fn shorten_generic_param() {
+    assert_eq!(shorten_type("list<\\App\\User>"), "list<User>");
+}
+
+#[test]
+fn shorten_generic_multiple_params() {
+    assert_eq!(
+        shorten_type("array<string, \\App\\Models\\User>"),
+        "array<string, User>"
+    );
+}
+
+#[test]
+fn shorten_nested_generic_union() {
+    assert_eq!(
+        shorten_type("Collection<\\App\\User|\\App\\Admin>"),
+        "Collection<User|Admin>"
+    );
+}
+
+#[test]
+fn shorten_class_string_generic() {
+    assert_eq!(
+        shorten_type("class-string<\\App\\User>"),
+        "class-string<User>"
+    );
+}
+
+#[test]
+fn shorten_no_namespace_unchanged() {
+    assert_eq!(shorten_type("list<User>"), "list<User>");
 }
 
 // ── clamp_active_param ──────────────────────────────────────────

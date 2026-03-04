@@ -74,7 +74,7 @@ async fn standalone_function_first_param() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 2, 6).await.unwrap();
-    assert_eq!(sig_label(&sh), "greet(string $name, int $age): void");
+    assert_eq!(sig_label(&sh), "(string $name, int $age): void");
     assert_eq!(active_param(&sh), 0);
     let pl = param_labels(&sh);
     assert_eq!(pl, vec!["string $name", "int $age"]);
@@ -101,7 +101,7 @@ async fn standalone_function_no_params() {
     let text = concat!("<?php\n", "function doWork(): void {}\n", "doWork(\n",);
 
     let sh = sig_help_at(&backend, &uri, text, 2, 7).await.unwrap();
-    assert_eq!(sig_label(&sh), "doWork(): void");
+    assert_eq!(sig_label(&sh), "(): void");
     assert!(sh.signatures[0].parameters.as_ref().unwrap().is_empty());
 }
 
@@ -126,7 +126,6 @@ async fn this_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 6, 22).await.unwrap();
-    assert!(sig_label(&sh).contains("greet"));
     assert!(sig_label(&sh).contains("string $name"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -173,7 +172,6 @@ async fn variable_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 7, 19).await.unwrap();
-    assert!(sig_label(&sh).contains("add"));
     assert!(sig_label(&sh).contains("int $a"));
     assert!(sig_label(&sh).contains("int $b"));
     assert_eq!(active_param(&sh), 0);
@@ -198,7 +196,7 @@ async fn static_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 6, 16).await.unwrap();
-    assert!(sig_label(&sh).contains("clamp"));
+    assert!(sig_label(&sh).contains("int $value"));
     assert_eq!(active_param(&sh), 0);
     let pl = param_labels(&sh);
     assert_eq!(pl.len(), 3);
@@ -243,7 +241,6 @@ async fn self_static_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 6, 21).await.unwrap();
-    assert!(sig_label(&sh).contains("create"));
     assert!(sig_label(&sh).contains("string $name"));
 }
 
@@ -264,7 +261,6 @@ async fn constructor_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 4, 9).await.unwrap();
-    assert!(sig_label(&sh).contains("User"));
     assert!(sig_label(&sh).contains("string $name"));
     assert!(sig_label(&sh).contains("string $email"));
     assert_eq!(active_param(&sh), 0);
@@ -327,7 +323,7 @@ async fn nested_call_inner_function() {
 
     // Cursor is inside inner(
     let sh = sig_help_at(&backend, &uri, text, 3, 12).await.unwrap();
-    assert!(sig_label(&sh).contains("inner"));
+    assert!(sig_label(&sh).contains("int $y"));
     assert_eq!(active_param(&sh), 0);
 }
 
@@ -374,7 +370,6 @@ async fn inherited_method() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 8, 23).await.unwrap();
-    assert!(sig_label(&sh).contains("doWork"));
     assert!(sig_label(&sh).contains("int $count"));
 }
 
@@ -403,7 +398,6 @@ async fn trait_method() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 10, 18).await.unwrap();
-    assert!(sig_label(&sh).contains("greet"));
     assert!(sig_label(&sh).contains("string $whom"));
 }
 
@@ -418,7 +412,6 @@ async fn stub_function() {
     let text = concat!("<?php\n", "str_contains(\n",);
 
     let sh = sig_help_at(&backend, &uri, text, 1, 13).await.unwrap();
-    assert!(sig_label(&sh).contains("str_contains"));
     assert!(sig_label(&sh).contains("$haystack"));
     assert!(sig_label(&sh).contains("$needle"));
     assert_eq!(active_param(&sh), 0);
@@ -510,7 +503,7 @@ async fn nested_call_args_not_counted() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 3, 19).await.unwrap();
-    assert!(sig_label(&sh).contains("outer"));
+    assert!(sig_label(&sh).contains("int $x"));
     // inner(1, 2) is one argument to outer, then the comma after it
     // puts us on the second parameter.
     assert_eq!(active_param(&sh), 1);
@@ -537,7 +530,6 @@ async fn parent_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 6, 28).await.unwrap();
-    assert!(sig_label(&sh).contains("__construct"));
     assert!(sig_label(&sh).contains("string $name"));
     // The parent __construct only has 1 param ($name).
     let pl = param_labels(&sh);
@@ -555,7 +547,7 @@ async fn cursor_right_after_open_paren() {
     let text = concat!("<?php\n", "function test(int $x): void {}\n", "test(",);
 
     let sh = sig_help_at(&backend, &uri, text, 2, 5).await.unwrap();
-    assert!(sig_label(&sh).contains("test"));
+    assert!(sig_label(&sh).contains("int $x"));
     assert_eq!(active_param(&sh), 0);
 }
 
@@ -657,7 +649,6 @@ async fn cross_file_psr4_method() {
     };
 
     let sh = backend.signature_help(params).await.unwrap().unwrap();
-    assert!(sig_label(&sh).contains("process"));
     assert!(sig_label(&sh).contains("string $input"));
     assert!(sig_label(&sh).contains("int $retries"));
 }
@@ -685,17 +676,13 @@ async fn return_type_in_label() {
 }
 
 #[tokio::test]
-async fn no_return_type_omitted() {
+async fn no_return_type_shows_mixed() {
     let backend = create_test_backend();
     let uri = Url::parse("file:///sig_noret.php").unwrap();
     let text = concat!("<?php\n", "function doStuff($x) {}\n", "doStuff(\n",);
 
     let sh = sig_help_at(&backend, &uri, text, 2, 8).await.unwrap();
-    assert!(
-        !sig_label(&sh).contains(':'),
-        "Label should not contain ':' when there's no return type, got: {}",
-        sig_label(&sh)
-    );
+    assert_eq!(sig_label(&sh), "($x): mixed");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -800,7 +787,6 @@ async fn property_chain_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 11, 31).await.unwrap();
-    assert!(sig_label(&sh).contains("process"));
     assert!(sig_label(&sh).contains("string $data"));
     assert!(sig_label(&sh).contains("int $flags"));
     assert_eq!(active_param(&sh), 0);
@@ -825,7 +811,6 @@ async fn this_property_chain_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 8, 32).await.unwrap();
-    assert!(sig_label(&sh).contains("execute"));
     assert!(sig_label(&sh).contains("string $cmd"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -856,7 +841,6 @@ async fn deep_property_chain_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 15, 36).await.unwrap();
-    assert!(sig_label(&sh).contains("start"));
     assert!(sig_label(&sh).contains("int $rpm"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -880,7 +864,6 @@ async fn method_return_chain() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 8, 33).await.unwrap();
-    assert!(sig_label(&sh).contains("limit"));
     assert!(sig_label(&sh).contains("int $n"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -904,7 +887,6 @@ async fn function_return_chain() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 8, 32).await.unwrap();
-    assert!(sig_label(&sh).contains("configure"));
     assert!(sig_label(&sh).contains("string $key"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -927,7 +909,6 @@ async fn static_method_return_chain() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 7, 32).await.unwrap();
-    assert!(sig_label(&sh).contains("filter"));
     assert!(sig_label(&sh).contains("string $expr"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -949,7 +930,6 @@ async fn new_expression_chain() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 6, 31).await.unwrap();
-    assert!(sig_label(&sh).contains("print"));
     assert!(sig_label(&sh).contains("string $text"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -973,7 +953,6 @@ async fn nullsafe_method_call() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 8, 22).await.unwrap();
-    assert!(sig_label(&sh).contains("format"));
     assert!(sig_label(&sh).contains("string $pattern"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -1000,7 +979,7 @@ async fn property_then_method_chain_second_param() {
     );
 
     let sh = sig_help_at(&backend, &uri, text, 11, 33).await.unwrap();
-    assert!(sig_label(&sh).contains("log"));
+    assert!(sig_label(&sh).contains("string $msg"));
     assert_eq!(active_param(&sh), 1);
 }
 
@@ -1017,7 +996,6 @@ async fn nested_call_correct_site() {
 
     // Cursor inside inner() — should resolve to inner, param 0
     let sh = sig_help_at(&backend, &uri, text, 3, 12).await.unwrap();
-    assert!(sig_label(&sh).contains("inner"));
     assert!(sig_label(&sh).contains("string $s"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -1046,7 +1024,7 @@ async fn zero_param_method_closed_parens() {
         "signature help should fire for zero-param method"
     );
     let sh = result.unwrap();
-    assert!(sig_label(&sh).contains("write"));
+    assert!(sig_label(&sh).starts_with("("));
 }
 
 #[tokio::test]
@@ -1068,7 +1046,7 @@ async fn constructor_no_explicit_ctor() {
         "signature help should fire for class with no __construct"
     );
     let sh = result.unwrap();
-    assert!(sig_label(&sh).contains("Simple"));
+    assert_eq!(sig_label(&sh), "(): mixed");
 }
 
 #[tokio::test]
@@ -1105,7 +1083,6 @@ async fn generic_chain_with_new_expression_arg() {
     // "        $mapper->wrap(new Product())->first()->getPrice();"
     //  '(' for getPrice is at char 54, ')' at 55
     let sh = sig_help_at(&backend, &uri, text, 20, 56).await.unwrap();
-    assert!(sig_label(&sh).contains("getPrice"));
     assert!(sig_label(&sh).contains("int $qty"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -1135,7 +1112,7 @@ async fn array_access_method_call() {
         "signature help should fire for array access method call"
     );
     let sh = result.unwrap();
-    assert!(sig_label(&sh).contains("write"));
+    assert!(sig_label(&sh).starts_with("("));
 }
 
 #[tokio::test]
@@ -1157,7 +1134,6 @@ async fn class_string_variable_static_call() {
     // Line 7: "        $cls::make();"
     // '(' at char 18, ')' at 19
     let sh = sig_help_at(&backend, &uri, text, 7, 19).await.unwrap();
-    assert!(sig_label(&sh).contains("make"));
     assert!(sig_label(&sh).contains("string $ink"));
     assert_eq!(active_param(&sh), 0);
 }
@@ -1180,7 +1156,262 @@ async fn first_class_callable_invocation() {
     // Line 6: "        $fn();"
     // '(' at char 11, ')' at 12
     let sh = sig_help_at(&backend, &uri, text, 6, 12).await.unwrap();
-    assert!(sig_label(&sh).contains("makePen"));
     assert!(sig_label(&sh).contains("string $ink"));
     assert_eq!(active_param(&sh), 0);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Default values in parameter labels
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn default_value_in_label() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_default.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "function greet(string $name = 'World', int $count = 1): void {}\n",
+        "greet();\n",
+    );
+    // Line 2: "greet();" — cursor inside parens at char 6
+    let sh = sig_help_at(&backend, &uri, text, 2, 6).await.unwrap();
+    let label = sig_label(&sh);
+    assert!(
+        label.contains("= 'World'"),
+        "Expected default value in label, got: {}",
+        label
+    );
+    assert!(
+        label.contains("= 1"),
+        "Expected default value in label, got: {}",
+        label
+    );
+    // Verify parameter label offsets match what's in the label string.
+    let labels = param_labels(&sh);
+    assert_eq!(labels[0], "string $name = 'World'");
+    assert_eq!(labels[1], "int $count = 1");
+}
+
+#[tokio::test]
+async fn required_param_no_default_suffix() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_req.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "function process(string $input): void {}\n",
+        "process();\n",
+    );
+    let sh = sig_help_at(&backend, &uri, text, 2, 8).await.unwrap();
+    let labels = param_labels(&sh);
+    assert_eq!(labels[0], "string $input");
+}
+
+#[tokio::test]
+async fn method_default_value_in_label() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_meth_def.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Svc {\n",
+        "    public function fetch(int $page = 1, int $limit = 25): array { return []; }\n",
+        "}\n",
+        "class Demo {\n",
+        "    public function test(Svc $s): void {\n",
+        "        $s->fetch();\n",
+        "    }\n",
+        "}\n",
+    );
+    // Line 6: "        $s->fetch();" — cursor inside parens
+    let sh = sig_help_at(&backend, &uri, text, 6, 18).await.unwrap();
+    let labels = param_labels(&sh);
+    assert_eq!(labels[0], "int $page = 1");
+    assert_eq!(labels[1], "int $limit = 25");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Per-parameter @param descriptions
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Helper to extract parameter documentation strings from a SignatureHelp response.
+fn param_docs(sh: &SignatureHelp) -> Vec<Option<String>> {
+    let sig = &sh.signatures[0];
+    sig.parameters
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|pi| match &pi.documentation {
+            Some(Documentation::MarkupContent(mc)) => Some(mc.value.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn param_description_from_docblock() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_param_doc.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * Register a new user.\n",
+        " * @param string $name The user's display name.\n",
+        " * @param string $email The user's email address.\n",
+        " */\n",
+        "function register(string $name, string $email): void {}\n",
+        "register();\n",
+    );
+    let sh = sig_help_at(&backend, &uri, text, 7, 9).await.unwrap();
+    let docs = param_docs(&sh);
+    assert_eq!(docs[0].as_deref(), Some("The user's display name."));
+    assert_eq!(docs[1].as_deref(), Some("The user's email address."));
+}
+
+#[tokio::test]
+async fn param_without_description_has_no_doc() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_param_nodoc.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "function simple(int $x): void {}\n",
+        "simple();\n",
+    );
+    let sh = sig_help_at(&backend, &uri, text, 2, 7).await.unwrap();
+    let docs = param_docs(&sh);
+    assert_eq!(docs[0], None);
+}
+
+#[tokio::test]
+async fn method_param_description() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_mparam_doc.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Svc {\n",
+        "    /**\n",
+        "     * Fetch items from the API.\n",
+        "     * @param int $page The page number.\n",
+        "     * @param int $limit Max results per page.\n",
+        "     */\n",
+        "    public function fetch(int $page, int $limit): array { return []; }\n",
+        "}\n",
+        "class Demo {\n",
+        "    public function test(Svc $s): void {\n",
+        "        $s->fetch();\n",
+        "    }\n",
+        "}\n",
+    );
+    let sh = sig_help_at(&backend, &uri, text, 11, 18).await.unwrap();
+    let docs = param_docs(&sh);
+    assert_eq!(docs[0].as_deref(), Some("The page number."));
+    assert_eq!(docs[1].as_deref(), Some("Max results per page."));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Effective type prefix in param docs
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn param_doc_shows_effective_type_when_different_from_native() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_eff.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @param list<string> $items The collected items.\n",
+        " */\n",
+        "function consume(array $items): void {}\n",
+        "consume();\n",
+    );
+    let sh = sig_help_at(&backend, &uri, text, 5, 8).await.unwrap();
+
+    // Label uses native type.
+    assert_eq!(param_labels(&sh), vec!["array $items"]);
+
+    // Doc shows effective type prefix because list<string> != array.
+    let docs = param_docs(&sh);
+    assert_eq!(
+        docs[0].as_deref(),
+        Some("`list<string>` The collected items.")
+    );
+}
+
+#[tokio::test]
+async fn param_doc_no_effective_prefix_when_types_match() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_same.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @param string $name The user name.\n",
+        " */\n",
+        "function greet(string $name): void {}\n",
+        "greet();\n",
+    );
+    let sh = sig_help_at(&backend, &uri, text, 5, 6).await.unwrap();
+
+    // Doc is just the description, no type prefix.
+    let docs = param_docs(&sh);
+    assert_eq!(docs[0].as_deref(), Some("The user name."));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Combined: defaults + docs together
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn combined_defaults_and_docs() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_combined.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * Paginate results.\n",
+        " * @param int $page Current page number.\n",
+        " * @param int $size Items per page.\n",
+        " * @return array The paginated results.\n",
+        " */\n",
+        "function paginate(int $page = 1, int $size = 20): array { return []; }\n",
+        "paginate();\n",
+    );
+    let sh = sig_help_at(&backend, &uri, text, 8, 9).await.unwrap();
+
+    // Default values in label
+    let labels = param_labels(&sh);
+    assert_eq!(labels[0], "int $page = 1");
+    assert_eq!(labels[1], "int $size = 20");
+
+    // Parameter docs
+    let pdocs = param_docs(&sh);
+    assert_eq!(pdocs[0].as_deref(), Some("Current page number."));
+    assert_eq!(pdocs[1].as_deref(), Some("Items per page."));
+
+    // Signature-level documentation is always None.
+    assert!(sh.signatures[0].documentation.is_none());
+}
+
+#[tokio::test]
+async fn param_doc_class_string_effective_type() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///sig_class_string.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template T\n",
+        " * @param class-string<T> $class The class name\n",
+        " * @return T\n",
+        " */\n",
+        "function resolve(string $class): object\n",
+        "{\n",
+        "    return new $class();\n",
+        "}\n",
+        "resolve();\n",
+    );
+    let sh = sig_help_at(&backend, &uri, text, 10, 8).await.unwrap();
+
+    // Label uses native type for params, effective for return.
+    assert_eq!(sig_label(&sh), "(string $class): T");
+
+    // Doc shows effective type because class-string<T> != string.
+    let docs = param_docs(&sh);
+    assert_eq!(docs[0].as_deref(), Some("`class-string<T>` The class name"));
 }

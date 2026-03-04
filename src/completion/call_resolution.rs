@@ -84,18 +84,6 @@ pub(super) fn build_var_resolver<'a>(
     }
 }
 
-/// Build a fully-qualified name from a short name and optional namespace.
-///
-/// Used by [`Backend::resolve_callable_target`] to construct human-readable
-/// labels for signature help and named-argument completion.
-fn format_callable_fqn(name: &str, namespace: &Option<String>) -> String {
-    if let Some(ns) = namespace {
-        format!("{}\\{}", ns, name)
-    } else {
-        name.to_string()
-    }
-}
-
 impl Backend {
     /// Resolve an instance method base expression + method name to a
     /// [`ResolvedCallableTarget`].
@@ -126,9 +114,7 @@ impl Backend {
                 .iter()
                 .find(|m| m.name.eq_ignore_ascii_case(method_name))
             {
-                let owner_fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
                 return Some(ResolvedCallableTarget {
-                    label_prefix: format!("{}::{}", owner_fqn, m.name),
                     parameters: m.parameters.clone(),
                     return_type: m.return_type.clone(),
                 });
@@ -157,9 +143,7 @@ impl Backend {
             .methods
             .iter()
             .find(|m| m.name.eq_ignore_ascii_case(method_name))?;
-        let owner_fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
         Some(ResolvedCallableTarget {
-            label_prefix: format!("{}::{}", owner_fqn, m.name),
             parameters: m.parameters.clone(),
             return_type: m.return_type.clone(),
         })
@@ -167,9 +151,7 @@ impl Backend {
 
     /// Build a [`ResolvedCallableTarget`] from a resolved [`FunctionInfo`].
     fn function_to_callable(func: &FunctionInfo) -> ResolvedCallableTarget {
-        let fqn = format_callable_fqn(&func.name, &func.namespace);
         ResolvedCallableTarget {
-            label_prefix: fqn,
             parameters: func.parameters.clone(),
             return_type: func.return_type.clone(),
         }
@@ -185,18 +167,17 @@ impl Backend {
     ) -> Option<ResolvedCallableTarget> {
         let ci = class_loader(class_name)?;
         let merged = crate::virtual_members::resolve_class_fully_cached(&ci, class_loader, cache);
-        let fqn = format_callable_fqn(&merged.name, &merged.file_namespace);
-        let (parameters, return_type) =
-            if let Some(ctor) = merged.methods.iter().find(|m| m.name == "__construct") {
-                (ctor.parameters.clone(), ctor.return_type.clone())
-            } else {
-                (vec![], None)
-            };
-        Some(ResolvedCallableTarget {
-            label_prefix: fqn,
-            parameters,
-            return_type,
-        })
+        if let Some(ctor) = merged.methods.iter().find(|m| m.name == "__construct") {
+            Some(ResolvedCallableTarget {
+                parameters: ctor.parameters.clone(),
+                return_type: ctor.return_type.clone(),
+            })
+        } else {
+            Some(ResolvedCallableTarget {
+                parameters: vec![],
+                return_type: None,
+            })
+        }
     }
 
     // ── Main callable target resolution ─────────────────────────────────
