@@ -128,7 +128,7 @@ impl Backend {
     /// If the cursor is physically sitting on a variable definition token
     /// (assignment LHS, parameter, foreach binding, etc.), return the
     /// [`VarDefKind`] so the caller can decide how to handle it.
-    fn lookup_var_def_kind_at(
+    pub(crate) fn lookup_var_def_kind_at(
         &self,
         uri: &str,
         var_name: &str,

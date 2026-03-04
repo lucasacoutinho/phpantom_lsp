@@ -189,6 +189,17 @@ pub struct Backend {
     /// Built once during construction via [`stubs::build_stub_constant_index`].
     /// Can be consulted when resolving standalone constant references.
     pub(crate) stub_constant_index: HashMap<&'static str, &'static str>,
+    /// The target PHP version used for version-aware stub filtering.
+    ///
+    /// Detected from `composer.json` (`require.php`) during server
+    /// initialization.  When no version constraint is found, defaults
+    /// to PHP 8.5.  Stub elements annotated with
+    /// `#[PhpStormStubsElementAvailable]` are filtered against this
+    /// version so that only the correct variant is presented.
+    ///
+    /// Wrapped in a `Mutex` so that `set_php_version` can be called
+    /// during `initialized` (which receives `&self`, not `&mut self`).
+    pub(crate) php_version: Mutex<types::PhpVersion>,
 }
 
 impl Backend {
@@ -217,6 +228,7 @@ impl Backend {
             stub_function_index: stubs::build_stub_function_index(),
             stub_constant_index: stubs::build_stub_constant_index(),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
+            php_version: Mutex::new(types::PhpVersion::default()),
         }
     }
 
@@ -311,5 +323,21 @@ impl Backend {
     /// verify built-in constants are present).
     pub fn stub_constant_index(&self) -> &HashMap<&'static str, &'static str> {
         &self.stub_constant_index
+    }
+
+    /// Return the configured PHP version.
+    pub fn php_version(&self) -> types::PhpVersion {
+        self.php_version
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or_default()
+    }
+
+    /// Set the PHP version (used by integration tests and during
+    /// server initialization after reading `composer.json`).
+    pub fn set_php_version(&self, version: types::PhpVersion) {
+        if let Ok(mut v) = self.php_version.lock() {
+            *v = version;
+        }
     }
 }

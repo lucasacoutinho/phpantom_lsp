@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 
 use super::types::{split_generic_args, split_type_token};
-use crate::types::{ConditionalReturnType, ParamCondition};
+use crate::types::{ConditionalReturnType, ParamCondition, TemplateVariance};
 
 // ─── Template Parameters ────────────────────────────────────────────────────
 
@@ -25,9 +25,9 @@ use crate::types::{ConditionalReturnType, ParamCondition};
 ///
 /// Returns a list of template parameter names (e.g. `["T", "TKey"]`).
 pub fn extract_template_params(docblock: &str) -> Vec<String> {
-    extract_template_params_with_bounds(docblock)
+    extract_template_params_full(docblock)
         .into_iter()
-        .map(|(name, _)| name)
+        .map(|(name, _, _)| name)
         .collect()
 }
 
@@ -41,6 +41,23 @@ pub fn extract_template_params(docblock: &str) -> Vec<String> {
 ///
 /// Returns a list of `(name, optional_bound)` pairs.
 pub fn extract_template_params_with_bounds(docblock: &str) -> Vec<(String, Option<String>)> {
+    extract_template_params_full(docblock)
+        .into_iter()
+        .map(|(name, bound, _)| (name, bound))
+        .collect()
+}
+
+/// Extract template parameter names, optional upper bounds, **and** variance
+/// from `@template` tags in a docblock.
+///
+/// Returns a list of `(name, optional_bound, variance)` tuples:
+///   - `@template T` → `("T", None, Invariant)`
+///   - `@template TNode of PDependNode` → `("TNode", Some("PDependNode"), Invariant)`
+///   - `@template-covariant TValue` → `("TValue", None, Covariant)`
+///   - `@template-contravariant TInput of Foo` → `("TInput", Some("Foo"), Contravariant)`
+pub fn extract_template_params_full(
+    docblock: &str,
+) -> Vec<(String, Option<String>, TemplateVariance)> {
     let inner = docblock
         .trim()
         .strip_prefix("/**")
@@ -66,12 +83,12 @@ pub fn extract_template_params_with_bounds(docblock: &str) -> Vec<(String, Optio
 
         // After stripping the tag prefix, we may have a variance suffix
         // like `-covariant` or `-contravariant` still attached.
-        let rest = if let Some(r) = rest.strip_prefix("-covariant") {
-            r
+        let (rest, variance) = if let Some(r) = rest.strip_prefix("-covariant") {
+            (r, TemplateVariance::Covariant)
         } else if let Some(r) = rest.strip_prefix("-contravariant") {
-            r
+            (r, TemplateVariance::Contravariant)
         } else {
-            rest
+            (rest, TemplateVariance::Invariant)
         };
 
         // Must be followed by whitespace.
@@ -95,7 +112,7 @@ pub fn extract_template_params_with_bounds(docblock: &str) -> Vec<(String, Optio
                 } else {
                     None
                 };
-                results.push((name.to_string(), bound));
+                results.push((name.to_string(), bound, variance));
             }
         }
     }

@@ -30,6 +30,141 @@ use crate::types::*;
 pub(crate) struct DocblockCtx<'a> {
     pub trivias: &'a [Trivia<'a>],
     pub content: &'a str,
+    /// Target PHP version for version-aware stub filtering.
+    ///
+    /// When `Some`, elements annotated with
+    /// `#[PhpStormStubsElementAvailable]` whose version range excludes
+    /// this version are filtered out during extraction.  Set when
+    /// parsing phpstorm-stubs; left as `None` for user code (where the
+    /// attribute is never used).
+    pub php_version: Option<PhpVersion>,
+}
+
+// ─── PhpStormStubsElementAvailable Attribute Parsing ────────────────────────
+
+/// Version range extracted from a `#[PhpStormStubsElementAvailable]` attribute.
+///
+/// Both bounds are inclusive.  `None` means unbounded in that direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VersionAvailability {
+    /// Earliest PHP version where the element is available (inclusive).
+    pub from: Option<PhpVersion>,
+    /// Latest PHP version where the element is available (inclusive).
+    pub to: Option<PhpVersion>,
+}
+
+/// Check whether a function or method is available for the given PHP version
+/// based on its `#[PhpStormStubsElementAvailable]` attributes.
+///
+/// Returns `true` when:
+///   - The element has no `PhpStormStubsElementAvailable` attribute (always available).
+///   - The element has the attribute and the version falls within its range.
+///
+/// Returns `false` when the attribute is present and the version is outside the range.
+pub(crate) fn is_available_for_version(
+    attribute_lists: &Sequence<'_, attribute::AttributeList<'_>>,
+    content: &str,
+    php_version: PhpVersion,
+) -> bool {
+    if let Some(avail) = extract_version_availability(attribute_lists, content) {
+        php_version.matches_range(avail.from, avail.to)
+    } else {
+        // No version attribute → always available.
+        true
+    }
+}
+
+/// Check whether a parameter is available for the given PHP version
+/// based on its `#[PhpStormStubsElementAvailable]` attributes.
+///
+/// Same logic as [`is_available_for_version`] but operates on a single
+/// parameter's attribute lists.
+pub(crate) fn is_param_available_for_version(
+    param: &function_like::parameter::FunctionLikeParameter<'_>,
+    content: &str,
+    php_version: PhpVersion,
+) -> bool {
+    if let Some(avail) = extract_version_availability(&param.attribute_lists, content) {
+        php_version.matches_range(avail.from, avail.to)
+    } else {
+        true
+    }
+}
+
+/// Extract the `from` / `to` version range from a
+/// `#[PhpStormStubsElementAvailable(...)]` attribute, if present.
+///
+/// Supports both named and positional argument forms:
+///   - `#[PhpStormStubsElementAvailable(from: '8.0')]`
+///   - `#[PhpStormStubsElementAvailable(from: '8.0', to: '8.4')]`
+///   - `#[PhpStormStubsElementAvailable(to: '7.4')]`
+///   - `#[PhpStormStubsElementAvailable('8.1')]` (positional → treated as `from`)
+///
+/// Returns `None` when the attribute is not present.
+fn extract_version_availability(
+    attribute_lists: &Sequence<'_, attribute::AttributeList<'_>>,
+    content: &str,
+) -> Option<VersionAvailability> {
+    for attr_list in attribute_lists.iter() {
+        for attr in attr_list.attributes.iter() {
+            if attr.name.last_segment() != "PhpStormStubsElementAvailable" {
+                continue;
+            }
+
+            let arg_list = attr.argument_list.as_ref()?;
+            let mut from: Option<PhpVersion> = None;
+            let mut to: Option<PhpVersion> = None;
+
+            for arg in arg_list.arguments.iter() {
+                match arg {
+                    argument::Argument::Named(named) => {
+                        let name = named.name.value.to_string();
+                        let value = extract_string_literal_value(named.value, content);
+                        if let Some(ver_str) = value {
+                            let ver = PhpVersion::from_composer_constraint(&ver_str);
+                            match name.as_str() {
+                                "from" => from = ver,
+                                "to" => to = ver,
+                                _ => {}
+                            }
+                        }
+                    }
+                    argument::Argument::Positional(positional) => {
+                        // Positional argument is treated as `from`.
+                        let value = extract_string_literal_value(positional.value, content);
+                        if let Some(ver_str) = value {
+                            from = PhpVersion::from_composer_constraint(&ver_str);
+                        }
+                    }
+                }
+            }
+
+            return Some(VersionAvailability { from, to });
+        }
+    }
+
+    None
+}
+
+/// Extract the string value from a literal string expression by reading
+/// the source text between the expression's span and stripping quotes.
+fn extract_string_literal_value(
+    expr: &expression::Expression<'_>,
+    content: &str,
+) -> Option<String> {
+    let span = expr.span();
+    let start = span.start.offset as usize;
+    let end = span.end.offset as usize;
+    let raw = content.get(start..end)?;
+    // Strip surrounding quotes (single or double).
+    let trimmed = raw.trim();
+    if (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+        || (trimmed.starts_with('"') && trimmed.ends_with('"'))
+    {
+        Some(trimmed[1..trimmed.len() - 1].to_string())
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Parse `content` with the mago-syntax parser and pass the resulting
@@ -109,13 +244,30 @@ pub(crate) fn extract_hint_string(hint: &Hint) -> String {
 /// from the source text using AST span offsets.  Pass `None` when the
 /// source text is not available (the `default_value` field will be `None`
 /// for every parameter in that case).
+///
+/// When `php_version` is `Some`, parameters annotated with
+/// `#[PhpStormStubsElementAvailable]` whose version range excludes the
+/// target version are filtered out.  When `None`, all parameters are
+/// included.
 pub(crate) fn extract_parameters(
     parameter_list: &FunctionLikeParameterList,
     content: Option<&str>,
+    php_version: Option<PhpVersion>,
 ) -> Vec<ParameterInfo> {
     parameter_list
         .parameters
         .iter()
+        .filter(|param| {
+            // When a PHP version is configured, skip parameters that are
+            // not available for that version.
+            if let Some(ver) = php_version
+                && let Some(src) = content
+            {
+                is_param_available_for_version(param, src, ver)
+            } else {
+                true
+            }
+        })
         .map(|param| {
             let name = param.variable.name.to_string();
             let is_variadic = param.ellipsis.is_some();
@@ -206,10 +358,20 @@ impl Backend {
     /// Parse PHP source text and extract class information.
     /// Returns a Vec of ClassInfo for all classes found in the file.
     pub fn parse_php(&self, content: &str) -> Vec<ClassInfo> {
+        Self::parse_php_versioned(content, None)
+    }
+
+    /// Version-aware variant of [`parse_php`].
+    ///
+    /// When `php_version` is `Some`, elements annotated with
+    /// `#[PhpStormStubsElementAvailable]` whose version range excludes
+    /// the target version are filtered out during extraction.
+    pub fn parse_php_versioned(content: &str, php_version: Option<PhpVersion>) -> Vec<ClassInfo> {
         with_parsed_program(content, "parse_php", |program, content| {
             let doc_ctx = DocblockCtx {
                 trivias: program.trivia.as_slice(),
                 content,
+                php_version,
             };
 
             let mut classes = Vec::new();
@@ -227,10 +389,24 @@ impl Backend {
     /// Returns a list of `FunctionInfo` for every `function` declaration
     /// found at the top level (or inside a namespace block).
     pub fn parse_functions(&self, content: &str) -> Vec<FunctionInfo> {
+        self.parse_functions_versioned(content, None)
+    }
+
+    /// Version-aware variant of [`parse_functions`].
+    ///
+    /// When `php_version` is `Some`, functions and parameters annotated
+    /// with `#[PhpStormStubsElementAvailable]` whose version range
+    /// excludes the target version are filtered out.
+    pub fn parse_functions_versioned(
+        &self,
+        content: &str,
+        php_version: Option<PhpVersion>,
+    ) -> Vec<FunctionInfo> {
         with_parsed_program(content, "parse_functions", |program, content| {
             let doc_ctx = DocblockCtx {
                 trivias: program.trivia.as_slice(),
                 content,
+                php_version,
             };
 
             let mut functions = Vec::new();

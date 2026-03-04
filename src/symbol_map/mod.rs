@@ -110,6 +110,8 @@ pub(crate) struct TemplateParamDef {
     /// Upper bound from the `of` clause (e.g. `"array-key"` in
     /// `@template TKey of array-key`), or `None` when unbounded.
     pub bound: Option<String>,
+    /// Variance annotation from the `@template` tag.
+    pub variance: crate::types::TemplateVariance,
     /// Start of the scope where this template parameter is visible.
     /// For class-level templates this is the docblock start offset;
     /// for method/function-level templates it is the docblock start offset.

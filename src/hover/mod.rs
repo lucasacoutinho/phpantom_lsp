@@ -12,7 +12,8 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::completion::resolver::ResolutionCtx;
-use crate::symbol_map::{SymbolKind, SymbolSpan};
+use crate::docblock::extract_template_params_full;
+use crate::symbol_map::{SymbolKind, SymbolSpan, VarDefKind};
 use crate::types::*;
 use crate::util::{find_class_at_offset, offset_to_position, position_to_offset};
 
@@ -75,6 +76,16 @@ impl Backend {
 
         match kind {
             SymbolKind::Variable { name } => {
+                // Suppress hover when the cursor is on a variable at its
+                // definition site (parameter, foreach binding, catch, etc.)
+                // — the type is already visible in the signature.
+                // Assignments are the exception: the RHS type is not
+                // obvious from the source text, so hover is useful there.
+                if let Some(def_kind) = self.lookup_var_def_kind_at(uri, name, cursor_offset)
+                    && !matches!(def_kind, VarDefKind::Assignment)
+                {
+                    return None;
+                }
                 self.hover_variable(name, uri, content, cursor_offset, current_class, &ctx)
             }
 
@@ -369,8 +380,10 @@ impl Backend {
         };
 
         Some(make_hover(format!(
-            "**template** `{}`{}",
-            def.name, bound_display
+            "**{}** `{}`{}",
+            def.variance.tag_name(),
+            def.name,
+            bound_display
         )))
     }
 
@@ -552,7 +565,12 @@ impl Backend {
 
         let mut extends_implements = String::new();
 
-        if let Some(ref parent) = cls.parent_class {
+        // For interfaces, `parent_class` is the first element of
+        // `interfaces` (both come from the same `extends` clause),
+        // so skip it to avoid duplicating the name.
+        if cls.kind != ClassLikeKind::Interface
+            && let Some(ref parent) = cls.parent_class
+        {
             extends_implements.push_str(&format!(" extends {}", short_name(parent)));
         }
 
@@ -581,6 +599,22 @@ impl Backend {
 
         if let Some(ref url) = cls.link {
             lines.push(format!("[{}]({})", url, url));
+        }
+
+        // Show template parameters with variance and bounds.
+        if let Some(ref docblock) = cls.class_docblock {
+            let tpl_entries: Vec<String> = extract_template_params_full(docblock)
+                .into_iter()
+                .map(|(name, bound, variance)| {
+                    let bound_display = bound
+                        .map(|b| format!(" of `{}`", shorten_type_string(&b)))
+                        .unwrap_or_default();
+                    format!("**{}** `{}`{}", variance.tag_name(), name, bound_display)
+                })
+                .collect();
+            if !tpl_entries.is_empty() {
+                lines.push(tpl_entries.join("  \n"));
+            }
         }
 
         lines.push(format!("```php\n<?php\n{}{}\n```", ns_line, signature));

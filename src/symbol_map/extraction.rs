@@ -449,11 +449,12 @@ fn extract_from_class<'a>(class: &'a Class<'a>, ctx: &mut ExtractionCtx<'a>) {
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = class.right_brace.end.offset;
-        for (name, name_offset, bound) in tpl_params {
+        for (name, name_offset, bound, variance) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
                 bound,
+                variance,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -494,11 +495,12 @@ fn extract_from_interface<'a>(iface: &'a Interface<'a>, ctx: &mut ExtractionCtx<
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = iface.right_brace.end.offset;
-        for (name, name_offset, bound) in tpl_params {
+        for (name, name_offset, bound, variance) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
                 bound,
+                variance,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -527,11 +529,12 @@ fn extract_from_trait<'a>(trait_def: &'a Trait<'a>, ctx: &mut ExtractionCtx<'a>)
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = trait_def.right_brace.end.offset;
-        for (name, name_offset, bound) in tpl_params {
+        for (name, name_offset, bound, variance) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
                 bound,
+                variance,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -571,11 +574,12 @@ fn extract_from_enum<'a>(enum_def: &'a Enum<'a>, ctx: &mut ExtractionCtx<'a>) {
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = enum_def.right_brace.end.offset;
-        for (name, name_offset, bound) in tpl_params {
+        for (name, name_offset, bound, variance) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
                 bound,
+                variance,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -676,11 +680,12 @@ fn extract_from_method<'a>(method: &'a Method<'a>, ctx: &mut ExtractionCtx<'a>) 
             // Use the method span end as a reasonable bound.
             method.span().end.offset
         };
-        for (name, name_offset, bound) in tpl_params {
+        for (name, name_offset, bound, variance) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
                 bound,
+                variance,
                 scope_start: doc_offset,
                 scope_end,
             });
@@ -866,11 +871,12 @@ fn extract_from_function<'a>(func: &'a Function<'a>, ctx: &mut ExtractionCtx<'a>
     {
         let tpl_params = extract_docblock_symbols(doc_text, doc_offset, &mut ctx.spans);
         let scope_end = func.body.right_brace.end.offset;
-        for (name, name_offset, bound) in tpl_params {
+        for (name, name_offset, bound, variance) in tpl_params {
             ctx.template_defs.push(TemplateParamDef {
                 name_offset,
                 name,
                 bound,
+                variance,
                 scope_start: doc_offset,
                 scope_end,
             });

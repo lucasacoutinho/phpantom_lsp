@@ -53,6 +53,7 @@ impl Backend {
         let doc_ctx = DocblockCtx {
             trivias: program.trivia.as_slice(),
             content,
+            php_version: None,
         };
 
         // Extract all three in a single parse pass.

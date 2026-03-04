@@ -9,6 +9,7 @@ use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
 use crate::docblock::types::{split_intersection_depth0, split_type_token, split_union_depth0};
+use crate::types::TemplateVariance;
 
 use super::{SymbolKind, SymbolSpan};
 
@@ -146,7 +147,7 @@ pub(super) fn extract_docblock_symbols(
     docblock: &str,
     base_offset: u32,
     spans: &mut Vec<SymbolSpan>,
-) -> Vec<(String, u32, Option<String>)> {
+) -> Vec<(String, u32, Option<String>, TemplateVariance)> {
     // Tags whose immediate next token is a type.
     const TYPE_FIRST_TAGS: &[&str] = &[
         "@param",
@@ -177,7 +178,7 @@ pub(super) fn extract_docblock_symbols(
     ];
 
     let mut line_start: usize = 0;
-    let mut template_params: Vec<(String, u32, Option<String>)> = Vec::new();
+    let mut template_params: Vec<(String, u32, Option<String>, TemplateVariance)> = Vec::new();
 
     for line in docblock.split('\n') {
         if let Some(at_pos) = line.find('@') {
@@ -207,17 +208,27 @@ pub(super) fn extract_docblock_symbols(
             // @template-covariant / @template-contravariant are variants.
             // The first token after the tag is the parameter name (skip it),
             // then if followed by `of`, the next token is the bound type.
-            if tag_lower == "@template"
-                || tag_lower == "@template-covariant"
-                || tag_lower == "@template-contravariant"
+            let template_variance = if tag_lower == "@template"
                 || tag_lower == "@phpstan-template"
                 || tag_lower == "@psalm-template"
+            {
+                Some(TemplateVariance::Invariant)
+            } else if tag_lower == "@template-covariant"
                 || tag_lower == "@phpstan-template-covariant"
                 || tag_lower == "@psalm-template-covariant"
+            {
+                Some(TemplateVariance::Covariant)
+            } else if tag_lower == "@template-contravariant"
                 || tag_lower == "@phpstan-template-contravariant"
                 || tag_lower == "@psalm-template-contravariant"
             {
-                if let Some(tp) = extract_template_tag_symbols(
+                Some(TemplateVariance::Contravariant)
+            } else {
+                None
+            };
+
+            if let Some(variance) = template_variance {
+                if let Some((name, offset, bound)) = extract_template_tag_symbols(
                     after_at,
                     tag_end,
                     tag_start_in_line,
@@ -225,7 +236,7 @@ pub(super) fn extract_docblock_symbols(
                     base_offset,
                     spans,
                 ) {
-                    template_params.push(tp);
+                    template_params.push((name, offset, bound, variance));
                 }
                 line_start += line.len() + 1;
                 continue;
@@ -656,6 +667,8 @@ pub(super) fn emit_type_spans(
     }
 
     // Recurse into generic type arguments: `Foo<Bar, Baz>` → process `Bar, Baz`.
+    // Also recurse into array/object shape bodies: `array{key: Cls, other: int}`.
+    let brace_start = type_name.find('{');
     if let Some(gen_start) = type_name.find('<') {
         // Find the matching closing `>` (respecting nesting depth).
         let inner_start = gen_start + 1;
@@ -693,6 +706,75 @@ pub(super) fn emit_type_spans(
                         emit_type_spans(trimmed, arg_file_offset, spans);
                     }
                     arg_start_idx = i + 1;
+                } else if !at_end {
+                    match inner_bytes[i] {
+                        b'<' | b'(' | b'{' => d += 1,
+                        b'>' | b')' | b'}' if d > 0 => d -= 1,
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    // Recurse into array/object shape bodies: `array{key: Pen, debug: bool}`
+    // or `object{name: string, user: User}`.
+    // Each entry has the form `key: Type` or `key?: Type`.  We split on
+    // `,` at depth 0, then for each entry skip past the `:` to get the
+    // value type and recurse into it.
+    if let Some(brace_pos) = brace_start {
+        let inner_start = brace_pos + 1;
+        let bytes = type_name.as_bytes();
+        let mut depth = 1u32;
+        let mut brace_end = inner_start;
+        while brace_end < bytes.len() && depth > 0 {
+            match bytes[brace_end] {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            if depth > 0 {
+                brace_end += 1;
+            }
+        }
+        if depth == 0 {
+            let inner = &type_name[inner_start..brace_end];
+            // Split entries on `,` at depth 0.
+            let mut d = 0u32;
+            let mut entry_start = 0usize;
+            let inner_bytes = inner.as_bytes();
+            for i in 0..=inner_bytes.len() {
+                let at_end = i == inner_bytes.len();
+                let is_comma = !at_end && inner_bytes[i] == b',' && d == 0;
+                if (at_end && d == 0) || is_comma {
+                    let entry = &inner[entry_start..i];
+                    // Find the `:` separator (at depth 0) between key and value type.
+                    // The key may contain `?` (optional marker) but not `<`, `{`, etc.
+                    let mut colon_pos = None;
+                    let mut ed = 0u32;
+                    for (j, &b) in entry.as_bytes().iter().enumerate() {
+                        match b {
+                            b'<' | b'(' | b'{' => ed += 1,
+                            b'>' | b')' | b'}' if ed > 0 => ed -= 1,
+                            b':' if ed == 0 => {
+                                colon_pos = Some(j);
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    if let Some(cp) = colon_pos {
+                        let value_part = &entry[cp + 1..];
+                        let value_trimmed = value_part.trim();
+                        if !value_trimmed.is_empty() {
+                            let leading_ws = value_part.len() - value_part.trim_start().len();
+                            let value_file_offset = token_file_offset
+                                + extra_offset
+                                + (inner_start + entry_start + cp + 1 + leading_ws) as u32;
+                            emit_type_spans(value_trimmed, value_file_offset, spans);
+                        }
+                    }
+                    entry_start = i + 1;
                 } else if !at_end {
                     match inner_bytes[i] {
                         b'<' | b'(' | b'{' => d += 1,

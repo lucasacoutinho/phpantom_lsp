@@ -38,7 +38,7 @@ use std::path::Path;
 
 use crate::Backend;
 use crate::composer;
-use crate::types::{ClassInfo, FileContext, FunctionInfo};
+use crate::types::{ClassInfo, FileContext, FunctionInfo, PhpVersion};
 use crate::util::short_name;
 
 impl Backend {
@@ -124,7 +124,10 @@ impl Backend {
             && let Some(&stub_content) = self.stub_index.get(last_segment)
         {
             let stub_uri = format!("phpantom-stub://{}", last_segment);
-            if let Some(classes) = self.parse_and_cache_content(stub_content, &stub_uri) {
+            let ver = Some(self.php_version());
+            if let Some(classes) =
+                self.parse_and_cache_content_versioned(stub_content, &stub_uri, ver)
+            {
                 let result = classes.iter().find(|c| c.name == last_segment).cloned();
                 if result.is_some() {
                     return result;
@@ -161,7 +164,23 @@ impl Backend {
         content: &str,
         uri: &str,
     ) -> Option<Vec<ClassInfo>> {
-        let mut classes = self.parse_php(content);
+        self.parse_and_cache_content_versioned(content, uri, None)
+    }
+
+    /// Version-aware variant of [`parse_and_cache_content`].
+    ///
+    /// When `php_version` is `Some`, elements annotated with
+    /// `#[PhpStormStubsElementAvailable]` whose version range excludes
+    /// the target version are filtered out during extraction.  Used when
+    /// parsing phpstorm-stubs so that only the correct variant of each
+    /// function, method, or parameter is presented.
+    pub(crate) fn parse_and_cache_content_versioned(
+        &self,
+        content: &str,
+        uri: &str,
+        php_version: Option<PhpVersion>,
+    ) -> Option<Vec<ClassInfo>> {
+        let mut classes = Self::parse_php_versioned(content, php_version);
         let file_use_map = self.parse_use_statements(content);
         let file_namespace = self.parse_namespace(content);
         Self::resolve_parent_class_names(&mut classes, &file_use_map, &file_namespace);
@@ -229,7 +248,8 @@ impl Backend {
             let lookup = name.strip_prefix('\\').unwrap_or(name);
 
             if let Some(&stub_content) = self.stub_function_index.get(lookup) {
-                let functions = self.parse_functions(stub_content);
+                let ver = Some(self.php_version());
+                let functions = self.parse_functions_versioned(stub_content, ver);
 
                 if functions.is_empty() {
                     continue;
@@ -262,7 +282,7 @@ impl Backend {
                 // Also cache any classes defined in the same stub file so
                 // that class lookups for types referenced by the function
                 // (e.g. return types) can find them later.
-                let mut classes = self.parse_php(stub_content);
+                let mut classes = Self::parse_php_versioned(stub_content, ver);
                 if !classes.is_empty() {
                     let empty_use_map = HashMap::new();
                     let stub_namespace = self.parse_namespace(stub_content);

@@ -10,7 +10,7 @@ use crate::Backend;
 use crate::docblock;
 use crate::types::*;
 
-use super::{DocblockCtx, extract_hint_string, extract_parameters};
+use super::{DocblockCtx, extract_hint_string, extract_parameters, is_available_for_version};
 
 impl Backend {
     /// Extract standalone function definitions from a sequence of statements.
@@ -27,10 +27,23 @@ impl Backend {
         for statement in statements {
             match statement {
                 Statement::Function(func) => {
+                    // Skip functions whose #[PhpStormStubsElementAvailable]
+                    // range excludes the target PHP version.
+                    if let Some(ctx) = doc_ctx
+                        && let Some(ver) = ctx.php_version
+                        && !is_available_for_version(&func.attribute_lists, ctx.content, ver)
+                    {
+                        continue;
+                    }
+
                     let name = func.name.value.to_string();
                     let name_offset = func.name.span.start.offset;
-                    let mut parameters =
-                        extract_parameters(&func.parameter_list, doc_ctx.map(|ctx| ctx.content));
+                    let php_version = doc_ctx.and_then(|ctx| ctx.php_version);
+                    let mut parameters = extract_parameters(
+                        &func.parameter_list,
+                        doc_ctx.map(|ctx| ctx.content),
+                        php_version,
+                    );
                     let native_return_type = func
                         .return_type_hint
                         .as_ref()

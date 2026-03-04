@@ -51,7 +51,8 @@ use crate::types::*;
 use crate::virtual_members::laravel::infer_relationship_from_body;
 
 use super::{
-    DocblockCtx, extract_hint_string, extract_parameters, extract_property_info, extract_visibility,
+    DocblockCtx, extract_hint_string, extract_parameters, extract_property_info,
+    extract_visibility, is_available_for_version,
 };
 
 /// Docblock-derived metadata common to all class-like declarations.
@@ -1448,10 +1449,23 @@ impl Backend {
         for member in members {
             match member {
                 ClassLikeMember::Method(method) => {
+                    // Skip methods whose #[PhpStormStubsElementAvailable]
+                    // range excludes the target PHP version.
+                    if let Some(ctx) = doc_ctx
+                        && let Some(ver) = ctx.php_version
+                        && !is_available_for_version(&method.attribute_lists, ctx.content, ver)
+                    {
+                        continue;
+                    }
+
                     let name = method.name.value.to_string();
                     let name_offset = method.name.span.start.offset;
-                    let mut parameters =
-                        extract_parameters(&method.parameter_list, doc_ctx.map(|ctx| ctx.content));
+                    let php_version = doc_ctx.and_then(|ctx| ctx.php_version);
+                    let mut parameters = extract_parameters(
+                        &method.parameter_list,
+                        doc_ctx.map(|ctx| ctx.content),
+                        php_version,
+                    );
                     let native_return_type = method
                         .return_type_hint
                         .as_ref()

@@ -2645,3 +2645,159 @@ fn declare_statement_body_extracts_symbols() {
         panic!("Expected ClassReference for Foo");
     }
 }
+
+#[test]
+fn docblock_array_shape_value_type_produces_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "class Pen {}\n",
+        "/**\n",
+        " * @return array{logger: Pen, debug: bool}\n",
+        " */\n",
+        "function getConfig(): array { return []; }\n",
+    );
+    let map = parse_and_extract(php);
+
+    let pen_offset = php.find("Pen, debug").unwrap() as u32;
+    let hit = map.lookup(pen_offset);
+    assert!(
+        hit.is_some(),
+        "Should find Pen inside array shape value type"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Pen");
+    } else {
+        panic!(
+            "Expected ClassReference for Pen, got {:?}",
+            hit.unwrap().kind
+        );
+    }
+}
+
+#[test]
+fn docblock_array_shape_multiple_class_values() {
+    let php = concat!(
+        "<?php\n",
+        "class Logger {}\n",
+        "class Mailer {}\n",
+        "/**\n",
+        " * @return array{log: Logger, mail: Mailer}\n",
+        " */\n",
+        "function services(): array { return []; }\n",
+    );
+    let map = parse_and_extract(php);
+
+    // Check Logger
+    let logger_offset = php.find("Logger, mail").unwrap() as u32;
+    let hit = map.lookup(logger_offset);
+    assert!(hit.is_some(), "Should find Logger in array shape");
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Logger");
+    } else {
+        panic!("Expected ClassReference for Logger");
+    }
+
+    // Check Mailer
+    let mailer_offset = php.find("Mailer}").unwrap() as u32;
+    let hit = map.lookup(mailer_offset);
+    assert!(hit.is_some(), "Should find Mailer in array shape");
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Mailer");
+    } else {
+        panic!("Expected ClassReference for Mailer");
+    }
+}
+
+#[test]
+fn docblock_object_shape_value_type_produces_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "class User {}\n",
+        "/**\n",
+        " * @return object{owner: User, active: bool}\n",
+        " */\n",
+        "function getProfile(): object { return (object)[]; }\n",
+    );
+    let map = parse_and_extract(php);
+
+    let user_offset = php.find("User, active").unwrap() as u32;
+    let hit = map.lookup(user_offset);
+    assert!(
+        hit.is_some(),
+        "Should find User inside object shape value type"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "User");
+    } else {
+        panic!("Expected ClassReference for User");
+    }
+}
+
+#[test]
+fn docblock_array_shape_scalar_value_not_navigable() {
+    let php = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @return array{name: string, count: int}\n",
+        " */\n",
+        "function getData(): array { return []; }\n",
+    );
+    let map = parse_and_extract(php);
+
+    let string_offset = php.find("string, count").unwrap() as u32;
+    let hit = map.lookup(string_offset);
+    assert!(
+        hit.is_none(),
+        "Scalar 'string' inside array shape should not be navigable"
+    );
+}
+
+#[test]
+fn docblock_array_shape_optional_key_value_produces_class_reference() {
+    let php = concat!(
+        "<?php\n",
+        "class Widget {}\n",
+        "/**\n",
+        " * @return array{item?: Widget}\n",
+        " */\n",
+        "function maybeWidget(): array { return []; }\n",
+    );
+    let map = parse_and_extract(php);
+
+    let widget_offset = php.find("Widget}").unwrap() as u32;
+    let hit = map.lookup(widget_offset);
+    assert!(
+        hit.is_some(),
+        "Should find Widget in optional array shape entry"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Widget");
+    } else {
+        panic!("Expected ClassReference for Widget");
+    }
+}
+
+#[test]
+fn docblock_array_shape_nested_generic_value() {
+    let php = concat!(
+        "<?php\n",
+        "class Item {}\n",
+        "/**\n",
+        " * @return array{items: list<Item>, total: int}\n",
+        " */\n",
+        "function paginated(): array { return []; }\n",
+    );
+    let map = parse_and_extract(php);
+
+    let item_offset = php.find("Item>, total").unwrap() as u32;
+    let hit = map.lookup(item_offset);
+    assert!(
+        hit.is_some(),
+        "Should find Item inside generic within array shape"
+    );
+    if let SymbolKind::ClassReference { ref name, .. } = hit.unwrap().kind {
+        assert_eq!(name, "Item");
+    } else {
+        panic!("Expected ClassReference for Item");
+    }
+}

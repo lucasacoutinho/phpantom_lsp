@@ -1,0 +1,654 @@
+//! Integration tests for PHP version-aware stub filtering.
+//!
+//! Tests that `#[PhpStormStubsElementAvailable]` attributes on functions,
+//! methods, and parameters are respected when a target PHP version is set.
+
+mod common;
+
+use common::create_test_backend;
+use phpantom_lsp::Backend;
+use phpantom_lsp::types::PhpVersion;
+use tower_lsp::lsp_types::{HoverContents, Position};
+
+// ─── PhpVersion parsing ─────────────────────────────────────────────────────
+
+#[test]
+fn parse_caret_constraint() {
+    let v = PhpVersion::from_composer_constraint("^8.4").unwrap();
+    assert_eq!(v, PhpVersion::new(8, 4));
+}
+
+#[test]
+fn parse_gte_constraint() {
+    let v = PhpVersion::from_composer_constraint(">=8.3").unwrap();
+    assert_eq!(v, PhpVersion::new(8, 3));
+}
+
+#[test]
+fn parse_tilde_constraint() {
+    let v = PhpVersion::from_composer_constraint("~8.2").unwrap();
+    assert_eq!(v, PhpVersion::new(8, 2));
+}
+
+#[test]
+fn parse_wildcard_constraint() {
+    let v = PhpVersion::from_composer_constraint("8.1.*").unwrap();
+    assert_eq!(v, PhpVersion::new(8, 1));
+}
+
+#[test]
+fn parse_exact_version() {
+    let v = PhpVersion::from_composer_constraint("8.3.1").unwrap();
+    assert_eq!(v, PhpVersion::new(8, 3));
+}
+
+#[test]
+fn parse_major_only() {
+    let v = PhpVersion::from_composer_constraint("^8").unwrap();
+    assert_eq!(v, PhpVersion::new(8, 0));
+}
+
+#[test]
+fn parse_range_takes_first() {
+    // ">=8.0 <8.4" → first match wins → 8.0
+    let v = PhpVersion::from_composer_constraint(">=8.0 <8.4").unwrap();
+    assert_eq!(v, PhpVersion::new(8, 0));
+}
+
+#[test]
+fn parse_pipe_separated() {
+    let v = PhpVersion::from_composer_constraint("^7.4|^8.0").unwrap();
+    assert_eq!(v, PhpVersion::new(7, 4));
+}
+
+#[test]
+fn parse_empty_returns_none() {
+    assert!(PhpVersion::from_composer_constraint("").is_none());
+}
+
+#[test]
+fn parse_garbage_returns_none() {
+    assert!(PhpVersion::from_composer_constraint("not-a-version").is_none());
+}
+
+#[test]
+fn default_version_is_8_5() {
+    let v = PhpVersion::default();
+    assert_eq!(v, PhpVersion::new(8, 5));
+}
+
+// ─── matches_range ──────────────────────────────────────────────────────────
+
+#[test]
+fn matches_range_unbounded() {
+    let v = PhpVersion::new(8, 4);
+    assert!(v.matches_range(None, None));
+}
+
+#[test]
+fn matches_range_from_only_matches() {
+    let v = PhpVersion::new(8, 4);
+    assert!(v.matches_range(Some(PhpVersion::new(8, 0)), None));
+}
+
+#[test]
+fn matches_range_from_only_too_low() {
+    let v = PhpVersion::new(7, 4);
+    assert!(!v.matches_range(Some(PhpVersion::new(8, 0)), None));
+}
+
+#[test]
+fn matches_range_to_only_matches() {
+    let v = PhpVersion::new(7, 4);
+    assert!(v.matches_range(None, Some(PhpVersion::new(7, 4))));
+}
+
+#[test]
+fn matches_range_to_only_too_high() {
+    let v = PhpVersion::new(8, 0);
+    assert!(!v.matches_range(None, Some(PhpVersion::new(7, 4))));
+}
+
+#[test]
+fn matches_range_exact() {
+    let v = PhpVersion::new(8, 0);
+    assert!(v.matches_range(Some(PhpVersion::new(8, 0)), Some(PhpVersion::new(8, 0))));
+}
+
+#[test]
+fn matches_range_within() {
+    let v = PhpVersion::new(8, 1);
+    assert!(v.matches_range(Some(PhpVersion::new(8, 0)), Some(PhpVersion::new(8, 4))));
+}
+
+#[test]
+fn matches_range_outside_below() {
+    let v = PhpVersion::new(7, 4);
+    assert!(!v.matches_range(Some(PhpVersion::new(8, 0)), Some(PhpVersion::new(8, 4))));
+}
+
+#[test]
+fn matches_range_outside_above() {
+    let v = PhpVersion::new(8, 5);
+    assert!(!v.matches_range(Some(PhpVersion::new(8, 0)), Some(PhpVersion::new(8, 4))));
+}
+
+// ─── Composer version detection ─────────────────────────────────────────────
+
+#[test]
+fn detect_version_from_require_php() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("composer.json"),
+        r#"{ "require": { "php": "^8.4" } }"#,
+    )
+    .unwrap();
+    let v = phpantom_lsp::composer::detect_php_version(dir.path()).unwrap();
+    assert_eq!(v, PhpVersion::new(8, 4));
+}
+
+#[test]
+fn detect_version_from_platform_php() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("composer.json"),
+        r#"{ "config": { "platform": { "php": "8.3.1" } }, "require": { "php": "^8.4" } }"#,
+    )
+    .unwrap();
+    // platform.php takes priority over require.php
+    let v = phpantom_lsp::composer::detect_php_version(dir.path()).unwrap();
+    assert_eq!(v, PhpVersion::new(8, 3));
+}
+
+#[test]
+fn detect_version_no_composer_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let v = phpantom_lsp::composer::detect_php_version(dir.path());
+    assert!(v.is_none());
+}
+
+#[test]
+fn detect_version_no_php_constraint() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("composer.json"),
+        r#"{ "require": { "laravel/framework": "^11.0" } }"#,
+    )
+    .unwrap();
+    let v = phpantom_lsp::composer::detect_php_version(dir.path());
+    assert!(v.is_none());
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Register file content in the backend and return hover result.
+fn hover_at(
+    backend: &Backend,
+    uri: &str,
+    content: &str,
+    line: u32,
+    character: u32,
+) -> Option<tower_lsp::lsp_types::Hover> {
+    backend.update_ast(uri, content);
+    backend.handle_hover(uri, content, Position { line, character })
+}
+
+fn hover_text(hover: &tower_lsp::lsp_types::Hover) -> &str {
+    match &hover.contents {
+        HoverContents::Markup(markup) => &markup.value,
+        _ => panic!("Expected MarkupContent"),
+    }
+}
+
+// ─── Function-level version filtering ───────────────────────────────────────
+
+#[test]
+fn function_level_php80_picks_correct_variant() {
+    // Two variants of the same function: one for <=7.4, one for >=8.0.
+    // With PHP 8.4, only the 8.0+ variant should survive.
+    let backend = create_test_backend();
+    backend.set_php_version(PhpVersion::new(8, 4));
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+/**
+ * @return array|false
+ */
+#[PhpStormStubsElementAvailable(from: '5.3', to: '7.4')]
+function array_combine(array $keys, array $values): array|false {}
+
+/**
+ * @return array
+ */
+#[PhpStormStubsElementAvailable(from: '8.0')]
+function array_combine(array $keys, array $values): array {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 4)));
+    assert_eq!(
+        functions.len(),
+        1,
+        "should have exactly one function variant"
+    );
+    // The 8.0+ variant has return type `array` (not `array|false`).
+    assert_eq!(
+        functions[0].native_return_type.as_deref(),
+        Some("array"),
+        "should pick the PHP 8.0+ variant"
+    );
+}
+
+#[test]
+fn function_level_php74_picks_legacy_variant() {
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+#[PhpStormStubsElementAvailable(from: '5.3', to: '7.4')]
+function array_combine(array $keys, array $values): array|false {}
+
+#[PhpStormStubsElementAvailable(from: '8.0')]
+function array_combine(array $keys, array $values): array {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(7, 4)));
+    assert_eq!(functions.len(), 1);
+    assert_eq!(
+        functions[0].native_return_type.as_deref(),
+        Some("array|false"),
+        "should pick the PHP 5.3-7.4 variant"
+    );
+}
+
+#[test]
+fn function_without_version_attribute_always_included() {
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+function always_available(string $arg): string {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 4)));
+    assert_eq!(functions.len(), 1);
+    assert_eq!(functions[0].name, "always_available");
+}
+
+#[test]
+fn function_with_positional_from_argument() {
+    // `#[PhpStormStubsElementAvailable('8.1')]` — positional arg = from
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+#[PhpStormStubsElementAvailable('8.1')]
+function new_function(): void {}
+"#;
+
+    // PHP 8.0 — should be excluded
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 0)));
+    assert_eq!(
+        functions.len(),
+        0,
+        "function should be excluded for PHP 8.0"
+    );
+
+    // PHP 8.1 — should be included
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 1)));
+    assert_eq!(
+        functions.len(),
+        1,
+        "function should be included for PHP 8.1"
+    );
+}
+
+#[test]
+fn function_with_to_only() {
+    // Available up to 7.4 only
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+#[PhpStormStubsElementAvailable(to: '7.4')]
+function legacy_only(): void {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 0)));
+    assert_eq!(functions.len(), 0, "should be excluded for PHP 8.0");
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(7, 4)));
+    assert_eq!(functions.len(), 1, "should be included for PHP 7.4");
+}
+
+// ─── Parameter-level version filtering ──────────────────────────────────────
+
+#[test]
+fn parameter_version_filtering_php80() {
+    // Like the real array_map stub: one param for 8.0+, another for <=7.4
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+function array_map(
+    ?callable $callback,
+    #[PhpStormStubsElementAvailable(from: '8.0')] array $array,
+    #[PhpStormStubsElementAvailable(from: '5.3', to: '7.4')] $arrays,
+    array ...$arrays
+): array {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 4)));
+    assert_eq!(functions.len(), 1);
+    let params = &functions[0].parameters;
+
+    // Should have: $callback, $array (8.0+), ...$arrays
+    // Should NOT have the bare $arrays (5.3-7.4)
+    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["$callback", "$array", "$arrays"]);
+
+    // $array should be typed `array`
+    assert_eq!(params[1].type_hint.as_deref(), Some("array"));
+    assert_eq!(params[1].name, "$array");
+
+    // ...$arrays should be variadic
+    assert!(params[2].is_variadic);
+}
+
+#[test]
+fn parameter_version_filtering_php74() {
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+function array_map(
+    ?callable $callback,
+    #[PhpStormStubsElementAvailable(from: '8.0')] array $array,
+    #[PhpStormStubsElementAvailable(from: '5.3', to: '7.4')] $arrays,
+    array ...$arrays
+): array {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(7, 4)));
+    assert_eq!(functions.len(), 1);
+    let params = &functions[0].parameters;
+
+    // Should have: $callback, $arrays (5.3-7.4 untyped), ...$arrays
+    // Should NOT have `array $array` (8.0+)
+    let names: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, vec!["$callback", "$arrays", "$arrays"]);
+
+    // The first $arrays (5.3-7.4) has no type hint
+    assert_eq!(params[1].type_hint, None);
+    assert!(!params[1].is_variadic);
+
+    // The second $arrays is variadic
+    assert!(params[2].is_variadic);
+}
+
+#[test]
+fn parameter_without_version_attribute_always_included() {
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+function my_func(string $always, int $present): void {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 4)));
+    assert_eq!(functions[0].parameters.len(), 2);
+}
+
+#[test]
+fn parameter_with_from_only_added_in_later_version() {
+    // Parameter added in PHP 7.0
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+function unserialize(string $data, #[PhpStormStubsElementAvailable(from: '7.0')] array $options = []): mixed {}
+"#;
+
+    // PHP 7.0+ — should include $options
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 4)));
+    assert_eq!(functions[0].parameters.len(), 2);
+
+    // PHP 5.6 — should exclude $options
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(5, 6)));
+    assert_eq!(functions[0].parameters.len(), 1);
+    assert_eq!(functions[0].parameters[0].name, "$data");
+}
+
+// ─── Method-level version filtering ─────────────────────────────────────────
+
+#[test]
+fn method_version_filtering() {
+    let backend = create_test_backend();
+    backend.set_php_version(PhpVersion::new(8, 4));
+
+    let content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+class SplFixedArray {
+    #[PhpStormStubsElementAvailable(from: '8.2')]
+    public function __serialize(): array {}
+
+    #[PhpStormStubsElementAvailable(from: '8.2')]
+    public function __unserialize(array $data): void {}
+
+    #[PhpStormStubsElementAvailable(to: '7.4')]
+    public function legacyMethod(): void {}
+
+    public function alwaysAvailable(): void {}
+}
+"#;
+
+    let classes = Backend::parse_php_versioned(content, Some(PhpVersion::new(8, 4)));
+    assert_eq!(classes.len(), 1);
+    let method_names: Vec<&str> = classes[0].methods.iter().map(|m| m.name.as_str()).collect();
+
+    // Should include __serialize, __unserialize, alwaysAvailable
+    // Should exclude legacyMethod (to: 7.4)
+    assert!(
+        method_names.contains(&"__serialize"),
+        "should include __serialize"
+    );
+    assert!(
+        method_names.contains(&"__unserialize"),
+        "should include __unserialize"
+    );
+    assert!(
+        method_names.contains(&"alwaysAvailable"),
+        "should include alwaysAvailable"
+    );
+    assert!(
+        !method_names.contains(&"legacyMethod"),
+        "should exclude legacyMethod"
+    );
+}
+
+#[test]
+fn method_version_filtering_picks_legacy() {
+    let backend = create_test_backend();
+    backend.set_php_version(PhpVersion::new(7, 4));
+
+    let content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+class SplFixedArray {
+    #[PhpStormStubsElementAvailable(from: '8.2')]
+    public function __serialize(): array {}
+
+    #[PhpStormStubsElementAvailable(to: '7.4')]
+    public function legacyMethod(): void {}
+
+    public function alwaysAvailable(): void {}
+}
+"#;
+
+    let classes = Backend::parse_php_versioned(content, Some(PhpVersion::new(7, 4)));
+    assert_eq!(classes.len(), 1);
+    let method_names: Vec<&str> = classes[0].methods.iter().map(|m| m.name.as_str()).collect();
+
+    assert!(
+        !method_names.contains(&"__serialize"),
+        "should exclude __serialize for 7.4"
+    );
+    assert!(
+        method_names.contains(&"legacyMethod"),
+        "should include legacyMethod for 7.4"
+    );
+    assert!(
+        method_names.contains(&"alwaysAvailable"),
+        "should include alwaysAvailable"
+    );
+}
+
+// ─── No filtering without version ───────────────────────────────────────────
+
+#[test]
+fn no_version_includes_all_variants() {
+    // When no PHP version is set (None), all variants should be included.
+    let backend = create_test_backend();
+
+    let stub_content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+#[PhpStormStubsElementAvailable(from: '5.3', to: '7.4')]
+function my_func(): array|false {}
+
+#[PhpStormStubsElementAvailable(from: '8.0')]
+function my_func(): array {}
+"#;
+
+    let functions = backend.parse_functions_versioned(stub_content, None);
+    assert_eq!(
+        functions.len(),
+        2,
+        "without version filtering, both variants should be present"
+    );
+}
+
+// ─── Method parameter version filtering ─────────────────────────────────────
+
+#[test]
+fn method_parameter_version_filtering() {
+    let content = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+class FilesystemIterator {
+    public function setFlags(
+        #[PhpStormStubsElementAvailable(from: '5.3', to: '7.4')] $flags = null,
+        #[PhpStormStubsElementAvailable(from: '8.0')] int $flags
+    ): void {}
+}
+"#;
+
+    // PHP 8.4 — should get `int $flags`
+    let classes = Backend::parse_php_versioned(content, Some(PhpVersion::new(8, 4)));
+    let method = &classes[0].methods[0];
+    assert_eq!(method.parameters.len(), 1);
+    assert_eq!(method.parameters[0].name, "$flags");
+    assert_eq!(method.parameters[0].type_hint.as_deref(), Some("int"));
+
+    // PHP 7.4 — should get untyped `$flags = null`
+    let classes = Backend::parse_php_versioned(content, Some(PhpVersion::new(7, 4)));
+    let method = &classes[0].methods[0];
+    assert_eq!(method.parameters.len(), 1);
+    assert_eq!(method.parameters[0].name, "$flags");
+    assert_eq!(method.parameters[0].type_hint, None);
+}
+
+// ─── Backend php_version accessor ───────────────────────────────────────────
+
+#[test]
+fn backend_default_version() {
+    let backend = create_test_backend();
+    assert_eq!(backend.php_version(), PhpVersion::new(8, 5));
+}
+
+#[test]
+fn backend_set_version() {
+    let backend = create_test_backend();
+    backend.set_php_version(PhpVersion::new(8, 2));
+    assert_eq!(backend.php_version(), PhpVersion::new(8, 2));
+}
+
+// ─── End-to-end: hover uses version filtering ───────────────────────────────
+
+#[test]
+fn hover_shows_version_filtered_function_signature() {
+    // Simulate the array_map issue: with PHP 8.4, hover should show
+    // `array $array` (not the untyped `$arrays` from 7.4)
+    let backend = create_test_backend();
+    backend.set_php_version(PhpVersion::new(8, 4));
+
+    // Inject a versioned stub function
+    let stub_content: &str = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+/**
+ * Applies the callback to the elements of the given arrays
+ * @link https://php.net/manual/en/function.array-map.php
+ * @param callable|null $callback
+ * @param array $array
+ * @param array ...$arrays
+ * @return array
+ */
+function array_map(
+    ?callable $callback,
+    #[PhpStormStubsElementAvailable(from: '8.0')] array $array,
+    #[PhpStormStubsElementAvailable(from: '5.3', to: '7.4')] $arrays,
+    array ...$arrays
+): array {}
+"#;
+
+    // Manually inject the function into global_functions using versioned parsing
+    let functions = backend.parse_functions_versioned(stub_content, Some(PhpVersion::new(8, 4)));
+    {
+        let mut fmap = backend.global_functions().lock().unwrap();
+        for func in functions {
+            fmap.insert(
+                func.name.clone(),
+                ("phpantom-stub-fn://array_map".to_string(), func),
+            );
+        }
+    }
+
+    let content = r#"<?php
+array_map(null, []);
+"#;
+    let uri = "file:///test.php";
+
+    let hover = hover_at(&backend, uri, content, 1, 2);
+    if let Some(hover) = hover {
+        let text = hover_text(&hover);
+        // The signature should NOT contain the untyped `$arrays` parameter
+        // that is only for PHP 5.3-7.4.
+        assert!(
+            !text.contains("$arrays, array ...$arrays"),
+            "should not have both $arrays variants in: {}",
+            text
+        );
+        // It should show `array $array` from the 8.0+ variant
+        if text.contains("array_map") {
+            assert!(
+                text.contains("array $array"),
+                "should show typed `array $array`: {}",
+                text
+            );
+        }
+    }
+}
+
+// ─── Display ────────────────────────────────────────────────────────────────
+
+#[test]
+fn php_version_display() {
+    assert_eq!(PhpVersion::new(8, 4).to_string(), "8.4");
+    assert_eq!(PhpVersion::new(7, 0).to_string(), "7.0");
+}

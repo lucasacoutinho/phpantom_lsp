@@ -4,7 +4,8 @@
 //! extracted PHP information (classes, methods, properties, constants,
 //! standalone functions) as well as completion-related types
 //! (AccessKind, CompletionTarget, SubjectExpr), PHPStan conditional
-//! return type representations, and PHPStan/Psalm array shape types.
+//! return type representations, PHPStan/Psalm array shape types, and
+//! the [`PhpVersion`] type used for version-aware stub filtering.
 
 // Re-export SubjectExpr and BracketSegment from their canonical module
 // so that existing `use crate::types::{SubjectExpr, BracketSegment, …}`
@@ -12,6 +13,118 @@
 pub use crate::subject_expr::{BracketSegment, SubjectExpr};
 
 use std::collections::HashMap;
+use std::fmt;
+
+// ─── PHP Version ────────────────────────────────────────────────────────────
+
+/// A PHP major.minor version used for version-aware stub filtering.
+///
+/// phpstorm-stubs annotate functions, methods, and parameters with
+/// `#[PhpStormStubsElementAvailable(from: 'X.Y', to: 'X.Y')]` attributes
+/// to indicate which PHP versions they apply to.  PHPantom uses this
+/// struct to decide which variant of a stub element to present.
+///
+/// The version is detected from `composer.json` (`require.php`) during
+/// server initialization. When no version is found, [`PhpVersion::default`]
+/// returns PHP 8.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PhpVersion {
+    /// Major version number (e.g. `8` in PHP 8.4).
+    pub major: u8,
+    /// Minor version number (e.g. `4` in PHP 8.4).
+    pub minor: u8,
+}
+
+impl PhpVersion {
+    /// Create a new `PhpVersion`.
+    pub const fn new(major: u8, minor: u8) -> Self {
+        Self { major, minor }
+    }
+
+    /// Parse a PHP version from a Composer `require.php` constraint string.
+    ///
+    /// Extracts the first `major.minor` pair found in the constraint.
+    /// Supports common formats:
+    ///   - `"^8.4"` → 8.4
+    ///   - `">=8.3"` → 8.3
+    ///   - `"~8.2"` → 8.2
+    ///   - `"8.1.*"` → 8.1
+    ///   - `">=8.0 <8.4"` → 8.0 (first match wins)
+    ///   - `"8.3.1"` → 8.3
+    ///   - `"^8"` → 8.0
+    ///
+    /// Returns `None` if no version can be extracted.
+    pub fn from_composer_constraint(constraint: &str) -> Option<Self> {
+        // Walk through the constraint looking for digit sequences that
+        // form a major.minor version.  Skip common prefix operators.
+        let s = constraint.trim();
+
+        // Try each whitespace/pipe-separated segment, return the first match.
+        for segment in s.split(['|', ' ']) {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                continue;
+            }
+
+            // Strip leading operator characters: ^, ~, >=, <=, >, <, =, !
+            let digits_start = segment
+                .find(|c: char| c.is_ascii_digit())
+                .unwrap_or(segment.len());
+            let version_part = &segment[digits_start..];
+
+            if version_part.is_empty() {
+                continue;
+            }
+
+            let mut parts = version_part.split('.');
+            if let Some(major_str) = parts.next()
+                && let Ok(major) = major_str.parse::<u8>()
+            {
+                let minor = parts
+                    .next()
+                    .and_then(|s| s.trim_end_matches('*').parse::<u8>().ok())
+                    .unwrap_or(0);
+                return Some(Self { major, minor });
+            }
+        }
+
+        None
+    }
+
+    /// Returns `true` if the given `from`..`to` version range includes
+    /// this PHP version.
+    ///
+    /// - `from` is inclusive: the element is available starting at that version.
+    /// - `to` is inclusive: the element is available up to and including that version.
+    /// - When `from` is `None`, there is no lower bound.
+    /// - When `to` is `None`, there is no upper bound.
+    pub fn matches_range(&self, from: Option<PhpVersion>, to: Option<PhpVersion>) -> bool {
+        if let Some(lower) = from
+            && (self.major, self.minor) < (lower.major, lower.minor)
+        {
+            return false;
+        }
+        if let Some(upper) = to
+            && (self.major, self.minor) > (upper.major, upper.minor)
+        {
+            return false;
+        }
+        true
+    }
+}
+
+impl Default for PhpVersion {
+    /// Default PHP version when none is detected: 8.5.
+    fn default() -> Self {
+        Self { major: 8, minor: 5 }
+    }
+}
+
+impl fmt::Display for PhpVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
 
 /// The return type of `Backend::extract_class_like_members`.
 ///
@@ -59,6 +172,33 @@ pub struct ArrayShapeEntry {
     pub value_type: String,
     /// Whether this key is optional (declared with `?` suffix, e.g. `age?: int`).
     pub optional: bool,
+}
+
+/// Variance of a `@template` parameter.
+///
+/// PHPStan and Psalm support `@template-covariant` and
+/// `@template-contravariant` to express variance constraints on generic
+/// type parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TemplateVariance {
+    /// No variance annotation (`@template T`).
+    #[default]
+    Invariant,
+    /// `@template-covariant T`
+    Covariant,
+    /// `@template-contravariant T`
+    Contravariant,
+}
+
+impl TemplateVariance {
+    /// Returns the tag name used in PHPDoc for this variance.
+    pub fn tag_name(self) -> &'static str {
+        match self {
+            Self::Invariant => "template",
+            Self::Covariant => "template-covariant",
+            Self::Contravariant => "template-contravariant",
+        }
+    }
 }
 
 /// Visibility of a class member (method, property, or constant).

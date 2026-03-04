@@ -82,6 +82,12 @@ impl LanguageServer for Backend {
             .and_then(|guard| guard.clone());
 
         if let Some(root) = workspace_root {
+            // Detect the target PHP version from composer.json before
+            // any stub parsing happens, so that version-aware filtering
+            // is active from the very first file load.
+            let php_version = composer::detect_php_version(&root).unwrap_or_default();
+            self.set_php_version(php_version);
+
             let mappings = composer::parse_composer_json(&root);
             let mapping_count = mappings.len();
 
@@ -163,8 +169,8 @@ impl LanguageServer for Backend {
             self.log(
                 MessageType::INFO,
                 format!(
-                    "PHPantom initialized! Loaded {} PSR-4 mapping(s), {} classmap entries, {} autoload file(s)",
-                    mapping_count, classmap_count, autoload_count
+                    "PHPantom initialized! PHP {}, {} PSR-4 mapping(s), {} classmap entries, {} autoload file(s)",
+                    php_version, mapping_count, classmap_count, autoload_count
                 ),
             )
             .await;

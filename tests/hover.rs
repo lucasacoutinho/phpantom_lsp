@@ -92,6 +92,100 @@ function test() {
     assert!(text.contains("$x"), "should mention $x: {}", text);
 }
 
+#[test]
+fn hover_suppressed_on_parameter_definition_site() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Builder {
+    public function scopeOfGenre(\Illuminate\Database\Eloquent\Builder $query, string $genre): void {
+        $query->where('genre', $genre);
+    }
+}
+"#;
+
+    // Hover on `$query` at the parameter definition site (line 2, col ~72)
+    let hover = hover_at(&backend, uri, content, 2, 73);
+    assert!(
+        hover.is_none(),
+        "hover should be suppressed on parameter $query"
+    );
+
+    // Hover on `$genre` at the parameter definition site (line 2, col ~87)
+    let hover = hover_at(&backend, uri, content, 2, 88);
+    assert!(
+        hover.is_none(),
+        "hover should be suppressed on parameter $genre"
+    );
+}
+
+#[test]
+fn hover_suppressed_on_foreach_variable_definition_site() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Item { public string $name; }
+class Service {
+    /** @param Item[] $items */
+    public function run(array $items): void {
+        foreach ($items as $item) {
+            $item->name;
+        }
+    }
+}
+"#;
+
+    // Hover on `$item` at the foreach binding site (line 5)
+    let hover = hover_at(&backend, uri, content, 5, 29);
+    assert!(
+        hover.is_none(),
+        "hover should be suppressed on foreach variable $item"
+    );
+}
+
+#[test]
+fn hover_suppressed_on_catch_variable_definition_site() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+function risky(): void {
+    try {
+        throw new \Exception('oops');
+    } catch (\Exception $e) {
+        echo $e->getMessage();
+    }
+}
+"#;
+
+    // Hover on `$e` at the catch binding site (line 4)
+    let hover = hover_at(&backend, uri, content, 4, 26);
+    assert!(
+        hover.is_none(),
+        "hover should be suppressed on catch variable $e"
+    );
+}
+
+#[test]
+fn hover_active_on_variable_assignment() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Order { public string $id; }
+class Service {
+    public function run(): void {
+        $order = new Order();
+        $order->id;
+    }
+}
+"#;
+
+    // Hover on `$order` at the assignment site (line 4) should still work
+    let hover = hover_at(&backend, uri, content, 4, 9)
+        .expect("hover should be active on assignment $order");
+    let text = hover_text(&hover);
+    assert!(text.contains("Order"), "should resolve to Order: {}", text);
+}
+
 // ─── Method hover ───────────────────────────────────────────────────────────
 
 #[test]
@@ -284,6 +378,38 @@ class Document implements Printable {
         text.contains("Printable"),
         "should show interface name: {}",
         text
+    );
+}
+
+#[test]
+fn hover_interface_extending_interface_no_duplicate_extends() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @template TKey
+ * @template-covariant TValue
+ * @template-extends iterable<TKey, TValue>
+ */
+interface Traversable extends iterable {}
+
+function test(Traversable $t): void {}
+"#;
+
+    // Hover on `Traversable` in the function parameter (line 8)
+    let hover = hover_at(&backend, uri, content, 8, 17).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("interface Traversable extends iterable"),
+        "should show extends once: {}",
+        text
+    );
+    // Must NOT contain the keyword "extends" twice
+    let extends_count = text.matches("extends").count();
+    assert_eq!(
+        extends_count, 1,
+        "should contain 'extends' exactly once, got {}: {}",
+        extends_count, text
     );
 }
 
@@ -953,6 +1079,40 @@ class Logger {
     assert!(
         text.contains("...$messages"),
         "should show variadic param: {}",
+        text
+    );
+}
+
+// ─── Docblock array/object shape type hover ─────────────────────────────────
+
+/// Hovering on a class name inside an array shape value type in a docblock
+/// should resolve the class and show hover info.
+#[test]
+fn hover_class_in_array_shape_value_type() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Pen {
+    public string $color;
+}
+/**
+ * @return array{logger: Pen, debug: bool}
+ */
+function getAppConfig(): array { return []; }
+"#;
+
+    // Hover on `Pen` inside the array shape (line 5, find "Pen" after "logger: ")
+    let hover =
+        hover_at(&backend, uri, content, 5, 25).expect("expected hover on Pen in array shape");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Pen"),
+        "should resolve Pen inside array shape, got: {}",
+        text
+    );
+    assert!(
+        text.contains("class"),
+        "should show class kind for Pen, got: {}",
         text
     );
 }
@@ -2473,6 +2633,152 @@ function demo(): void {
     assert!(
         !text.contains("__construct"),
         "should NOT show __construct for static access context, got: {}",
+        text
+    );
+}
+
+// ─── Class template display ─────────────────────────────────────────────────
+
+/// Hovering a generic class shows its template parameters with variance and bounds.
+#[test]
+fn hover_class_shows_template_params() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @template TKey
+ * @template TValue
+ */
+class Collection {
+    /** @return TValue */
+    public function first(): mixed { return null; }
+}
+
+function test(Collection $c): void {}
+"#;
+
+    // Hover on `Collection` in the function parameter (line 10)
+    let hover = hover_at(&backend, uri, content, 10, 17).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("**template** `TKey`"),
+        "should show TKey template param, got: {}",
+        text
+    );
+    assert!(
+        text.contains("**template** `TValue`"),
+        "should show TValue template param, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_class_shows_covariant_template_with_bound() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @template TKey of array-key
+ * @template-covariant TValue of object
+ */
+class TypedMap {}
+
+function test(TypedMap $m): void {}
+"#;
+
+    // Hover on `TypedMap` in the function parameter (line 7)
+    let hover = hover_at(&backend, uri, content, 7, 17).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("**template** `TKey` of `array-key`"),
+        "should show TKey with bound, got: {}",
+        text
+    );
+    assert!(
+        text.contains("**template-covariant** `TValue` of `object`"),
+        "should show TValue as covariant with bound, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_class_shows_contravariant_template() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @template-contravariant TInput
+ */
+class Consumer {}
+
+function test(Consumer $c): void {}
+"#;
+
+    // Hover on `Consumer` in the function parameter (line 6)
+    let hover = hover_at(&backend, uri, content, 6, 17).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("**template-contravariant** `TInput`"),
+        "should show TInput as contravariant, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_interface_shows_template_params() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @template TKey
+ * @template-covariant TValue
+ * @template-extends iterable<TKey, TValue>
+ */
+interface Traversable extends iterable {}
+
+function test(Traversable $t): void {}
+"#;
+
+    // Hover on `Traversable` in the function parameter (line 8)
+    let hover = hover_at(&backend, uri, content, 8, 17).expect("expected hover");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("**template** `TKey`"),
+        "should show TKey template param, got: {}",
+        text
+    );
+    assert!(
+        text.contains("**template-covariant** `TValue`"),
+        "should show TValue as covariant, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_template_param_shows_covariant_variance() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+/**
+ * @template-covariant TValue
+ */
+class Box {
+    /** @return TValue */
+    public function get(): mixed { return null; }
+}
+"#;
+
+    // Hover on `TValue` in `@return TValue` (line 5)
+    let hover = hover_at(&backend, uri, content, 5, 19).expect("expected hover on TValue");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("**template-covariant**"),
+        "should show covariant variance, got: {}",
+        text
+    );
+    assert!(
+        text.contains("`TValue`"),
+        "should show the template name, got: {}",
         text
     );
 }

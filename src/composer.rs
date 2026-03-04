@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 use std::fs;
+
+use crate::types::PhpVersion;
+
 /// Composer autoload support.
 ///
 /// This module handles parsing `composer.json` to extract PSR-4 autoload
@@ -483,4 +486,44 @@ pub fn extract_require_once_paths(content: &str) -> Vec<String> {
     }
 
     paths
+}
+
+/// Detect the target PHP version from `composer.json`.
+///
+/// Checks two locations in order:
+///   1. `config.platform.php` — an explicit platform override
+///      (e.g. `"8.3.1"` → 8.3).
+///   2. `require.php` — the version constraint from the dependency
+///      list (e.g. `"^8.4"` → 8.4).
+///
+/// Returns `None` when `composer.json` is missing, unreadable, or does
+/// not contain a PHP version constraint.  The caller should fall back to
+/// [`PhpVersion::default`] in that case.
+pub fn detect_php_version(workspace_root: &Path) -> Option<PhpVersion> {
+    let composer_path = workspace_root.join("composer.json");
+    let content = fs::read_to_string(composer_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    // 1. config.platform.php — exact version string like "8.3.1"
+    if let Some(platform_php) = json
+        .get("config")
+        .and_then(|c| c.get("platform"))
+        .and_then(|p| p.get("php"))
+        .and_then(|v| v.as_str())
+        && let Some(ver) = PhpVersion::from_composer_constraint(platform_php)
+    {
+        return Some(ver);
+    }
+
+    // 2. require.php — constraint string like "^8.4", ">=8.0"
+    if let Some(require_php) = json
+        .get("require")
+        .and_then(|r| r.get("php"))
+        .and_then(|v| v.as_str())
+        && let Some(ver) = PhpVersion::from_composer_constraint(require_php)
+    {
+        return Some(ver);
+    }
+
+    None
 }
