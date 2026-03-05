@@ -107,6 +107,8 @@ deepens that lead and rounds out the remaining feature surface.
 | 38 | Property hooks (PHP 8.4) | Medium | Type Inference | [type-inference.md §6](todo/type-inference.md#6-property-hooks-php-84) |
 | 39 | Simplify with null coalescing / null-safe operator (code action) | Medium | Code Actions | [actions.md §2](todo/actions.md#2-simplify-with-null-coalescing--null-safe-operator) |
 | 40 | Inlay hints (`textDocument/inlayHint`) | Medium | LSP Features | [lsp-features.md §9](todo/lsp-features.md#9-inlay-hints-textdocumentinlayhint) |
+| 41 | Resolved-class cache: key by FQN + generic args | Medium | Type Inference | [type-inference.md §31](todo/type-inference.md#31-resolved-class-cache-key-by-fqn--generic-args) |
+| 42 | Signature-level cache invalidation | Low-Medium | Type Inference | [type-inference.md §33](todo/type-inference.md#33-signature-level-cache-invalidation-skip-eviction-when-only-method-bodies-change) |
 
 **After Sprint 5:** PHPantom has a complete, polished LSP feature set.
 Users moving to Zed/Neovim/Helix lose nothing on the intelligence side
@@ -123,26 +125,26 @@ projects that care about types.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 41 | `collect()` and helper functions lose generic type info | High | Laravel | [laravel.md §5](todo/laravel.md#5-collect-and-other-helper-functions-lose-generic-type-info) |
-| 42 | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`) | Medium | Laravel | [laravel.md §3](todo/laravel.md#3-custom-eloquent-builders-hasbuilder--useeloquentbuilder) |
-| 43 | `abort_if`/`abort_unless` type narrowing | Medium | Laravel | [laravel.md §4](todo/laravel.md#4-abort_ifabort_unless-type-narrowing) |
-| 44 | Narrow types of `&$var` parameters after function calls | Medium | Type Inference | [type-inference.md §7](todo/type-inference.md#7-narrow-types-of-var-parameters-after-function-calls) |
-| 45 | SPL iterator generic stubs | Medium | Type Inference | [type-inference.md §8](todo/type-inference.md#8-spl-iterator-generic-stubs) |
-| 46 | `LanguageLevelTypeAware` version-aware type hints | Medium | Completion | [completion.md §3](todo/completion.md#3-languageleveltypeaware-version-aware-type-hints) |
-| 47 | `#[ArrayShape]` return shapes on stub functions | Medium | Completion | [completion.md §4](todo/completion.md#4-arrayshape-return-shapes-on-stub-functions) |
-| 49 | Asymmetric visibility (PHP 8.4) | Low | Type Inference | [type-inference.md §9](todo/type-inference.md#9-asymmetric-visibility-php-84) |
-| 50 | Type Hierarchy (`textDocument/prepareTypeHierarchy`) | Medium | LSP Features | [lsp-features.md §16](todo/lsp-features.md#16-type-hierarchy-textdocumentpreparetypehierarchy) |
-| 51 | `class_alias()` support | Medium | Completion | [completion.md §10](todo/completion.md#10-class_alias-support) |
-| 52 | Attribute constructor signature help | Medium | Signature Help | [signature-help.md §4](todo/signature-help.md#4-attribute-constructor-signature-help) |
-| 53 | Closure/arrow function parameter signature help | Medium | Signature Help | [signature-help.md §5](todo/signature-help.md#5-closure--arrow-function-parameter-signature-help) |
-| 54 | Diagnostic suppression intelligence | Medium | Diagnostics | [diagnostics.md §3](todo/diagnostics.md#3-diagnostic-suppression-intelligence) |
-| 55 | Partial result streaming via `$/progress` | Medium-High | LSP Features | [lsp-features.md §6](todo/lsp-features.md#6-partial-result-streaming-via-progress) |
+| 43 | `collect()` and helper functions lose generic type info | High | Laravel | [laravel.md §5](todo/laravel.md#5-collect-and-other-helper-functions-lose-generic-type-info) |
+| 44 | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`) | Medium | Laravel | [laravel.md §3](todo/laravel.md#3-custom-eloquent-builders-hasbuilder--useeloquentbuilder) |
+| 45 | `abort_if`/`abort_unless` type narrowing | Medium | Laravel | [laravel.md §4](todo/laravel.md#4-abort_ifabort_unless-type-narrowing) |
+| 46 | Narrow types of `&$var` parameters after function calls | Medium | Type Inference | [type-inference.md §7](todo/type-inference.md#7-narrow-types-of-var-parameters-after-function-calls) |
+| 47 | SPL iterator generic stubs | Medium | Type Inference | [type-inference.md §8](todo/type-inference.md#8-spl-iterator-generic-stubs) |
+| 48 | `LanguageLevelTypeAware` version-aware type hints | Medium | Completion | [completion.md §3](todo/completion.md#3-languageleveltypeaware-version-aware-type-hints) |
+| 49 | `#[ArrayShape]` return shapes on stub functions | Medium | Completion | [completion.md §4](todo/completion.md#4-arrayshape-return-shapes-on-stub-functions) |
+| 50 | Asymmetric visibility (PHP 8.4) | Low | Type Inference | [type-inference.md §9](todo/type-inference.md#9-asymmetric-visibility-php-84) |
+| 51 | Type Hierarchy (`textDocument/prepareTypeHierarchy`) | Medium | LSP Features | [lsp-features.md §16](todo/lsp-features.md#16-type-hierarchy-textdocumentpreparetypehierarchy) |
+| 52 | `class_alias()` support | Medium | Completion | [completion.md §10](todo/completion.md#10-class_alias-support) |
+| 53 | Attribute constructor signature help | Medium | Signature Help | [signature-help.md §4](todo/signature-help.md#4-attribute-constructor-signature-help) |
+| 54 | Closure/arrow function parameter signature help | Medium | Signature Help | [signature-help.md §5](todo/signature-help.md#5-closure--arrow-function-parameter-signature-help) |
+| 55 | Diagnostic suppression intelligence | Medium | Diagnostics | [diagnostics.md §3](todo/diagnostics.md#3-diagnostic-suppression-intelligence) |
+| 56 | Partial result streaming via `$/progress` | Medium-High | LSP Features | [lsp-features.md §6](todo/lsp-features.md#6-partial-result-streaming-via-progress) |
 
-**Note:** Item 41 (`collect()` generics) is a direct payoff of Sprint 5
+**Note:** Item 43 (`collect()` generics) is a direct payoff of Sprint 4
 item 25 (function-level `@template`). Once the infrastructure exists,
-the Laravel-specific manifestation is a small incremental step. Item 50
+the Laravel-specific manifestation is a small incremental step. Item 51
 (Type Hierarchy) depends on the go-to-implementation infrastructure and
-should be scheduled after that work is stable. Item 55 (partial result
+should be scheduled after that work is stable. Item 56 (partial result
 streaming) addresses outbound latency for large result sets. See also
 item 73 (incremental text sync) in the backlog, which addresses the
 complementary inbound direction.
@@ -173,38 +175,38 @@ eventually but don't move the needle.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 56 | Array functions needing new code paths | High | Completion | [completion.md §2](todo/completion.md#2-array-functions-needing-new-code-paths) |
-| 57 | Go-to-definition for array shape keys via bracket access | Medium | Completion | [completion.md §6](todo/completion.md#6-go-to-definition-for-array-shape-keys-via-bracket-access) |
-| 58 | No go-to-definition for built-in (stub) functions and constants | Medium | LSP Features | [lsp-features.md §11](todo/lsp-features.md#11-no-go-to-definition-for-built-in-stub-functions-and-constants) |
-| 59 | `str_contains` / `str_starts_with` / `str_ends_with` → non-empty-string narrowing | Low | Type Inference | [type-inference.md §10](todo/type-inference.md#10-str_contains--str_starts_with--str_ends_with--non-empty-string-narrowing) |
-| 60 | `count` / `sizeof` comparison → non-empty-array narrowing | Low | Type Inference | [type-inference.md §11](todo/type-inference.md#11-count--sizeof-comparison--non-empty-array-narrowing) |
-| 61 | Fiber type resolution | Low | Type Inference | [type-inference.md §12](todo/type-inference.md#12-fiber-type-resolution) |
-| 62 | Non-empty-string propagation through string functions | Low | Type Inference | [type-inference.md §13](todo/type-inference.md#13-non-empty-string-propagation-through-string-functions) |
-| 63 | `Closure::bind()` / `Closure::fromCallable()` return type preservation | Low-Medium | Type Inference | [type-inference.md §14](todo/type-inference.md#14-closurebind--closurefromcallable-return-type-preservation) |
-| 64 | Non-array functions with dynamic return types | High | Completion | [completion.md §7](todo/completion.md#7-non-array-functions-with-dynamic-return-types) |
-| 65 | `#[ReturnTypeContract]` parameter-dependent return types | Low | Completion | [completion.md §8](todo/completion.md#8-returntypecontract-parameter-dependent-return-types) |
-| 66 | `#[ExpectedValues]` parameter value suggestions | Medium | Completion | [completion.md §9](todo/completion.md#9-expectedvalues-parameter-value-suggestions) |
+| 58 | Array functions needing new code paths | High | Completion | [completion.md §2](todo/completion.md#2-array-functions-needing-new-code-paths) |
+| 59 | Go-to-definition for array shape keys via bracket access | Medium | Completion | [completion.md §6](todo/completion.md#6-go-to-definition-for-array-shape-keys-via-bracket-access) |
+| 60 | No go-to-definition for built-in (stub) functions and constants | Medium | LSP Features | [lsp-features.md §11](todo/lsp-features.md#11-no-go-to-definition-for-built-in-stub-functions-and-constants) |
+| 61 | `str_contains` / `str_starts_with` / `str_ends_with` → non-empty-string narrowing | Low | Type Inference | [type-inference.md §10](todo/type-inference.md#10-str_contains--str_starts_with--str_ends_with--non-empty-string-narrowing) |
+| 62 | `count` / `sizeof` comparison → non-empty-array narrowing | Low | Type Inference | [type-inference.md §11](todo/type-inference.md#11-count--sizeof-comparison--non-empty-array-narrowing) |
+| 63 | Fiber type resolution | Low | Type Inference | [type-inference.md §12](todo/type-inference.md#12-fiber-type-resolution) |
+| 64 | Non-empty-string propagation through string functions | Low | Type Inference | [type-inference.md §13](todo/type-inference.md#13-non-empty-string-propagation-through-string-functions) |
+| 65 | `Closure::bind()` / `Closure::fromCallable()` return type preservation | Low-Medium | Type Inference | [type-inference.md §14](todo/type-inference.md#14-closurebind--closurefromcallable-return-type-preservation) |
+| 66 | Non-array functions with dynamic return types | High | Completion | [completion.md §7](todo/completion.md#7-non-array-functions-with-dynamic-return-types) |
+| 67 | `#[ReturnTypeContract]` parameter-dependent return types | Low | Completion | [completion.md §8](todo/completion.md#8-returntypecontract-parameter-dependent-return-types) |
+| 68 | `#[ExpectedValues]` parameter value suggestions | Medium | Completion | [completion.md §9](todo/completion.md#9-expectedvalues-parameter-value-suggestions) |
 
 ### Signature help polish
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 67 | Multiple overloaded signatures | Medium-High | Signature Help | [signature-help.md §7](todo/signature-help.md#7-multiple-overloaded-signatures) |
-| 68 | Named argument awareness in active parameter | Medium | Signature Help | [signature-help.md §8](todo/signature-help.md#8-named-argument-awareness-in-active-parameter) |
-| 69 | Language construct signature help and hover | Low | Signature Help | [signature-help.md §9](todo/signature-help.md#9-language-construct-signature-help-and-hover) |
+| 69 | Multiple overloaded signatures | Medium-High | Signature Help | [signature-help.md §7](todo/signature-help.md#7-multiple-overloaded-signatures) |
+| 70 | Named argument awareness in active parameter | Medium | Signature Help | [signature-help.md §8](todo/signature-help.md#8-named-argument-awareness-in-active-parameter) |
+| 71 | Language construct signature help and hover | Low | Signature Help | [signature-help.md §9](todo/signature-help.md#9-language-construct-signature-help-and-hover) |
 
 ### LSP features & code actions
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 70 | Switch → match conversion | Medium | Code Actions | [actions.md §4](todo/actions.md#4-switch--match-conversion) |
-| 71 | Incremental text sync | Medium | LSP Features | [lsp-features.md §17](todo/lsp-features.md#17-incremental-text-sync) |
+| 72 | Switch → match conversion | Medium | Code Actions | [actions.md §4](todo/actions.md#4-switch--match-conversion) |
+| 73 | Incremental text sync | Medium | LSP Features | [lsp-features.md §17](todo/lsp-features.md#17-incremental-text-sync) |
 
 ### Bug fixes
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
-| 72 | Short-name collisions in `find_implementors` | Low | Bug Fixes | [bugs.md §1](todo/bugs.md#1-short-name-collisions-in-find_implementors) |
+| 74 | Short-name collisions in `find_implementors` | Low | Bug Fixes | [bugs.md §1](todo/bugs.md#1-short-name-collisions-in-find_implementors) |
 
 ---
 

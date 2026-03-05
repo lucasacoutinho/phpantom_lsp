@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Async diagnostics.** Diagnostics now run in a background task with 500 ms debounce instead of blocking every `did_change` response. Completion, hover, and signature help remain responsive while diagnostics compute in the background.
+- **Targeted cache invalidation.** Editing a file now only evicts resolved-class cache entries for classes defined in that file, instead of clearing the entire cache. Classes from other files (vendor, stubs, other user code) keep their cached resolution across edits.
 
 ### Fixed
 

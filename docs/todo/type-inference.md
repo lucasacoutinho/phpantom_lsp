@@ -790,3 +790,210 @@ The call expression resolution does not detect that the callee is a
 parenthesized closure/arrow function expression.
 
 **Discovered via:** fixture conversion (call_expression/arrow_fn_invocation).
+
+---
+
+## 31. Resolved-class cache: key by FQN + generic args
+**Impact: High · Effort: Medium**
+
+The `resolved_class_cache` is keyed by bare FQN (e.g.
+`Illuminate\Database\Eloquent\Builder`). When a generic class is
+resolved with different type arguments at different call sites
+(`Builder<User>` vs `Builder<Post>`), the first resolution wins and
+subsequent lookups return the wrong entry. This is the root cause of
+the "cache poisoning" bug where model-specific scope methods were lost
+on hover, signature help, and deprecation diagnostics.
+
+The current workaround (check the candidate directly before falling
+back to the cache) is correct but bypasses the cache for exactly the
+cases where it would save the most work: fully-resolved generic classes
+with virtual members.
+
+### Why this is the highest-priority cache improvement
+
+Profiling with instrumentation revealed that the dominant cost in
+diagnostic passes is **uncached Builder resolution inside the Laravel
+virtual member provider**. `build_builder_forwarded_methods` in
+`virtual_members/laravel/builder.rs` deliberately calls
+`resolve_class_fully` (the uncached variant) because the FQN-keyed
+cache cannot distinguish `Builder<Brand>` from `Builder<Product>`.
+Every Model resolution triggers a fresh Builder walk (inheritance,
+traits, `@mixin Query\Builder`, virtual members). On a file with 3
+model classes and 60+ member accesses, this accounts for the majority
+of the ~144 ms (release) diagnostic cost.
+
+With a generic-aware cache key, `build_builder_forwarded_methods` can
+safely use the cached variant. Each `Builder<Model>` instantiation is
+resolved once and reused. This is the single change with the largest
+expected speedup.
+
+### Proposed design
+
+Change the cache key from `String` (bare FQN) to `(String, Vec<String>)`
+where the second element is the concrete type argument list. For
+non-generic classes the list is empty, so the common case stays cheap.
+
+1. `resolve_class_fully_inner` already receives the `ClassInfo` which
+   carries `template_params` and the caller's substitution context.
+   Thread the concrete type args through to the cache key construction.
+2. Update `class_fqn` (or replace it) to return `(fqn, generic_args)`.
+3. The cache store and lookup both use the compound key.
+4. Update `build_builder_forwarded_methods` to use
+   `resolve_class_fully_cached` (or the maybe-cached variant) now that
+   different model instantiations get separate cache entries.
+5. Remove the "check candidate first" workarounds in `hover/mod.rs`,
+   `call_resolution.rs`, and `diagnostics/deprecated.rs`.
+
+### Risks
+
+- Generic args must be normalized (sorted, deduplicated, fully
+  qualified) to avoid near-miss cache entries.
+- The cache will have more entries (one per instantiation), but each
+  entry is a `ClassInfo` clone that would have been computed anyway.
+  Memory overhead is proportional to the number of distinct
+  instantiations actually used, not the combinatorial space.
+
+---
+
+## 32. Targeted cache invalidation (done) and remaining gaps
+**Impact: Low-Medium · Effort: Done / Low**
+
+### What was done
+
+`update_ast` and `parse_and_cache_content_versioned` now use targeted
+invalidation instead of clearing the entire `resolved_class_cache`.
+Only FQNs defined in the edited file (both old and new, to handle
+renames) are evicted. Classes from other files keep their cached
+resolution across edits.
+
+### Why the measured speedup is small today
+
+Profiling with per-call instrumentation showed that the cache hit rate
+on cross-file workspaces is lower than expected. The root cause is
+§31: `build_builder_forwarded_methods` calls the **uncached**
+`resolve_class_fully` on every Model resolution (deliberately, because
+the FQN-keyed cache conflates `Builder<Brand>` with `Builder<Post>`).
+This means the most expensive resolution (Builder with its traits,
+`@mixin`, and virtual members) is always computed from scratch, and
+targeted invalidation cannot help.
+
+On `example.php` specifically, targeted invalidation provides zero
+benefit because all 164 classes are defined in the same file. Editing
+the file evicts every FQN, equivalent to a full clear.
+
+### Remaining gap
+
+Once §31 (generic-keyed cache) is implemented, targeted invalidation
+will compound with it: vendor/stub classes that are never edited will
+stay cached across keystrokes indefinitely. The combination of both
+changes should yield the 5-10x speedup on repeated diagnostic passes
+that was originally estimated.
+
+No further code changes are needed for targeted invalidation itself.
+The remaining work is §31.
+
+---
+
+## 33. Signature-level cache invalidation: skip eviction when only method bodies change
+**Impact: High · Effort: Low-Medium**
+
+During normal editing the user types inside a method body. The class's
+signature (method names, parameter types, return types, property types,
+constants, parent class, interfaces, traits, template params, docblock
+tags) has not changed. Only byte offsets and AST nodes inside method
+bodies differ between the old and new parse. Yet targeted invalidation
+(§32) still evicts every FQN defined in the edited file, because
+`update_ast` replaces the `ast_map` entry and cannot tell whether the
+change was signature-relevant or body-only.
+
+The old `ClassInfo` entries (from the previous parse, stored in
+`ast_map`) and the new ones (just parsed) are both available at the
+point where invalidation happens. A cheap comparison at the signature
+level can decide whether to skip eviction entirely for each FQN.
+
+### What counts as "signature"
+
+Fields that affect the resolved-class cache (inheritance, virtual
+members, type resolution):
+
+**ClassInfo level:**
+`kind`, `name`, `file_namespace`, `parent_class`, `interfaces`,
+`used_traits`, `mixins`, `is_final`, `is_abstract`,
+`deprecation_message`, `template_params`, `template_param_bounds`,
+`extends_generics`, `implements_generics`, `use_generics`,
+`type_aliases`, `trait_precedences`, `trait_aliases`,
+`class_docblock`, `backed_type`, `laravel`
+
+**MethodInfo level:**
+`name`, `parameters` (name, type_hint, is_required, default_value,
+is_variadic, is_reference), `return_type`, `native_return_type`,
+`is_static`, `visibility`, `conditional_return`,
+`deprecation_message`, `template_params`, `template_param_bounds`,
+`template_bindings`, `has_scope_attribute`, `is_virtual`
+
+**PropertyInfo level:**
+`name`, `type_hint`, `visibility`, `is_static`, `is_readonly`,
+`deprecation_message`, `is_virtual`
+
+**ConstantInfo level:**
+`name`, `type_hint`, `value`, `visibility`, `deprecation_message`
+
+### What is NOT signature-relevant
+
+- `start_offset`, `end_offset`, `keyword_offset` on `ClassInfo`
+- `name_offset` on `MethodInfo`, `PropertyInfo`, `ConstantInfo`
+- `description`, `return_description`, `link` on `MethodInfo`
+- `description` on `PropertyInfo`
+- `description` on `ConstantInfo`
+- `ParameterInfo::name_offset`
+
+These change on every keystroke (offset shifts) or are display-only
+(descriptions, links) and do not affect resolution.
+
+### Proposed design
+
+1. Add a `fn signature_eq(&self, other: &ClassInfo) -> bool` method to
+   `ClassInfo`. It compares all signature-relevant fields listed above
+   and returns `true` when they are identical. Methods are compared as
+   sets (order-insensitive by name) so that reordering methods in
+   source does not trigger eviction.
+
+2. In `update_ast_inner`, before evicting a FQN from the cache,
+   look up the old `ClassInfo` in the previous `ast_map` entry and
+   the new `ClassInfo` from the current parse. If
+   `old.signature_eq(&new)`, skip eviction for that FQN.
+
+3. The sub-structs (`MethodInfo`, `PropertyInfo`, `ConstantInfo`,
+   `ParameterInfo`) each get a `signature_eq` method with the same
+   pattern: compare everything except offsets and descriptions.
+
+### Expected impact
+
+During normal editing (typing inside method bodies), zero cache
+entries are evicted. The resolved-class cache stays fully warm across
+keystrokes. Combined with §32 (targeted invalidation) and §31
+(generic-keyed cache), this means:
+
+- Typing inside a method body: zero evictions, all cache hits
+- Adding/removing a method or changing a type hint: evicts only that
+  class's FQN(s), dependents self-correct on next resolution
+- Changing inheritance (extends, implements, use): evicts the class,
+  dependents may briefly be stale (acceptable, same as §32)
+
+For `example.php` (164 classes in one file), this is transformative:
+editing inside any method body keeps all 164 resolved entries warm,
+turning the current "evict everything" into "evict nothing" for the
+overwhelmingly common case.
+
+### Risks
+
+- If `signature_eq` misses a field that affects resolution, the cache
+  serves stale data. Mitigate with a `#[cfg(debug_assertions)]`
+  assertion that compares old and new resolved output when
+  `signature_eq` returns `true`, catching mismatches during testing.
+- The comparison has a cost, but it is negligible: comparing a few
+  strings and vecs in memory versus the alternative of re-walking
+  inheritance chains, loading files, and injecting virtual members.
+- `class_docblock` changes (adding `@method`, `@property` tags) are
+  correctly detected as signature changes because the raw docblock
+  text is compared.

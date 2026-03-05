@@ -277,6 +277,27 @@ impl Backend {
 
         let uri_string = uri.to_string();
 
+        // Collect the FQNs of classes that were previously defined in this
+        // file.  When we invalidate the resolved-class cache below, we
+        // need to remove both the old FQNs (in case a class was renamed
+        // or its namespace changed) and the new FQNs.
+        let old_fqns: Vec<String> = if let Ok(map) = self.ast_map.lock() {
+            if let Some(old_classes) = map.get(&uri_string) {
+                old_classes
+                    .iter()
+                    .filter(|c| !c.name.starts_with("__anonymous@"))
+                    .map(|c| match &c.file_namespace {
+                        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
+                        _ => c.name.clone(),
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
+
         // Populate the class_index with FQN → URI mappings for every class
         // found in this file.  This enables reliable lookup of classes that
         // don't follow PSR-4 conventions (e.g. classes defined in Composer
@@ -324,13 +345,36 @@ impl Backend {
             map.insert(uri_string, namespace);
         }
 
-        // Invalidate the resolved-class cache.  Any class in any file
-        // could depend on the classes that just changed (via inheritance,
-        // traits, mixins, or interfaces), so the simplest correct strategy
-        // is to clear the entire cache.  It will be lazily repopulated on
-        // the next completion / hover / definition request.
+        // Selectively invalidate the resolved-class cache.
+        //
+        // Instead of clearing the entire cache on every keystroke, only
+        // remove entries for classes defined in this file.  Classes from
+        // other files (vendor, stubs, other user files) keep their cached
+        // resolution, avoiding redundant inheritance walks and virtual
+        // member injection on every edit.
+        //
+        // We remove both old FQNs (from before this parse) and new FQNs
+        // (from the current parse) to handle renames and namespace changes.
+        // Dependents (classes that extend/use a changed class) may briefly
+        // hold stale data, but they self-correct on the next edit because
+        // re-resolution calls class_loader which returns the fresh class.
+        // Changing an inheritance relationship (extends, implements, use)
+        // is rare during normal editing; the common case is editing method
+        // bodies, which does not affect other classes' resolved forms.
         if let Ok(mut cache) = self.resolved_class_cache.lock() {
-            cache.clear();
+            // Collect new FQNs from the classes we just parsed.
+            let new_fqns: Vec<String> = classes_with_ns
+                .iter()
+                .filter(|(c, _)| !c.name.starts_with("__anonymous@"))
+                .map(|(c, ns)| match ns {
+                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
+                    _ => c.name.clone(),
+                })
+                .collect();
+
+            for fqn in old_fqns.iter().chain(new_fqns.iter()) {
+                cache.remove(fqn);
+            }
         }
     }
 

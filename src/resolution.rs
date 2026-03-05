@@ -210,10 +210,20 @@ impl Backend {
             map.insert(uri.to_owned(), file_namespace);
         }
 
-        // Invalidate the resolved-class cache — the newly parsed file
-        // may contain classes that other resolved entries depend on.
+        // Selectively invalidate the resolved-class cache for the
+        // classes defined in this file.  Loading a new file from disk
+        // (classmap, PSR-4, stubs) should not nuke cached resolutions
+        // for unrelated classes.  Only the FQNs we just parsed need
+        // to be evicted — their old (if any) cache entries were built
+        // without the members we just loaded.
         if let Ok(mut cache) = self.resolved_class_cache.lock() {
-            cache.clear();
+            for cls in &classes {
+                let fqn = match &cls.file_namespace {
+                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
+                    _ => cls.name.clone(),
+                };
+                cache.remove(&fqn);
+            }
         }
 
         Some(classes)
