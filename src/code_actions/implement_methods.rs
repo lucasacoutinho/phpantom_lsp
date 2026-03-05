@@ -1,0 +1,1009 @@
+//! "Implement missing methods" code action.
+//!
+//! When the cursor is inside a non-abstract class that extends an abstract
+//! class or implements an interface but is missing required method
+//! implementations, this module offers a code action to generate stubs
+//! for all missing methods.
+
+use std::collections::HashMap;
+
+use tower_lsp::lsp_types::*;
+
+use crate::Backend;
+use crate::types::{ClassInfo, ClassLikeKind, MethodInfo, Visibility};
+use crate::util::offset_to_position;
+
+impl Backend {
+    /// Collect "Implement missing methods" code actions for the cursor position.
+    ///
+    /// When the cursor is inside a concrete class that has unimplemented
+    /// abstract or interface methods, this produces one code action that
+    /// inserts stubs for all missing methods just before the class's
+    /// closing brace.
+    pub(crate) fn collect_implement_methods_actions(
+        &self,
+        uri: &str,
+        content: &str,
+        params: &CodeActionParams,
+        out: &mut Vec<CodeActionOrCommand>,
+    ) {
+        let ctx = self.file_context(uri);
+
+        // Convert LSP cursor position to byte offset.
+        let cursor_offset = crate::util::position_to_offset(content, params.range.start);
+
+        // Find the class the cursor is inside.  Use keyword_offset as the
+        // lower bound so the action also triggers when the cursor is on
+        // the `class Foo implements Bar` declaration line (before the `{`).
+        let current_class = match ctx
+            .classes
+            .iter()
+            .filter(|c| {
+                let effective_start = if c.keyword_offset > 0 {
+                    c.keyword_offset
+                } else {
+                    c.start_offset
+                };
+                cursor_offset >= effective_start && cursor_offset <= c.end_offset
+            })
+            .min_by_key(|c| c.end_offset - c.start_offset)
+        {
+            Some(c) => c,
+            None => return,
+        };
+
+        // Only concrete classes can implement missing methods.
+        // Abstract classes, interfaces, traits, and enums are skipped.
+        if current_class.kind != ClassLikeKind::Class || current_class.is_abstract {
+            return;
+        }
+
+        // Resolve the full inheritance hierarchy to collect all abstract
+        // and interface methods.
+        let class_loader = self.class_loader(&ctx);
+
+        let missing = collect_missing_methods(current_class, &class_loader);
+
+        if missing.is_empty() {
+            return;
+        }
+
+        // Determine the use_map so we can shorten FQNs in generated stubs.
+        let use_map: HashMap<String, String> = ctx.use_map.clone();
+        let file_namespace = ctx.namespace.clone();
+
+        // Build the text for all method stubs.
+        let stub_text =
+            build_method_stubs(&missing, &use_map, &file_namespace, content, current_class);
+
+        // Insert position: just before the closing brace of the class.
+        // `end_offset` points one byte past the `}`, so `end_offset - 1`
+        // is the `}` itself.  We insert before that.
+        let insert_offset = (current_class.end_offset - 1) as usize;
+        let insert_pos = offset_to_position(content, insert_offset);
+
+        let title = if missing.len() == 1 {
+            format!("Implement `{}`", missing[0].name)
+        } else {
+            format!("Implement {} missing methods", missing.len())
+        };
+
+        let edit = TextEdit {
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
+            },
+            new_text: stub_text,
+        };
+
+        let doc_uri: Url = match uri.parse() {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+
+        let mut changes = HashMap::new();
+        changes.insert(doc_uri, vec![edit]);
+
+        out.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title,
+            kind: Some(CodeActionKind::QUICKFIX),
+            diagnostics: None,
+            edit: Some(WorkspaceEdit {
+                changes: Some(changes),
+                document_changes: None,
+                change_annotations: None,
+            }),
+            command: None,
+            is_preferred: Some(true),
+            disabled: None,
+            data: None,
+        }));
+    }
+}
+
+/// Collect abstract/interface methods that the given concrete class has
+/// not yet implemented.
+///
+/// Walks the full inheritance chain (parent classes, interfaces, traits)
+/// and returns methods that are abstract and not already defined on the
+/// class itself or inherited as concrete from parent classes.
+fn collect_missing_methods(
+    class: &ClassInfo,
+    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+) -> Vec<MethodInfo> {
+    // Build the full set of concrete method names already available on
+    // this class: own methods + concrete methods inherited from the
+    // parent chain.  This ensures that if a parent implements an
+    // interface method, the child doesn't re-stub it.
+    let mut implemented_names: Vec<String> = class
+        .methods
+        .iter()
+        .map(|m| m.name.to_lowercase())
+        .collect();
+
+    collect_concrete_parent_methods(&class.parent_class, class_loader, &mut implemented_names, 0);
+
+    let mut missing: Vec<MethodInfo> = Vec::new();
+    let mut seen: Vec<String> = Vec::new();
+
+    // ── Interfaces ──────────────────────────────────────────────────────
+    for iface_name in &class.interfaces {
+        collect_from_interface(
+            iface_name,
+            class_loader,
+            &implemented_names,
+            &mut missing,
+            &mut seen,
+            0,
+        );
+    }
+
+    // ── Parent chain (abstract methods) ─────────────────────────────────
+    collect_from_parent_chain(
+        &class.parent_class,
+        class_loader,
+        &implemented_names,
+        &mut missing,
+        &mut seen,
+        0,
+    );
+
+    missing
+}
+
+/// Walk the parent chain and collect names of concrete (non-abstract)
+/// methods into `implemented`.  This lets us know which interface or
+/// abstract methods are already satisfied by a parent class.
+fn collect_concrete_parent_methods(
+    parent_name: &Option<String>,
+    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    implemented: &mut Vec<String>,
+    depth: usize,
+) {
+    if depth > crate::types::MAX_INHERITANCE_DEPTH as usize {
+        return;
+    }
+
+    let parent_name = match parent_name {
+        Some(n) => n,
+        None => return,
+    };
+
+    let parent = match class_loader(parent_name) {
+        Some(c) => c,
+        None => return,
+    };
+
+    for method in &parent.methods {
+        if !method.is_abstract {
+            let lower = method.name.to_lowercase();
+            if !implemented.contains(&lower) {
+                implemented.push(lower);
+            }
+        }
+    }
+
+    collect_concrete_parent_methods(&parent.parent_class, class_loader, implemented, depth + 1);
+}
+
+/// Recursively collect unimplemented methods from an interface and its
+/// parent interfaces.
+fn collect_from_interface(
+    iface_name: &str,
+    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    own_methods: &[String],
+    missing: &mut Vec<MethodInfo>,
+    seen: &mut Vec<String>,
+    depth: usize,
+) {
+    if depth > crate::types::MAX_INHERITANCE_DEPTH as usize {
+        return;
+    }
+
+    let iface = match class_loader(iface_name) {
+        Some(c) if c.kind == ClassLikeKind::Interface => c,
+        _ => return,
+    };
+
+    for method in &iface.methods {
+        let lower = method.name.to_lowercase();
+        if own_methods.contains(&lower) || seen.contains(&lower) {
+            continue;
+        }
+        seen.push(lower);
+        missing.push(method.clone());
+    }
+
+    // Recurse into parent interfaces.
+    for parent_iface in &iface.interfaces {
+        collect_from_interface(
+            parent_iface,
+            class_loader,
+            own_methods,
+            missing,
+            seen,
+            depth + 1,
+        );
+    }
+
+    // Interfaces can also extend other interfaces via parent_class in
+    // some parser representations.
+    if let Some(ref parent) = iface.parent_class {
+        collect_from_interface(parent, class_loader, own_methods, missing, seen, depth + 1);
+    }
+}
+
+/// Walk the parent class chain and collect abstract methods that need
+/// implementation.
+fn collect_from_parent_chain(
+    parent_name: &Option<String>,
+    class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
+    own_methods: &[String],
+    missing: &mut Vec<MethodInfo>,
+    seen: &mut Vec<String>,
+    depth: usize,
+) {
+    if depth > crate::types::MAX_INHERITANCE_DEPTH as usize {
+        return;
+    }
+
+    let parent_name = match parent_name {
+        Some(n) => n,
+        None => return,
+    };
+
+    let parent = match class_loader(parent_name) {
+        Some(c) => c,
+        None => return,
+    };
+
+    // Collect interfaces from the parent that the child inherits
+    // transitively.
+    for iface_name in &parent.interfaces {
+        collect_from_interface(
+            iface_name,
+            class_loader,
+            own_methods,
+            missing,
+            seen,
+            depth + 1,
+        );
+    }
+
+    // Collect abstract methods from the parent itself.
+    for method in &parent.methods {
+        if !method.is_abstract {
+            continue;
+        }
+        let lower = method.name.to_lowercase();
+        if own_methods.contains(&lower) || seen.contains(&lower) {
+            continue;
+        }
+        seen.push(lower);
+        missing.push(method.clone());
+    }
+
+    // Continue up the chain.
+    collect_from_parent_chain(
+        &parent.parent_class,
+        class_loader,
+        own_methods,
+        missing,
+        seen,
+        depth + 1,
+    );
+}
+
+/// Build the source text for all missing method stubs.
+///
+/// Each stub includes visibility, static modifier, parameter list with
+/// type hints and defaults, return type, and an empty body.
+fn build_method_stubs(
+    methods: &[MethodInfo],
+    use_map: &HashMap<String, String>,
+    file_namespace: &Option<String>,
+    content: &str,
+    class: &ClassInfo,
+) -> String {
+    // Detect the indentation used inside the class body.
+    let indent = detect_class_indent(content, class);
+
+    let mut result = String::new();
+
+    for method in methods {
+        result.push('\n');
+
+        // Visibility — interface methods become public, abstract methods
+        // keep their declared visibility (but never private).
+        let vis = match method.visibility {
+            Visibility::Private => "public",
+            Visibility::Protected => "protected",
+            Visibility::Public => "public",
+        };
+
+        let static_kw = if method.is_static { "static " } else { "" };
+
+        // Build parameter list.
+        let params = format_params(method, use_map, file_namespace);
+
+        // Build return type.
+        let return_type = format_return_type(method, use_map, file_namespace);
+
+        // Write the method stub.
+        result.push_str(&indent);
+        result.push_str(&format!(
+            "{} {}function {}({}){}\n",
+            vis, static_kw, method.name, params, return_type,
+        ));
+        result.push_str(&indent);
+        result.push_str("{\n");
+        result.push_str(&indent);
+        result.push_str("}\n");
+    }
+
+    result
+}
+
+/// Format the parameter list for a method stub.
+fn format_params(
+    method: &MethodInfo,
+    use_map: &HashMap<String, String>,
+    file_namespace: &Option<String>,
+) -> String {
+    let mut parts = Vec::new();
+
+    for param in &method.parameters {
+        let mut s = String::new();
+
+        // Type hint — prefer native type hint (what appears in PHP source)
+        // over the docblock-enriched one.
+        if let Some(ref hint) = param.native_type_hint {
+            let shortened = shorten_type(hint, use_map, file_namespace);
+            s.push_str(&shortened);
+            s.push(' ');
+        }
+
+        // Variadic and reference markers.
+        if param.is_reference {
+            s.push('&');
+        }
+        if param.is_variadic {
+            s.push_str("...");
+        }
+
+        s.push_str(&param.name);
+
+        // Default value.
+        if let Some(ref default) = param.default_value {
+            s.push_str(" = ");
+            s.push_str(default);
+        }
+
+        parts.push(s);
+    }
+
+    parts.join(", ")
+}
+
+/// Format the return type hint for a method stub.
+fn format_return_type(
+    method: &MethodInfo,
+    use_map: &HashMap<String, String>,
+    file_namespace: &Option<String>,
+) -> String {
+    // Prefer native return type (the actual PHP source-level type hint).
+    let hint = method
+        .native_return_type
+        .as_deref()
+        .or(method.return_type.as_deref());
+
+    match hint {
+        Some(t) if !t.is_empty() => {
+            let shortened = shorten_type(t, use_map, file_namespace);
+            format!(": {}", shortened)
+        }
+        _ => String::new(),
+    }
+}
+
+/// Shorten a fully-qualified type name using the file's use-map and
+/// namespace so that generated stubs match the file's import style.
+///
+/// For example, if the file has `use App\Models\User;`, then
+/// `App\Models\User` becomes `User`.  If the class is in the same
+/// namespace, the namespace prefix is dropped.
+fn shorten_type(
+    type_str: &str,
+    use_map: &HashMap<String, String>,
+    file_namespace: &Option<String>,
+) -> String {
+    // Handle union and intersection types by processing each component.
+    if type_str.contains('|') {
+        return type_str
+            .split('|')
+            .map(|part| shorten_single_type(part.trim(), use_map, file_namespace))
+            .collect::<Vec<_>>()
+            .join("|");
+    }
+    if type_str.contains('&') {
+        return type_str
+            .split('&')
+            .map(|part| shorten_single_type(part.trim(), use_map, file_namespace))
+            .collect::<Vec<_>>()
+            .join("&");
+    }
+
+    shorten_single_type(type_str, use_map, file_namespace)
+}
+
+/// Shorten a single (non-union, non-intersection) type name.
+fn shorten_single_type(
+    type_str: &str,
+    use_map: &HashMap<String, String>,
+    file_namespace: &Option<String>,
+) -> String {
+    // Handle nullable prefix.
+    if let Some(inner) = type_str.strip_prefix('?') {
+        return format!("?{}", shorten_single_type(inner, use_map, file_namespace));
+    }
+
+    // Strip leading backslash for comparison.
+    let clean = type_str.strip_prefix('\\').unwrap_or(type_str);
+
+    // Check the use map: if any imported short name maps to this FQN,
+    // use the short name.
+    for (short, fqn) in use_map {
+        if fqn.trim_start_matches('\\') == clean {
+            return short.clone();
+        }
+    }
+
+    // If the type is in the same namespace, strip the namespace prefix.
+    if let Some(ns) = file_namespace {
+        let prefix = format!("{}\\", ns);
+        if let Some(rest) = clean.strip_prefix(&prefix)
+            && !rest.contains('\\')
+        {
+            return rest.to_string();
+        }
+    }
+
+    // Return as-is (but without leading backslash, which is unusual in
+    // method stubs).
+    clean.to_string()
+}
+
+/// Detect the indentation level used inside a class body.
+///
+/// Looks at the first method or property in the class to determine the
+/// indent string.  Falls back to four spaces.
+fn detect_class_indent(content: &str, class: &ClassInfo) -> String {
+    // Look at the line where the class opening brace is and use the
+    // next non-empty line's indentation as the member indentation.
+    let brace_offset = class.start_offset as usize;
+    if brace_offset < content.len() {
+        // Find the first non-empty line after the opening brace.
+        let after_brace = &content[brace_offset..];
+        for line in after_brace.lines().skip(1) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            if !indent.is_empty() {
+                return indent;
+            }
+        }
+    }
+
+    // Fallback: four spaces.
+    "    ".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{ParameterInfo, Visibility};
+
+    // ── shorten_type tests ──────────────────────────────────────────────
+
+    #[test]
+    fn shorten_type_with_use_map() {
+        let mut use_map = HashMap::new();
+        use_map.insert("User".to_string(), "App\\Models\\User".to_string());
+        let ns = Some("App\\Http\\Controllers".to_string());
+
+        assert_eq!(shorten_type("App\\Models\\User", &use_map, &ns), "User");
+        assert_eq!(shorten_type("\\App\\Models\\User", &use_map, &ns), "User");
+    }
+
+    #[test]
+    fn shorten_type_same_namespace() {
+        let use_map = HashMap::new();
+        let ns = Some("App\\Models".to_string());
+
+        assert_eq!(shorten_type("App\\Models\\User", &use_map, &ns), "User");
+    }
+
+    #[test]
+    fn shorten_type_nullable() {
+        let mut use_map = HashMap::new();
+        use_map.insert("User".to_string(), "App\\Models\\User".to_string());
+        let ns = None;
+
+        assert_eq!(shorten_type("?App\\Models\\User", &use_map, &ns), "?User");
+    }
+
+    #[test]
+    fn shorten_type_union() {
+        let mut use_map = HashMap::new();
+        use_map.insert("User".to_string(), "App\\Models\\User".to_string());
+        let ns = None;
+
+        assert_eq!(
+            shorten_type("App\\Models\\User|null", &use_map, &ns),
+            "User|null"
+        );
+    }
+
+    #[test]
+    fn shorten_scalar_types_unchanged() {
+        let use_map = HashMap::new();
+        let ns = None;
+
+        assert_eq!(shorten_type("string", &use_map, &ns), "string");
+        assert_eq!(shorten_type("int", &use_map, &ns), "int");
+        assert_eq!(shorten_type("bool", &use_map, &ns), "bool");
+        assert_eq!(shorten_type("void", &use_map, &ns), "void");
+    }
+
+    // ── format_params tests ─────────────────────────────────────────────
+
+    #[test]
+    fn format_params_basic() {
+        let method = MethodInfo {
+            parameters: vec![
+                ParameterInfo {
+                    name: "$name".to_string(),
+                    is_required: true,
+                    type_hint: Some("string".to_string()),
+                    native_type_hint: Some("string".to_string()),
+                    description: None,
+                    default_value: None,
+                    is_variadic: false,
+                    is_reference: false,
+                },
+                ParameterInfo {
+                    name: "$age".to_string(),
+                    is_required: false,
+                    type_hint: Some("int".to_string()),
+                    native_type_hint: Some("int".to_string()),
+                    description: None,
+                    default_value: Some("0".to_string()),
+                    is_variadic: false,
+                    is_reference: false,
+                },
+            ],
+            ..MethodInfo::virtual_method("test", None)
+        };
+
+        let result = format_params(&method, &HashMap::new(), &None);
+        assert_eq!(result, "string $name, int $age = 0");
+    }
+
+    #[test]
+    fn format_params_variadic_and_reference() {
+        let method = MethodInfo {
+            parameters: vec![
+                ParameterInfo {
+                    name: "$items".to_string(),
+                    is_required: true,
+                    type_hint: Some("string".to_string()),
+                    native_type_hint: Some("string".to_string()),
+                    description: None,
+                    default_value: None,
+                    is_variadic: true,
+                    is_reference: false,
+                },
+                ParameterInfo {
+                    name: "$out".to_string(),
+                    is_required: true,
+                    type_hint: Some("array".to_string()),
+                    native_type_hint: Some("array".to_string()),
+                    description: None,
+                    default_value: None,
+                    is_variadic: false,
+                    is_reference: true,
+                },
+            ],
+            ..MethodInfo::virtual_method("test", None)
+        };
+
+        let result = format_params(&method, &HashMap::new(), &None);
+        assert_eq!(result, "string ...$items, array &$out");
+    }
+
+    // ── format_return_type tests ────────────────────────────────────────
+
+    #[test]
+    fn format_return_type_with_native() {
+        let method = MethodInfo {
+            native_return_type: Some("string".to_string()),
+            return_type: Some("string".to_string()),
+            ..MethodInfo::virtual_method("test", Some("string"))
+        };
+
+        assert_eq!(
+            format_return_type(&method, &HashMap::new(), &None),
+            ": string"
+        );
+    }
+
+    #[test]
+    fn format_return_type_void() {
+        let method = MethodInfo {
+            native_return_type: Some("void".to_string()),
+            ..MethodInfo::virtual_method("test", Some("void"))
+        };
+
+        assert_eq!(
+            format_return_type(&method, &HashMap::new(), &None),
+            ": void"
+        );
+    }
+
+    #[test]
+    fn format_return_type_none() {
+        let method = MethodInfo {
+            native_return_type: None,
+            return_type: None,
+            ..MethodInfo::virtual_method("test", None)
+        };
+
+        assert_eq!(format_return_type(&method, &HashMap::new(), &None), "");
+    }
+
+    // ── detect_class_indent tests ───────────────────────────────────────
+
+    #[test]
+    fn detect_indent_from_class_body() {
+        let content = "<?php\nclass Foo {\n    public function bar() {}\n}\n";
+        let class = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: content.find('{').unwrap() as u32,
+            end_offset: content.rfind('}').unwrap() as u32 + 1,
+            ..Default::default()
+        };
+
+        assert_eq!(detect_class_indent(content, &class), "    ");
+    }
+
+    #[test]
+    fn detect_indent_tabs() {
+        let content = "<?php\nclass Foo {\n\tpublic function bar() {}\n}\n";
+        let class = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: content.find('{').unwrap() as u32,
+            end_offset: content.rfind('}').unwrap() as u32 + 1,
+            ..Default::default()
+        };
+
+        assert_eq!(detect_class_indent(content, &class), "\t");
+    }
+
+    // ── collect_missing_methods tests ───────────────────────────────────
+
+    #[test]
+    fn collects_interface_methods() {
+        let interface = ClassInfo {
+            kind: ClassLikeKind::Interface,
+            name: "Renderable".to_string(),
+            methods: vec![MethodInfo::virtual_method("render", Some("string"))],
+            ..Default::default()
+        };
+
+        let class = ClassInfo {
+            kind: ClassLikeKind::Class,
+            name: "Page".to_string(),
+            interfaces: vec!["Renderable".to_string()],
+            methods: vec![],
+            ..Default::default()
+        };
+
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Renderable" {
+                Some(interface.clone())
+            } else {
+                None
+            }
+        };
+
+        let missing = collect_missing_methods(&class, &loader);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].name, "render");
+    }
+
+    #[test]
+    fn skips_already_implemented_methods() {
+        let interface = ClassInfo {
+            kind: ClassLikeKind::Interface,
+            name: "Renderable".to_string(),
+            methods: vec![MethodInfo::virtual_method("render", Some("string"))],
+            ..Default::default()
+        };
+
+        let class = ClassInfo {
+            kind: ClassLikeKind::Class,
+            name: "Page".to_string(),
+            interfaces: vec!["Renderable".to_string()],
+            methods: vec![MethodInfo::virtual_method("render", Some("string"))],
+            ..Default::default()
+        };
+
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Renderable" {
+                Some(interface.clone())
+            } else {
+                None
+            }
+        };
+
+        let missing = collect_missing_methods(&class, &loader);
+        assert!(missing.is_empty());
+    }
+
+    #[test]
+    fn collects_abstract_parent_methods() {
+        let parent = ClassInfo {
+            kind: ClassLikeKind::Class,
+            name: "AbstractBase".to_string(),
+            is_abstract: true,
+            methods: vec![
+                MethodInfo {
+                    is_abstract: true,
+                    ..MethodInfo::virtual_method("doWork", None)
+                },
+                // Concrete method — should NOT be in missing list.
+                MethodInfo::virtual_method("helper", Some("void")),
+            ],
+            ..Default::default()
+        };
+
+        let class = ClassInfo {
+            kind: ClassLikeKind::Class,
+            name: "ConcreteChild".to_string(),
+            parent_class: Some("AbstractBase".to_string()),
+            methods: vec![],
+            ..Default::default()
+        };
+
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "AbstractBase" {
+                Some(parent.clone())
+            } else {
+                None
+            }
+        };
+
+        let missing = collect_missing_methods(&class, &loader);
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].name, "doWork");
+    }
+
+    #[test]
+    fn case_insensitive_method_matching() {
+        let interface = ClassInfo {
+            kind: ClassLikeKind::Interface,
+            name: "Renderable".to_string(),
+            methods: vec![MethodInfo::virtual_method("Render", Some("string"))],
+            ..Default::default()
+        };
+
+        let class = ClassInfo {
+            kind: ClassLikeKind::Class,
+            name: "Page".to_string(),
+            interfaces: vec!["Renderable".to_string()],
+            methods: vec![MethodInfo::virtual_method("render", Some("string"))],
+            ..Default::default()
+        };
+
+        let loader = |name: &str| -> Option<ClassInfo> {
+            if name == "Renderable" {
+                Some(interface.clone())
+            } else {
+                None
+            }
+        };
+
+        let missing = collect_missing_methods(&class, &loader);
+        assert!(missing.is_empty(), "PHP method names are case-insensitive");
+    }
+
+    #[test]
+    fn collects_from_parent_interfaces() {
+        let parent = ClassInfo {
+            kind: ClassLikeKind::Class,
+            name: "AbstractBase".to_string(),
+            is_abstract: true,
+            interfaces: vec!["Serializable".to_string()],
+            methods: vec![],
+            ..Default::default()
+        };
+
+        let serializable = ClassInfo {
+            kind: ClassLikeKind::Interface,
+            name: "Serializable".to_string(),
+            methods: vec![
+                MethodInfo::virtual_method("serialize", Some("string")),
+                MethodInfo::virtual_method("unserialize", None),
+            ],
+            ..Default::default()
+        };
+
+        let class = ClassInfo {
+            kind: ClassLikeKind::Class,
+            name: "ConcreteChild".to_string(),
+            parent_class: Some("AbstractBase".to_string()),
+            methods: vec![],
+            ..Default::default()
+        };
+
+        let loader = |name: &str| -> Option<ClassInfo> {
+            match name {
+                "AbstractBase" => Some(parent.clone()),
+                "Serializable" => Some(serializable.clone()),
+                _ => None,
+            }
+        };
+
+        let missing = collect_missing_methods(&class, &loader);
+        assert_eq!(missing.len(), 2);
+        let names: Vec<&str> = missing.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"serialize"));
+        assert!(names.contains(&"unserialize"));
+    }
+
+    // ── build_method_stubs tests ────────────────────────────────────────
+
+    #[test]
+    fn stub_includes_return_type() {
+        let methods = vec![MethodInfo {
+            native_return_type: Some("string".to_string()),
+            visibility: Visibility::Public,
+            ..MethodInfo::virtual_method("render", Some("string"))
+        }];
+
+        let content = "<?php\nclass Foo {\n    \n}\n";
+        let class = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: content.find('{').unwrap() as u32,
+            end_offset: content.rfind('}').unwrap() as u32 + 1,
+            ..Default::default()
+        };
+
+        let result = build_method_stubs(&methods, &HashMap::new(), &None, content, &class);
+        assert!(result.contains("public function render(): string"));
+    }
+
+    #[test]
+    fn stub_preserves_static_modifier() {
+        let methods = vec![MethodInfo {
+            is_static: true,
+            native_return_type: Some("void".to_string()),
+            visibility: Visibility::Public,
+            ..MethodInfo::virtual_method("init", Some("void"))
+        }];
+
+        let content = "<?php\nclass Foo {\n    \n}\n";
+        let class = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: content.find('{').unwrap() as u32,
+            end_offset: content.rfind('}').unwrap() as u32 + 1,
+            ..Default::default()
+        };
+
+        let result = build_method_stubs(&methods, &HashMap::new(), &None, content, &class);
+        assert!(result.contains("public static function init(): void"));
+    }
+
+    #[test]
+    fn stub_keeps_protected_visibility() {
+        let methods = vec![MethodInfo {
+            visibility: Visibility::Protected,
+            ..MethodInfo::virtual_method("doWork", None)
+        }];
+
+        let content = "<?php\nclass Foo {\n    \n}\n";
+        let class = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: content.find('{').unwrap() as u32,
+            end_offset: content.rfind('}').unwrap() as u32 + 1,
+            ..Default::default()
+        };
+
+        let result = build_method_stubs(&methods, &HashMap::new(), &None, content, &class);
+        assert!(result.contains("protected function doWork()"));
+    }
+
+    #[test]
+    fn stub_promotes_private_to_public() {
+        let methods = vec![MethodInfo {
+            visibility: Visibility::Private,
+            ..MethodInfo::virtual_method("doWork", None)
+        }];
+
+        let content = "<?php\nclass Foo {\n    \n}\n";
+        let class = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: content.find('{').unwrap() as u32,
+            end_offset: content.rfind('}').unwrap() as u32 + 1,
+            ..Default::default()
+        };
+
+        let result = build_method_stubs(&methods, &HashMap::new(), &None, content, &class);
+        assert!(result.contains("public function doWork()"));
+    }
+
+    #[test]
+    fn stub_with_parameters_and_defaults() {
+        let methods = vec![MethodInfo {
+            parameters: vec![
+                ParameterInfo {
+                    name: "$name".to_string(),
+                    is_required: true,
+                    type_hint: Some("string".to_string()),
+                    native_type_hint: Some("string".to_string()),
+                    description: None,
+                    default_value: None,
+                    is_variadic: false,
+                    is_reference: false,
+                },
+                ParameterInfo {
+                    name: "$options".to_string(),
+                    is_required: false,
+                    type_hint: Some("array".to_string()),
+                    native_type_hint: Some("array".to_string()),
+                    description: None,
+                    default_value: Some("[]".to_string()),
+                    is_variadic: false,
+                    is_reference: false,
+                },
+            ],
+            native_return_type: Some("void".to_string()),
+            visibility: Visibility::Public,
+            ..MethodInfo::virtual_method("process", Some("void"))
+        }];
+
+        let content = "<?php\nclass Foo {\n    \n}\n";
+        let class = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: content.find('{').unwrap() as u32,
+            end_offset: content.rfind('}').unwrap() as u32 + 1,
+            ..Default::default()
+        };
+
+        let result = build_method_stubs(&methods, &HashMap::new(), &None, content, &class);
+        assert!(
+            result.contains("public function process(string $name, array $options = []): void")
+        );
+    }
+}

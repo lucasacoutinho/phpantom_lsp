@@ -342,6 +342,13 @@ pub struct MethodInfo {
     /// public-facing scope name (e.g. `#[Scope] protected function active()`
     /// becomes `User::active()`).
     pub has_scope_attribute: bool,
+    /// Whether this method is declared `abstract`.
+    ///
+    /// Abstract methods have no body (`MethodBody::Abstract`) and must be
+    /// implemented by concrete subclasses.  Interface methods are
+    /// implicitly abstract.  Used by the "Implement missing methods"
+    /// code action to detect which inherited methods still need stubs.
+    pub is_abstract: bool,
     /// Whether this method is a virtual (synthesized) member.
     ///
     /// Virtual methods come from `@method` docblock tags, `@mixin` classes,
@@ -386,6 +393,7 @@ impl MethodInfo {
             template_param_bounds: HashMap::new(),
             template_bindings: Vec::new(),
             has_scope_attribute: false,
+            is_abstract: false,
             is_virtual: true,
         }
     }

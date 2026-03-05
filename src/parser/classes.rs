@@ -1730,6 +1730,7 @@ impl Backend {
                         template_param_bounds: method_template_param_bounds,
                         template_bindings: method_template_bindings,
                         has_scope_attribute: has_scope_attr,
+                        is_abstract: method.is_abstract(),
                         is_virtual: false,
                     });
                 }

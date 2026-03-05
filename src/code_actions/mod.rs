@@ -8,7 +8,11 @@
 //! - **Remove unused import** — when the cursor is on (or a diagnostic
 //!   overlaps with) an unused `use` statement, offer to remove it.
 //!   Also offers a bulk "Remove all unused imports" action.
+//! - **Implement missing methods** — when the cursor is inside a
+//!   concrete class that extends an abstract class or implements an
+//!   interface with unimplemented methods, offer to generate stubs.
 
+mod implement_methods;
 mod import_class;
 mod remove_unused_import;
 
@@ -20,7 +24,7 @@ impl Backend {
     /// Handle a `textDocument/codeAction` request.
     ///
     /// Returns a list of code actions applicable at the given range.
-    pub(crate) fn handle_code_action(
+    pub fn handle_code_action(
         &self,
         uri: &str,
         content: &str,
@@ -33,6 +37,9 @@ impl Backend {
 
         // ── Remove unused imports ───────────────────────────────────────
         self.collect_remove_unused_import_actions(uri, content, params, &mut actions);
+
+        // ── Implement missing methods ───────────────────────────────────
+        self.collect_implement_methods_actions(uri, content, params, &mut actions);
 
         actions
     }

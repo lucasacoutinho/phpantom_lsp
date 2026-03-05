@@ -287,6 +287,7 @@ fn test_apply_substitution_to_method_modifies_return_and_params() {
         template_param_bounds: HashMap::new(),
         template_bindings: Vec::new(),
         has_scope_attribute: false,
+        is_abstract: false,
         is_virtual: false,
     };
 

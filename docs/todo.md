@@ -30,21 +30,10 @@ with each step.
 
 ---
 
-## Sprint 1 — Code actions (imports & diagnostics)
+## Sprint 1 — Code actions (imports & diagnostics) ✅
 
-Ship the first code actions. Import management is the single most
-requested code action in any PHP language server. Pair it with the
-cheapest diagnostics for maximum visual impact.
-
-| # | Item | Effort | Domain | Doc Link |
-|---|---|---|---|---|
-| 14 | Implement missing abstract/interface methods (code action) | Medium | Code Actions | [actions.md §1](todo/actions.md#1-implement-missing-abstractinterface-methods) |
-
-**Why this order:** Items 10-11 are the bread-and-butter code actions
-that every developer uses daily. Item 12 pairs naturally with item 11
-(dimmed imports that can be removed with a quick-fix). Item 13 adds
-strikethrough on deprecated calls, signalling "production-ready" to new
-users. Item 14 builds on the code action infrastructure from 10-11.
+All items complete: import class, remove unused imports, deprecated-usage
+diagnostics, unused-import dimming, and implement missing methods.
 
 ---
 

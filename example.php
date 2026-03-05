@@ -1850,13 +1850,17 @@ class UnknownMemberDemo
 }
 
 
-// ── Hover: Enum Case Listing ────────────────────────────────────────────────
-// Hover on `Status` → shows all enum cases inside the code block.
-// Hover on `Priority` → shows backed enum cases with their string values.
+// ── Implement Missing Methods (Code Action) ─────────────────────────────────
+// Place the cursor inside ImplementMethodsDemo and trigger "Quick Fix" or
+// "Code Action" to see "Implement 3 missing methods".  The generated stubs
+// include correct visibility, parameter types, defaults, and return types.
 
-// ── Hover: Trait Method Signatures ──────────────────────────────────────────
-// Hover on `HasTimestamps` in a `use` statement → shows public method signatures.
-// Hover on `JsonSerializer` → shows public methods as a scannable summary.
+class ImplementMethodsDemo extends ScaffoldingAbstractShape implements ScaffoldingDrawable
+{
+    // Try: trigger "Quick Fix" here — you should see
+    //   "Implement 3 missing methods"
+    // which generates stubs for area(), perimeter(), and draw().
+}
 
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1876,6 +1880,17 @@ class UnknownMemberDemo
 
 
 // ── Demo-Specific Scaffolding ───────────────────────────────────────────────
+
+abstract class ScaffoldingAbstractShape
+{
+    abstract public function area(): float;
+    abstract protected function perimeter(): float;
+}
+
+interface ScaffoldingDrawable
+{
+    public function draw(string $color, float $opacity = 1.0): void;
+}
 
 class ScaffoldingSignatureHelp
 {
