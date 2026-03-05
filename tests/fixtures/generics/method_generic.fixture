@@ -1,15 +1,12 @@
 // test: method-level @template resolves return type from argument
 // feature: completion
-// ignore: needs todo.md §2 (function-level @template argument inference)
 // Adapted from phpactor generics/method_generic.test
 // expect: strMethod(
 ---
 <?php
-
 class StringResult {
     public function strMethod(): void {}
 }
-
 class Foo
 {
     /**
@@ -22,7 +19,6 @@ class Foo
         return $foo;
     }
 }
-
 $f = new Foo();
 $res = $f->bar(new StringResult());
 $res-><>

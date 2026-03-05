@@ -43,6 +43,68 @@ pub(in crate::completion) fn try_apply_instanceof_narrowing(
     if ctx.cursor_offset < body_span.start.offset || ctx.cursor_offset > body_span.end.offset {
         return;
     }
+
+    // ── Compound OR: `$x instanceof A || $x instanceof B` ──────────
+    // Each branch that matches adds its class to the results (union).
+    // This also handles untyped variables: if `results` is empty and
+    // both branches match, the variable becomes `A|B`.
+    //
+    // We resolve all classes first and then replace `results` in one
+    // shot, because `apply_instanceof_inclusion` clears results on
+    // each call (correct for single-class narrowing, but wrong when
+    // building a union from multiple OR branches).
+    if let Some(classes) = try_extract_compound_or_instanceof(condition, ctx.var_name)
+        && !classes.is_empty()
+    {
+        let mut union = Vec::new();
+        for cls_name in &classes {
+            let resolved = super::resolution::type_hint_to_classes(
+                cls_name,
+                &ctx.current_class.name,
+                ctx.all_classes,
+                ctx.class_loader,
+            );
+            for cls in resolved {
+                if !union.iter().any(|c: &ClassInfo| c.name == cls.name) {
+                    union.push(cls);
+                }
+            }
+        }
+        if !union.is_empty() {
+            results.clear();
+            *results = union;
+        }
+        return;
+    }
+
+    // ── Compound AND: `$x instanceof A && $x instanceof B` ─────────
+    // Both branches must hold, so each narrows further.  In practice
+    // this means the variable is the intersection.  Since PHPantom
+    // uses union-completion semantics, we add all matched classes.
+    if let Some(classes) = try_extract_compound_and_instanceof(condition, ctx.var_name)
+        && !classes.is_empty()
+    {
+        let mut union = Vec::new();
+        for cls_name in &classes {
+            let resolved = super::resolution::type_hint_to_classes(
+                cls_name,
+                &ctx.current_class.name,
+                ctx.all_classes,
+                ctx.class_loader,
+            );
+            for cls in resolved {
+                if !union.iter().any(|c: &ClassInfo| c.name == cls.name) {
+                    union.push(cls);
+                }
+            }
+        }
+        if !union.is_empty() {
+            results.clear();
+            *results = union;
+        }
+        return;
+    }
+
     if let Some((cls_name, negated)) = try_extract_instanceof_with_negation(condition, ctx.var_name)
     {
         if negated {
@@ -68,6 +130,22 @@ pub(in crate::completion) fn try_apply_instanceof_narrowing_inverse(
     if ctx.cursor_offset < body_span.start.offset || ctx.cursor_offset > body_span.end.offset {
         return;
     }
+
+    // ── Compound OR inverse: after `if ($x instanceof A || $x instanceof B) { exit; }` ──
+    // In the else branch, $x is neither A nor B → exclude both.
+    if let Some(classes) = try_extract_compound_or_instanceof(condition, ctx.var_name)
+        && !classes.is_empty()
+    {
+        for cls_name in &classes {
+            apply_instanceof_exclusion(cls_name, ctx, results);
+        }
+        return;
+    }
+
+    // ── Compound AND inverse: after `if ($x instanceof A && $x instanceof B) { exit; }` ──
+    // In the else branch, at least one doesn't hold.  Since we can't
+    // precisely model "not (A and B)", we don't narrow.  Fall through.
+
     if let Some((cls_name, negated)) = try_extract_instanceof_with_negation(condition, ctx.var_name)
     {
         // Flip the polarity: positive condition → exclude in else,
@@ -512,6 +590,31 @@ pub(in crate::completion) fn try_apply_assert_instanceof_narrowing(
     ctx: &VarResolutionCtx<'_>,
     results: &mut Vec<ClassInfo>,
 ) {
+    // ── Compound OR inside assert: `assert($x instanceof A || $x instanceof B)` ──
+    if let Some(classes) = try_extract_assert_compound_or_instanceof(expr, ctx.var_name)
+        && !classes.is_empty()
+    {
+        let mut union = Vec::new();
+        for cls_name in &classes {
+            let resolved = super::resolution::type_hint_to_classes(
+                cls_name,
+                &ctx.current_class.name,
+                ctx.all_classes,
+                ctx.class_loader,
+            );
+            for cls in resolved {
+                if !union.iter().any(|c: &ClassInfo| c.name == cls.name) {
+                    union.push(cls);
+                }
+            }
+        }
+        if !union.is_empty() {
+            results.clear();
+            *results = union;
+        }
+        return;
+    }
+
     if let Some((cls_name, negated)) = try_extract_assert_instanceof(expr, ctx.var_name) {
         if negated {
             apply_instanceof_exclusion(&cls_name, ctx, results);
@@ -551,6 +654,38 @@ fn try_extract_assert_instanceof<'b>(
                 Argument::Named(named) => named.value,
             };
             return try_extract_instanceof_with_negation(arg_expr, var_name);
+        }
+    }
+    None
+}
+
+/// Extract compound OR instanceof class names from inside an `assert()` call.
+///
+/// For `assert($x instanceof A || $x instanceof B)`, returns
+/// `Some(["A", "B"])`.  Returns `None` if the expression is not an
+/// `assert()` call whose argument is a compound OR of instanceof checks.
+fn try_extract_assert_compound_or_instanceof<'b>(
+    expr: &'b Expression<'b>,
+    var_name: &str,
+) -> Option<Vec<String>> {
+    let expr = match expr {
+        Expression::Parenthesized(inner) => inner.expression,
+        other => other,
+    };
+    if let Expression::Call(Call::Function(func_call)) = expr {
+        let func_name = match func_call.function {
+            Expression::Identifier(ident) => ident.value().to_string(),
+            _ => return None,
+        };
+        if func_name != "assert" {
+            return None;
+        }
+        if let Some(first_arg) = func_call.argument_list.arguments.iter().next() {
+            let arg_expr = match first_arg {
+                Argument::Positional(pos) => pos.value,
+                Argument::Named(named) => named.value,
+            };
+            return try_extract_compound_or_instanceof(arg_expr, var_name);
         }
     }
     None
@@ -841,6 +976,18 @@ pub(in crate::completion) fn apply_guard_clause_narrowing(
         return;
     }
 
+    // ── Compound OR guard clause ────────────────────────────────────
+    // `if ($x instanceof A || $x instanceof B) { return; }`
+    // After the if, $x is neither A nor B → exclude both.
+    if let Some(classes) = try_extract_compound_or_instanceof(if_stmt.condition, ctx.var_name)
+        && !classes.is_empty()
+    {
+        for cls_name in &classes {
+            apply_instanceof_exclusion(cls_name, ctx, results);
+        }
+        return;
+    }
+
     // ── instanceof / is_a / get_class / ::class narrowing ──
     // The then-body exits, so subsequent code is the "else" — apply
     // the inverse of the condition.
@@ -898,6 +1045,130 @@ pub(in crate::completion) fn apply_guard_clause_narrowing(
                 } else {
                     apply_instanceof_inclusion(&assertion.asserted_type, ctx, results);
                 }
+            }
+        }
+    }
+}
+
+// ── Compound instanceof helpers ─────────────────────────────────
+
+/// Extract all instanceof class names from a compound `||` condition.
+///
+/// For `$x instanceof A || $x instanceof B || $x instanceof C`,
+/// returns `Some(["A", "B", "C"])`.  Returns `None` if the expression
+/// is not a chain of `||`-connected instanceof checks on `var_name`.
+fn try_extract_compound_or_instanceof<'b>(
+    expr: &'b Expression<'b>,
+    var_name: &str,
+) -> Option<Vec<String>> {
+    match expr {
+        Expression::Parenthesized(inner) => {
+            try_extract_compound_or_instanceof(inner.expression, var_name)
+        }
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::Or(_) | BinaryOperator::LowOr(_)
+            ) =>
+        {
+            let mut classes = Vec::new();
+            collect_or_instanceof_classes(expr, var_name, &mut classes);
+            if classes.is_empty() {
+                None
+            } else {
+                Some(classes)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Recursively walk a tree of `||` binary expressions, collecting
+/// instanceof class names for `var_name`.
+fn collect_or_instanceof_classes<'b>(
+    expr: &'b Expression<'b>,
+    var_name: &str,
+    out: &mut Vec<String>,
+) {
+    match expr {
+        Expression::Parenthesized(inner) => {
+            collect_or_instanceof_classes(inner.expression, var_name, out);
+        }
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::Or(_) | BinaryOperator::LowOr(_)
+            ) =>
+        {
+            collect_or_instanceof_classes(bin.lhs, var_name, out);
+            collect_or_instanceof_classes(bin.rhs, var_name, out);
+        }
+        _ => {
+            if let Some(cls_name) = try_extract_instanceof(expr, var_name)
+                && !out.contains(&cls_name)
+            {
+                out.push(cls_name);
+            }
+        }
+    }
+}
+
+/// Extract all instanceof class names from a compound `&&` condition.
+///
+/// For `$x instanceof A && $x instanceof B`, returns `Some(["A", "B"])`.
+/// Returns `None` if the expression is not a chain of `&&`-connected
+/// instanceof checks on `var_name`.
+fn try_extract_compound_and_instanceof<'b>(
+    expr: &'b Expression<'b>,
+    var_name: &str,
+) -> Option<Vec<String>> {
+    match expr {
+        Expression::Parenthesized(inner) => {
+            try_extract_compound_and_instanceof(inner.expression, var_name)
+        }
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_)
+            ) =>
+        {
+            let mut classes = Vec::new();
+            collect_and_instanceof_classes(expr, var_name, &mut classes);
+            if classes.is_empty() {
+                None
+            } else {
+                Some(classes)
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Recursively walk a tree of `&&` binary expressions, collecting
+/// instanceof class names for `var_name`.
+fn collect_and_instanceof_classes<'b>(
+    expr: &'b Expression<'b>,
+    var_name: &str,
+    out: &mut Vec<String>,
+) {
+    match expr {
+        Expression::Parenthesized(inner) => {
+            collect_and_instanceof_classes(inner.expression, var_name, out);
+        }
+        Expression::Binary(bin)
+            if matches!(
+                bin.operator,
+                BinaryOperator::And(_) | BinaryOperator::LowAnd(_)
+            ) =>
+        {
+            collect_and_instanceof_classes(bin.lhs, var_name, out);
+            collect_and_instanceof_classes(bin.rhs, var_name, out);
+        }
+        _ => {
+            if let Some(cls_name) = try_extract_instanceof(expr, var_name)
+                && !out.contains(&cls_name)
+            {
+                out.push(cls_name);
             }
         }
     }

@@ -1,7 +1,6 @@
-// test: reset on typed array resolves to item type or false
+// test: reset() returns first element type from typed array
 // feature: completion
 // Adapted from phpactor function/reset.test
-// ignore: needs todo.md §19 (array function return type resolvers)
 // expect: fooMethod(
 ---
 <?php

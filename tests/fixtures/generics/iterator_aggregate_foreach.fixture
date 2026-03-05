@@ -1,23 +1,18 @@
 // test: IteratorAggregate with value type resolves value in foreach
 // feature: completion
 // Adapted from phpactor generics/iterator_aggregate1.test
-// ignore: needs @implements generic resolution and IteratorAggregate foreach support (todo.md §4)
 // expect: execute(
 ---
 <?php
-
 class Command {
     public function execute(): void {}
 }
-
 /**
  * @implements IteratorAggregate<Command>
  */
 class CommandQueue implements IteratorAggregate {
 }
-
 $foo = new CommandQueue();
-
 foreach ($foo as $bar) {
     $bar-><>
 }

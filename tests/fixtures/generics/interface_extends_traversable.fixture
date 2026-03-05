@@ -1,15 +1,12 @@
 // test: generic interface extending Traversable resolves template in foreach
 // feature: completion
 // Adapted from phpactor generics/interface.test
-// ignore: needs @implements generic resolution and Traversable foreach support (todo.md §4)
 // expect: getCode(
 ---
 <?php
-
 class Violation {
     public function getCode(): string {}
 }
-
 /**
  * @extends \ArrayAccess<int, Violation>
  * @extends \Traversable<int, Violation>
@@ -17,7 +14,6 @@ class Violation {
 interface ViolationListInterface extends \Traversable, \Countable, \ArrayAccess
 {
 }
-
 function foo(ViolationListInterface $list) {
     foreach ($list as $violation) {
         $violation-><>

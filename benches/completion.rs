@@ -1,0 +1,575 @@
+//! Performance benchmarks for PHPantom's core operations.
+//!
+//! Run with: `cargo bench`
+//!
+//! These benchmarks track completion latency, AST parse time, and
+//! cross-file resolution performance to catch regressions early.
+
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use phpantom_lsp::Backend;
+use tower_lsp::LanguageServer;
+use tower_lsp::lsp_types::*;
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/// Build a tokio runtime for async benchmarks.
+fn rt() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+}
+
+/// Open a file on the backend.
+async fn open_file(backend: &Backend, uri_str: &str, content: &str) -> Url {
+    let uri = Url::parse(uri_str).unwrap();
+    let params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: content.to_string(),
+        },
+    };
+    backend.did_open(params).await;
+    uri
+}
+
+/// Fire a completion request at the given position.
+async fn fire_completion(backend: &Backend, uri: &Url, line: u32, character: u32) {
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+    let _ = black_box(backend.completion(params).await);
+}
+
+/// Fire a hover request at the given position.
+async fn fire_hover(backend: &Backend, uri: &Url, line: u32, character: u32) {
+    let params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+    };
+    let _ = black_box(backend.hover(params).await);
+}
+
+/// Fire a go-to-definition request at the given position.
+async fn fire_definition(backend: &Backend, uri: &Url, line: u32, character: u32) {
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position { line, character },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+    let _ = black_box(backend.goto_definition(params).await);
+}
+
+// ─── PHP source generators ──────────────────────────────────────────────────
+
+/// Generate a PHP file with a deep inheritance chain.
+///
+/// Creates `depth` classes where each extends the previous, each with
+/// `methods_per_class` methods. The final line triggers `->` completion
+/// on an instance of the deepest class.
+fn generate_deep_inheritance(depth: usize, methods_per_class: usize) -> String {
+    let mut src = String::from("<?php\n");
+
+    for i in 0..depth {
+        let class_name = format!("Level{i}");
+        let extends = if i > 0 {
+            format!(" extends Level{}", i - 1)
+        } else {
+            String::new()
+        };
+        src.push_str(&format!("class {class_name}{extends} {{\n"));
+        for m in 0..methods_per_class {
+            src.push_str(&format!(
+                "    public function method_{i}_{m}(): void {{}}\n"
+            ));
+        }
+        src.push_str("}\n");
+    }
+
+    let last = depth.saturating_sub(1);
+    src.push_str(&format!("$obj = new Level{last}();\n"));
+    src.push_str("$obj->\n");
+    src
+}
+
+/// Generate a PHP file with many classes (simulating a large classmap).
+fn generate_many_classes(count: usize) -> String {
+    let mut src = String::from("<?php\n");
+    for i in 0..count {
+        src.push_str(&format!(
+            "class Cls{i} {{ public function m{i}(): void {{}} }}\n"
+        ));
+    }
+    src.push_str(&format!("$x = new Cls{}();\n", count.saturating_sub(1)));
+    src.push_str("$x->\n");
+    src
+}
+
+/// Generate a PHP file with generic classes, traits, and docblocks.
+fn generate_complex_generics() -> String {
+    r#"<?php
+/** @template T */
+class Collection {
+    /** @return T */
+    public function first() {}
+    /** @return T[] */
+    public function all(): array {}
+    public function count(): int {}
+    public function isEmpty(): bool {}
+}
+
+class Product {
+    public function getName(): string {}
+    public function getPrice(): float {}
+    public function getCategory(): string {}
+}
+
+/** @extends Collection<Product> */
+class ProductCollection extends Collection {
+    public function cheapest(): Product {}
+}
+
+trait HasTimestamps {
+    public function getCreatedAt(): string {}
+    public function getUpdatedAt(): string {}
+}
+
+/** @mixin HasTimestamps */
+class Audit {
+    public function getAuditor(): string {}
+}
+
+/**
+ * @method string getLabel()
+ * @property int $priority
+ */
+class Task {
+    public function complete(): void {}
+}
+
+$pc = new ProductCollection();
+$pc->first()->
+"#
+    .to_string()
+}
+
+/// Generate a PHP file with narrowing and control flow.
+fn generate_narrowing_scenario() -> String {
+    r#"<?php
+class Dog {
+    public function bark(): void {}
+    public function fetch(): void {}
+}
+class Cat {
+    public function meow(): void {}
+    public function purr(): void {}
+}
+class Fish {
+    public function swim(): void {}
+}
+
+function handle(Dog|Cat|Fish $animal): void {
+    if ($animal instanceof Fish) {
+        return;
+    }
+    if ($animal instanceof Dog) {
+        $animal->
+    }
+}
+"#
+    .to_string()
+}
+
+/// Generate a large PHP file (~500 lines) with mixed content.
+fn generate_large_file(line_count: usize) -> String {
+    let mut src = String::from("<?php\n");
+    let classes_needed = line_count / 10;
+    for i in 0..classes_needed {
+        src.push_str(&format!("class Big{i} {{\n"));
+        src.push_str(&format!("    public string $prop{i};\n"));
+        src.push_str(&format!(
+            "    /** @return Big{i} */\n    public function self{i}(): self {{}}\n"
+        ));
+        src.push_str(&format!(
+            "    public function method{i}a(int $x): void {{}}\n"
+        ));
+        src.push_str(&format!(
+            "    public function method{i}b(string $s): string {{}}\n"
+        ));
+        src.push_str(&format!("    private function internal{i}(): void {{}}\n"));
+        src.push_str("}\n\n");
+    }
+    src
+}
+
+// ─── Benchmark groups ───────────────────────────────────────────────────────
+
+fn bench_completion_simple(c: &mut Criterion) {
+    let runtime = rt();
+
+    c.bench_function("completion_simple_class", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(
+                    &backend,
+                    "file:///bench_simple.php",
+                    r#"<?php
+class Greeter {
+    public function hello(): string {}
+    public function goodbye(): string {}
+}
+$g = new Greeter();
+$g->
+"#,
+                )
+                .await;
+                fire_completion(&backend, &uri, 6, 4).await;
+            })
+        })
+    });
+}
+
+fn bench_completion_deep_inheritance(c: &mut Criterion) {
+    let runtime = rt();
+    let source_5 = generate_deep_inheritance(5, 3);
+    let source_10 = generate_deep_inheritance(10, 3);
+    let source_20 = generate_deep_inheritance(20, 3);
+
+    let mut group = c.benchmark_group("completion_inheritance_depth");
+
+    group.bench_function("depth_5", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_depth5.php", &source_5).await;
+                let line = source_5.lines().count() as u32 - 1;
+                fire_completion(&backend, &uri, line, 6).await;
+            })
+        })
+    });
+
+    group.bench_function("depth_10", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_depth10.php", &source_10).await;
+                let line = source_10.lines().count() as u32 - 1;
+                fire_completion(&backend, &uri, line, 6).await;
+            })
+        })
+    });
+
+    group.bench_function("depth_20", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_depth20.php", &source_20).await;
+                let line = source_20.lines().count() as u32 - 1;
+                fire_completion(&backend, &uri, line, 6).await;
+            })
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_completion_many_classes(c: &mut Criterion) {
+    let runtime = rt();
+    let source_100 = generate_many_classes(100);
+    let source_500 = generate_many_classes(500);
+    let source_1000 = generate_many_classes(1000);
+
+    let mut group = c.benchmark_group("completion_classmap_size");
+
+    group.bench_function("100_classes", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_cls100.php", &source_100).await;
+                let line = source_100.lines().count() as u32 - 1;
+                fire_completion(&backend, &uri, line, 4).await;
+            })
+        })
+    });
+
+    group.bench_function("500_classes", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_cls500.php", &source_500).await;
+                let line = source_500.lines().count() as u32 - 1;
+                fire_completion(&backend, &uri, line, 4).await;
+            })
+        })
+    });
+
+    group.bench_function("1000_classes", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_cls1000.php", &source_1000).await;
+                let line = source_1000.lines().count() as u32 - 1;
+                fire_completion(&backend, &uri, line, 4).await;
+            })
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_completion_generics(c: &mut Criterion) {
+    let runtime = rt();
+    let source = generate_complex_generics();
+
+    c.bench_function("completion_generics_and_mixins", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_generics.php", &source).await;
+                let line = source.lines().count() as u32 - 1;
+                fire_completion(&backend, &uri, line, 14).await;
+            })
+        })
+    });
+}
+
+fn bench_completion_narrowing(c: &mut Criterion) {
+    let runtime = rt();
+    let source = generate_narrowing_scenario();
+
+    c.bench_function("completion_with_narrowing", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(&backend, "file:///bench_narrow.php", &source).await;
+                // The cursor is on the `$animal->` line inside the Dog branch
+                fire_completion(&backend, &uri, 19, 18).await;
+            })
+        })
+    });
+}
+
+fn bench_update_ast(c: &mut Criterion) {
+    let source_small = generate_large_file(100);
+    let source_medium = generate_large_file(500);
+    let source_large = generate_large_file(2000);
+
+    let mut group = c.benchmark_group("update_ast_parse_time");
+
+    group.bench_function("100_lines", |b| {
+        b.iter(|| {
+            let backend = Backend::new_test();
+            backend.update_ast("file:///bench_parse_100.php", black_box(&source_small));
+        })
+    });
+
+    group.bench_function("500_lines", |b| {
+        b.iter(|| {
+            let backend = Backend::new_test();
+            backend.update_ast("file:///bench_parse_500.php", black_box(&source_medium));
+        })
+    });
+
+    group.bench_function("2000_lines", |b| {
+        b.iter(|| {
+            let backend = Backend::new_test();
+            backend.update_ast("file:///bench_parse_2000.php", black_box(&source_large));
+        })
+    });
+
+    group.finish();
+}
+
+fn bench_hover(c: &mut Criterion) {
+    let runtime = rt();
+
+    c.bench_function("hover_method_call", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(
+                    &backend,
+                    "file:///bench_hover.php",
+                    r#"<?php
+class HoverTarget {
+    /**
+     * Compute a result from the input.
+     * @param string $input The raw input
+     * @return int The computed value
+     */
+    public function compute(string $input): int {}
+}
+$ht = new HoverTarget();
+$ht->compute('test');
+"#,
+                )
+                .await;
+                fire_hover(&backend, &uri, 10, 7).await;
+            })
+        })
+    });
+}
+
+fn bench_definition(c: &mut Criterion) {
+    let runtime = rt();
+
+    c.bench_function("goto_definition_method", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(
+                    &backend,
+                    "file:///bench_def.php",
+                    r#"<?php
+class DefTarget {
+    public function action(): void {}
+}
+$dt = new DefTarget();
+$dt->action();
+"#,
+                )
+                .await;
+                fire_definition(&backend, &uri, 5, 7).await;
+            })
+        })
+    });
+}
+
+fn bench_cross_file_completion(c: &mut Criterion) {
+    let runtime = rt();
+
+    c.bench_function("completion_cross_file_type_hint", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                // Open a "dependency" file first
+                open_file(
+                    &backend,
+                    "file:///bench_dep.php",
+                    r#"<?php
+class Dependency {
+    public function resolve(): string {}
+    public function bind(): void {}
+    public function singleton(): void {}
+}
+"#,
+                )
+                .await;
+                // Open the "consumer" file that references the dependency via type hint
+                let uri = open_file(
+                    &backend,
+                    "file:///bench_consumer.php",
+                    r#"<?php
+class Consumer {
+    public function work(Dependency $dep): void {
+        $dep->
+    }
+}
+"#,
+                )
+                .await;
+                fire_completion(&backend, &uri, 3, 14).await;
+            })
+        })
+    });
+}
+
+fn bench_reparse_after_edit(c: &mut Criterion) {
+    let runtime = rt();
+    let initial_source = generate_large_file(500);
+
+    c.bench_function("reparse_500_line_file", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = Url::parse("file:///bench_reparse.php").unwrap();
+                let open_params = DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri: uri.clone(),
+                        language_id: "php".to_string(),
+                        version: 1,
+                        text: initial_source.clone(),
+                    },
+                };
+                backend.did_open(open_params).await;
+
+                // Simulate an edit: replace the entire content (full sync)
+                let mut edited = initial_source.clone();
+                edited.push_str("class ExtraClass { public function extra(): void {} }\n");
+                let change_params = DidChangeTextDocumentParams {
+                    text_document: VersionedTextDocumentIdentifier {
+                        uri: uri.clone(),
+                        version: 2,
+                    },
+                    content_changes: vec![TextDocumentContentChangeEvent {
+                        range: None,
+                        range_length: None,
+                        text: edited,
+                    }],
+                };
+                backend.did_change(change_params).await;
+            })
+        })
+    });
+}
+
+fn bench_completion_chained_methods(c: &mut Criterion) {
+    let runtime = rt();
+
+    c.bench_function("completion_5_method_chain", |b| {
+        b.iter(|| {
+            runtime.block_on(async {
+                let backend = Backend::new_test();
+                let uri = open_file(
+                    &backend,
+                    "file:///bench_chain.php",
+                    r#"<?php
+class Builder {
+    public function a(): self {}
+    public function b(): self {}
+    public function c(): self {}
+    public function d(): self {}
+    public function e(): self {}
+    public function finish(): string {}
+}
+$b = new Builder();
+$b->a()->b()->c()->d()->e()->
+"#,
+                )
+                .await;
+                fire_completion(&backend, &uri, 11, 30).await;
+            })
+        })
+    });
+}
+
+criterion_group!(
+    benches,
+    bench_completion_simple,
+    bench_completion_deep_inheritance,
+    bench_completion_many_classes,
+    bench_completion_generics,
+    bench_completion_narrowing,
+    bench_completion_chained_methods,
+    bench_cross_file_completion,
+    bench_update_ast,
+    bench_hover,
+    bench_definition,
+    bench_reparse_after_edit,
+);
+criterion_main!(benches);

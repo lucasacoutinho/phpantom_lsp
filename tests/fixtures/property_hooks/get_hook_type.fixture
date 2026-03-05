@@ -1,7 +1,6 @@
 // test: PHP 8.4 property hook get accessor resolves property type
 // feature: completion
 // Adapted from phpactor property-hooks/property-get.test
-// ignore: needs todo.md §14 (PHP 8.4 property hook support)
 // expect: strlen(
 ---
 <?php

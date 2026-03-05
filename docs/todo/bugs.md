@@ -191,3 +191,78 @@ handler should reject renames for symbols whose definition lives under
 the vendor directory. The user cannot meaningfully rename third-party
 code. Use `vendor_uri_prefix` to detect this and return an appropriate
 error message.
+
+---
+
+## 8. Accessor on new line with extra whitespace not resolved
+**Impact: Medium · Effort: Low**
+
+When the `->` or `::` accessor is on a new line with leading whitespace
+before the cursor, the subject extraction fails to find the object
+expression. For example:
+
+```php
+$obj
+    -><cursor>
+```
+
+The subject extractor searches backwards from the cursor for the `->` token
+but does not account for the line break and indentation between the object
+and the accessor.
+
+**Discovered via:** fixture conversion (completion/accessor_on_new_line).
+
+---
+
+## 9. Enum case instance properties not shown in `->` completion
+**Impact: Medium · Effort: Low**
+
+After resolving an enum case, `->` completion does not show the `name`
+property (available on all enums) or the `value` property (available on
+backed enums). These are implicit instance properties defined by the
+`UnitEnum` and `BackedEnum` interfaces. The enum's own methods and
+trait methods appear, but these built-in properties are missing.
+
+**Discovered via:** fixture conversion (enum/backed_enum_case_members,
+enum/enum_case_members).
+
+---
+
+## 10. Mixed arrow then static accessor chaining not resolved
+**Impact: Low · Effort: Low**
+
+Chaining `$obj->prop::$staticProp` or `$obj->method()::staticMethod()`
+is not resolved. The subject extractor does not handle a transition from
+`->` to `::` within the same chain.
+
+**Discovered via:** fixture conversion (completion/static_prop_after_arrow).
+
+---
+
+## 11. Partial static property prefix filtering returns empty results
+**Impact: Low · Effort: Low**
+
+When typing `$foobar::$f` and triggering completion, no results are
+returned even though `$foobar` has static properties starting with `$f`.
+The prefix filtering logic for static property access does not correctly
+strip the `$` prefix when matching against property names.
+
+**Discovered via:** fixture conversion (completion/partial_static_property).
+
+---
+
+## 12. Inline `(new Foo)->method()` chaining not resolved
+**Impact: Medium · Effort: Low-Medium**
+
+Parenthesized `new` expressions used as the start of a chain are not
+resolved for completion:
+
+```php
+(new Foo())->method()-><cursor>
+```
+
+The parenthesized `new` expression is handled for simple variable
+assignment (`$x = (new Foo())`), but not when it appears inline as the
+root of a chain that feeds into completion or further resolution.
+
+**Discovered via:** fixture conversion (call_expression/static_factory_return_self).

@@ -47,6 +47,46 @@ pub(in crate::completion) fn try_resolve_foreach_value_type<'b>(
         return;
     }
 
+    // ── Check for a `/** @var Type $var */` docblock directly on the
+    //    foreach value variable ──────────────────────────────────────
+    //
+    // Example:
+    //   /** @var Foobar $foobar */
+    //   foreach ($collection as $foobar) { $foobar-> }
+    //
+    // The docblock annotates the value variable itself, overriding
+    // whatever the collection's element type would be.
+    let foreach_offset = foreach.foreach.span().start.offset as usize;
+    if let Some((var_type, var_name)) =
+        crate::docblock::find_inline_var_docblock(ctx.content, foreach_offset)
+    {
+        // The docblock must either have no variable name (applies to the
+        // next statement) or name the foreach value variable explicitly.
+        // Both `var_name` (from the docblock) and `value_var_name` (from
+        // the AST) include the `$` prefix, so compare them directly.
+        let name_matches = var_name.as_ref().is_none_or(|n| *n == value_var_name);
+        if name_matches {
+            let resolved = crate::completion::type_resolution::type_hint_to_classes(
+                &var_type,
+                &ctx.current_class.name,
+                ctx.all_classes,
+                ctx.class_loader,
+            );
+            if !resolved.is_empty() {
+                for cls in resolved {
+                    if conditional {
+                        if !results.iter().any(|r| r.name == cls.name) {
+                            results.push(cls);
+                        }
+                    } else {
+                        results.push(cls);
+                    }
+                }
+                return;
+            }
+        }
+    }
+
     // Try to extract the raw iterable type from the foreach expression.
     // `extract_rhs_iterable_raw_type` handles method calls, static
     // calls, property access, function calls, and simple variables.

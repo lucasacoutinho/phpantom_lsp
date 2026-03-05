@@ -2,7 +2,7 @@
 // feature: completion
 // Adapted from phpactor if-statement/union_and.test
 // PHPantom uses union semantics: after instanceof A && instanceof B, we show members from both
-// ignore: double instanceof in && condition does not narrow untyped variable
+
 // expect: fooMethod(
 // expect: barMethod(
 ---

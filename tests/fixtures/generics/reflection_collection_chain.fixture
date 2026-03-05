@@ -1,36 +1,29 @@
 // test: complex generic reflection collection chain resolves through extends and implements
 // feature: completion
 // Adapted from phpactor generics/gh-1800.test
-// ignore: needs @implements generic resolution and complex generic chain support
 // expect: argMethod(
 ---
 <?php
-
 interface ReflectionArgument {
     public function argMethod(): void;
 }
-
 /**
  * @template T
  * @extends \IteratorAggregate<T>
  */
 interface ReflectionCollection extends \IteratorAggregate {}
-
 /**
  * @template T
  * @implements ReflectionCollection<T>
  */
 abstract class AbstractReflectionCollection implements ReflectionCollection {}
-
 /**
  * @extends AbstractReflectionCollection<ReflectionArgument>
  */
 class ReflectionArgumentCollection extends AbstractReflectionCollection {}
-
 class ReflectionNodeArgumentExpression {
     public function arguments(): ReflectionArgumentCollection {}
 }
-
 function test(ReflectionNodeArgumentExpression $foo): void {
     foreach ($foo->arguments() as $bar) {
         $bar-><>

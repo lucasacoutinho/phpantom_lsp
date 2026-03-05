@@ -20,7 +20,12 @@ ignore = "0.4"
 [dev-dependencies]
 datatest-stable = "0.2"
 tempfile = "3"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [[test]]
 name = "fixture_runner"
+harness = false
+
+[[bench]]
+name = "completion"
 harness = false

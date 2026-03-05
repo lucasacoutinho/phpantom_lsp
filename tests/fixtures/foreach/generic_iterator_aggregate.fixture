@@ -1,7 +1,7 @@
 // test: IteratorAggregate with @implements generic resolves item type in foreach
 // feature: completion
 // Adapted from phpactor foreach/generic_iterator_aggregate.test
-// ignore: needs @implements generic resolution and IteratorAggregate foreach support, todo.md §4
+
 // expect: assertMethod(
 ---
 <?php

@@ -1,6 +1,5 @@
 // test: @method virtual method on trait appears in completion
 // feature: completion
-// ignore: @method on trait does not propagate to class using it yet
 // Adapted from phpactor virtual_member/trait_method1.test
 // expect: sayHello(
 ---

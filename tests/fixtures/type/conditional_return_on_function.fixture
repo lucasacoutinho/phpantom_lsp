@@ -1,7 +1,6 @@
 // test: conditional return type on standalone function resolves based on argument
 // feature: completion
 // Adapted from phpactor type/conditional-type-on-function.test
-// ignore: needs todo.md §3 (conditional return types on standalone functions)
 // expect: fooMethod(
 ---
 <?php

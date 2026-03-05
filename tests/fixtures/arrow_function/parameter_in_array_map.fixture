@@ -1,7 +1,6 @@
 // test: arrow function parameter type resolves inside array_map call
 // feature: completion
 // Adapted from phpactor arrow_function/parameter2.test
-// ignore: arrow function parameter type not resolved for completion
 // expect: nodeMethod(
 ---
 <?php

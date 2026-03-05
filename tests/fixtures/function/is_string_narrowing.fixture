@@ -1,7 +1,6 @@
 // test: is_string() narrows type so else branch retains object members
 // feature: completion
 // Adapted from phpactor function/is_string.test and if-statement/else.test
-// ignore: needs todo.md §3 (conditional return type parsing from stubs for is_*() narrowing)
 // expect: fooMethod(
 ---
 <?php

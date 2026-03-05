@@ -1,7 +1,7 @@
 // test: instanceof with namespaced types resolves correctly
 // feature: completion
 // Adapted from phpactor if-statement/namespace.test
-// ignore: instanceof on untyped variable does not narrow to discovered type
+
 // expect: bazMethod(
 // expect: booMethod(
 ---

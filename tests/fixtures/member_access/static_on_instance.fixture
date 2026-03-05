@@ -1,0 +1,16 @@
+// test: static method hidden from instance -> access
+// feature: completion
+// Adapted from phpactor WorseClassMemberCompletorTest 'shows static member on instance method'
+// PHPantom deliberately hides static-only members from -> access
+// expect: hello(
+// expect_absent: goodbye(
+---
+<?php
+
+class BarBar {
+    public function hello(): void {}
+    public static function goodbye(): void {}
+}
+
+$bar = new BarBar();
+$bar-><>

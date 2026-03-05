@@ -207,9 +207,10 @@ pub fn extract_generics_tag(docblock: &str, tag: &str) -> Vec<(String, Vec<Strin
         .unwrap_or(docblock);
 
     // Build the tag variants we accept.  For `@extends` we also accept
-    // `@phpstan-extends`.
+    // `@phpstan-extends` and `@template-extends` (PHPStan/Psalm aliases).
     let bare_tag = tag.strip_prefix('@').unwrap_or(tag);
     let phpstan_tag = format!("@phpstan-{bare_tag}");
+    let template_tag = format!("@template-{bare_tag}");
 
     let mut results = Vec::new();
 
@@ -217,6 +218,8 @@ pub fn extract_generics_tag(docblock: &str, tag: &str) -> Vec<(String, Vec<Strin
         let trimmed = line.trim().trim_start_matches('*').trim();
 
         let rest = if let Some(r) = trimmed.strip_prefix(&phpstan_tag) {
+            r
+        } else if let Some(r) = trimmed.strip_prefix(&template_tag) {
             r
         } else if let Some(r) = trimmed.strip_prefix(tag) {
             r

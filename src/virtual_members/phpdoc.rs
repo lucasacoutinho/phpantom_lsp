@@ -60,6 +60,18 @@ impl VirtualMemberProvider for PHPDocProvider {
             return true;
         }
 
+        // Has used traits that might have @method/@property tags.
+        for trait_name in &class.used_traits {
+            if let Some(trait_info) = class_loader(trait_name)
+                && trait_info
+                    .class_docblock
+                    .as_ref()
+                    .is_some_and(|d| !d.is_empty())
+            {
+                return true;
+            }
+        }
+
         // Has direct @mixin declarations.
         if !class.mixins.is_empty() {
             return true;
@@ -128,6 +140,58 @@ impl VirtualMemberProvider for PHPDocProvider {
                     is_virtual: true,
                 })
                 .collect();
+        }
+
+        // ── Phase 1b: @method and @property tags from used traits ───────
+        //
+        // When a class uses a trait that declares `@method` or `@property`
+        // tags in its docblock, those virtual members should propagate to
+        // the consuming class.  Real trait methods are already merged by
+        // `merge_traits_into`, but virtual members from docblock tags are
+        // not — they only exist as text in the trait's `class_docblock`.
+        for trait_name in &class.used_traits {
+            let trait_info = if let Some(t) = class_loader(trait_name) {
+                t
+            } else {
+                continue;
+            };
+
+            if let Some(doc_text) = trait_info.class_docblock.as_deref()
+                && !doc_text.is_empty()
+            {
+                for m in docblock::extract_method_tags(doc_text) {
+                    if !methods.iter().any(|existing| existing.name == m.name)
+                        && !class.methods.iter().any(|existing| existing.name == m.name)
+                    {
+                        methods.push(m);
+                    }
+                }
+
+                for (name, type_str) in docblock::extract_property_tags(doc_text) {
+                    if !properties.iter().any(|existing| existing.name == name)
+                        && !class
+                            .properties
+                            .iter()
+                            .any(|existing| existing.name == name)
+                    {
+                        properties.push(PropertyInfo {
+                            name,
+                            name_offset: 0,
+                            type_hint: if type_str.is_empty() {
+                                None
+                            } else {
+                                Some(type_str)
+                            },
+                            native_type_hint: None,
+                            description: None,
+                            is_static: false,
+                            visibility: Visibility::Public,
+                            deprecation_message: None,
+                            is_virtual: true,
+                        });
+                    }
+                }
+            }
         }
 
         // ── Phase 2: @mixin members (lower precedence) ─────────────────

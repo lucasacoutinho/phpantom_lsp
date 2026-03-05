@@ -1,0 +1,14 @@
+// test: invoked arrow function return type resolves for completion
+// feature: completion
+// Adapted from phpactor call-expression/type-from-invoked-callable.test
+// ignore: invoked closure/arrow function return type not resolved
+// expect: format(
+---
+<?php
+
+class DateTime {
+    public function format(string $f): string {}
+}
+
+$result = (fn (): DateTime => new DateTime())();
+$result-><>

@@ -1,7 +1,6 @@
 // test: array_map with closure resolves return array type
 // feature: completion
 // Adapted from phpactor function/array_map.test
-// ignore: needs todo.md §19 (array function return type resolvers)
 // expect: strMethod(
 ---
 <?php

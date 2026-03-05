@@ -1,23 +1,18 @@
 // test: Iterator with key and value types resolves value in foreach
 // feature: completion
 // Adapted from phpactor generics/iterator2.test
-// ignore: needs @implements generic resolution and Iterator foreach support (todo.md §4)
 // expect: process(
 ---
 <?php
-
 class Job {
     public function process(): void {}
 }
-
 /**
  * @implements Iterator<int, Job>
  */
 class JobIterator implements Iterator {
 }
-
 $foo = new JobIterator();
-
 foreach ($foo as $bar) {
     $bar-><>
 }

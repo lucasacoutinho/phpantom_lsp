@@ -581,3 +581,212 @@ type:
 - If the inner type is `array<K, V>`, extract `K` or `V` directly.
 - If the inner type is still an unresolved template parameter, leave
   it as-is (it may resolve later in the chain).
+
+---
+
+## 17. `@implements` generic resolution
+**Impact: Medium-High · Effort: Medium**
+
+When a class declares `@implements SomeInterface<ConcreteType>`, the
+generic parameters should be substituted into inherited interface
+methods. This works for `@extends` on classes but the `@implements`
+path is not wired up.
+
+**Example:**
+
+```php
+/** @template T */
+interface Repository {
+    /** @return T */
+    public function find(int $id);
+}
+
+/** @implements Repository<User> */
+class UserRepository implements Repository {
+    public function find(int $id) { /* ... */ }
+}
+
+$repo = new UserRepository();
+$repo->find(1); // should resolve to User
+```
+
+A related variant is `@implements` through an extended interface chain
+with key+value types (e.g. `@implements IteratorAggregate<string, Item>`).
+
+**Discovered via:** fixture conversion (class_implements_single,
+class_implements_multiple, implements_parameter_type).
+
+---
+
+## 18. `@phpstan-assert` on static method calls
+**Impact: Medium · Effort: Medium**
+
+`@phpstan-assert` type guards only work on standalone function calls
+today. When the assertion is on a static method (e.g.
+`Assert::instanceOf($value, Foo::class)`), the narrowing does not
+apply to the calling scope.
+
+The same limitation applies to `@phpstan-assert-if-true` and
+`@phpstan-assert-if-false` on static method calls.
+
+**Discovered via:** fixture conversion (phpstan_assert_static).
+
+---
+
+## 19. Negated `@phpstan-assert !Type`
+**Impact: Medium · Effort: Low-Medium**
+
+When a function declares `@phpstan-assert !Foo $param`, calling it
+should remove `Foo` from the variable's union type. Today the negation
+prefix is not parsed, so the assertion is either ignored or
+misinterpreted as a positive assertion.
+
+**Discovered via:** fixture conversion (phpstan_assert_negated).
+
+---
+
+## 20. Generic `@phpstan-assert` with `class-string<T>` parameter inference
+**Impact: Medium · Effort: Medium-High**
+
+When a function declares `@phpstan-assert T $value` with a
+`@template T` bound via a `class-string<T>` parameter, the narrowed
+type should be inferred from the class-string argument at the call
+site. For example:
+
+```php
+/**
+ * @template T of object
+ * @param class-string<T> $class
+ * @phpstan-assert T $value
+ */
+function assertInstanceOf(string $class, mixed $value): void {}
+
+assertInstanceOf(Foo::class, $x);
+$x->fooMethod(); // $x should be narrowed to Foo
+```
+
+**Discovered via:** fixture conversion (phpstan_assert_generic).
+
+---
+
+## 21. Property-level narrowing
+**Impact: Medium · Effort: Medium**
+
+`$this->prop instanceof Foo` inside an `if` block does not narrow the
+type of `$this->prop` for subsequent member access. Only local
+variables participate in narrowing today.
+
+**Discovered via:** fixture conversion (property_narrowing,
+property_narrowing_negated, combination/property_instanceof).
+
+---
+
+## 22. Sequential `assert()` calls do not accumulate
+**Impact: Low-Medium · Effort: Low**
+
+Multiple `assert($x instanceof Foo); assert($x instanceof Bar);`
+statements on the same variable should accumulate. Today only the
+last assertion's narrowing applies.
+
+**Discovered via:** fixture conversion (sequential_narrowing).
+
+---
+
+## 23. Double negated `instanceof` narrowing
+**Impact: Low · Effort: Low**
+
+`if (!!($x instanceof Foo))` and `if (!(!$x instanceof Foo) { return; }`
+do not resolve correctly. The double negation cancels out but the
+narrowing engine does not simplify it.
+
+**Discovered via:** fixture conversion (bangbang_instanceof).
+
+---
+
+## 24. Literal string conditional return type
+**Impact: Low · Effort: Low-Medium**
+
+Conditional return types using literal string comparison
+(`$param is "foo"`) are not resolved. Only class/interface type checks
+work in the conditional return type parser today.
+
+**Discovered via:** fixture conversion (conditional_return_type_string).
+
+---
+
+## 25. `class-string<T>` on interface method not inherited
+**Impact: Medium · Effort: Medium**
+
+When an interface method uses `class-string<T>` in its return type
+and a class implements that interface, the implementing class's method
+does not inherit the generic return type. The `class-string<T>`
+pattern works on the interface directly but is lost during
+inheritance merging.
+
+**Discovered via:** fixture conversion (class_string_generic_interface).
+
+---
+
+## 26. `@method` with `static` or `$this` return type on parent class
+**Impact: Medium · Effort: Low-Medium**
+
+When a parent class declares `@method static foo()` or
+`@method $this bar()`, calling the method on a child class should
+return the child class type. Today the virtual method's return type
+is not rewritten through the inheritance chain.
+
+**Discovered via:** fixture conversion (virtual_member/method_returns_static,
+virtual_member/method_returns_this).
+
+---
+
+## 27. `new $classStringVar` and `$classStringVar::staticMethod()`
+**Impact: Low-Medium · Effort: Medium**
+
+When a variable holds a `class-string<T>`, `new $var` should resolve
+to `T` and `$var::staticMethod()` should resolve through `T`'s static
+methods. Neither path is supported today.
+
+**Discovered via:** fixture conversion (type/class_string_new,
+type/class_string_static_call).
+
+---
+
+## 28. `__invoke()` return type resolution
+**Impact: Low-Medium · Effort: Low**
+
+Calling an object as a function (`$obj()`) does not resolve the return
+type from the object's `__invoke()` method. The call expression path
+does not check for `__invoke` when the callee is a variable holding
+an object type.
+
+**Discovered via:** fixture conversion (call_expression/invoke_return_type).
+
+---
+
+## 29. `@phpstan-type` alias in foreach context
+**Impact: Low · Effort: Low**
+
+When a method's return type uses a `@phpstan-type` alias and the result
+is iterated in a `foreach`, the alias is not resolved before the
+foreach value type is extracted.
+
+**Discovered via:** fixture conversion (type/phpstan_type_alias).
+
+---
+
+## 30. Invoked closure/arrow function return type
+**Impact: Low · Effort: Low-Medium**
+
+Immediately invoked closures and arrow functions do not resolve their
+return type:
+
+```php
+$result = (fn(): Foo => new Foo())();
+$result->method(); // unresolved
+```
+
+The call expression resolution does not detect that the callee is a
+parenthesized closure/arrow function expression.
+
+**Discovered via:** fixture conversion (call_expression/arrow_fn_invocation).

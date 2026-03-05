@@ -1,6 +1,5 @@
 // test: child re-templates parent template via @template-extends
 // feature: completion
-// ignore: @template-extends syntax not yet supported (only @extends is recognized)
 // Adapted from phpactor generics/class_template_extends1.test
 // expect: bazMethod(
 ---
