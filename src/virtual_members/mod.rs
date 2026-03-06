@@ -57,17 +57,41 @@ use std::sync::{Arc, Mutex};
 use crate::inheritance::resolve_class_with_inheritance;
 use crate::types::{ClassInfo, ConstantInfo, MethodInfo, PropertyInfo};
 
-/// Thread-safe cache of fully-resolved classes, keyed by FQN.
+/// Cache key for [`ResolvedClassCache`]: fully-qualified class name
+/// paired with the concrete generic type arguments used at this
+/// instantiation site.
 ///
-/// Stored on [`Backend`](crate::Backend) and cleared on every file
-/// change so that stale results never survive an edit.  Within a
-/// single request cycle (completion, hover, etc.) the cache eliminates
-/// redundant calls to [`resolve_class_fully`] for the same class.
-pub type ResolvedClassCache = Arc<Mutex<HashMap<String, ClassInfo>>>;
+/// For non-generic classes the argument list is empty, keeping the
+/// common case cheap.  For generic classes like
+/// `Illuminate\Database\Eloquent\Builder<App\Models\User>`, the key
+/// would be `("Illuminate\\Database\\Eloquent\\Builder", vec!["App\\Models\\User"])`.
+///
+/// Generic args are stored normalized (fully qualified, sorted when
+/// order-independent) to avoid near-miss cache entries.
+pub type ResolvedClassCacheKey = (String, Vec<String>);
+
+/// Thread-safe cache of fully-resolved classes, keyed by FQN + generic args.
+///
+/// Stored on [`Backend`](crate::Backend) and selectively invalidated
+/// when a file is re-parsed (`update_ast` / `parse_and_cache_content`).
+/// Within a single request cycle (completion, hover, etc.) the cache
+/// eliminates redundant calls to [`resolve_class_fully`] for the same
+/// class at the same generic instantiation.
+pub type ResolvedClassCache = Arc<Mutex<HashMap<ResolvedClassCacheKey, ClassInfo>>>;
 
 /// Create a new, empty [`ResolvedClassCache`].
 pub fn new_resolved_class_cache() -> ResolvedClassCache {
     Arc::new(Mutex::new(HashMap::new()))
+}
+
+/// Evict all cache entries whose FQN matches the given name.
+///
+/// Because the cache is keyed by `(FQN, generic_args)`, a single FQN
+/// may have multiple entries (one per distinct generic instantiation).
+/// This helper removes all of them, which is used during targeted
+/// cache invalidation when a class definition changes.
+pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, ClassInfo>, fqn: &str) {
+    cache.retain(|(k, _), _| k != fqn);
 }
 
 /// Members synthesized by a provider.
@@ -255,7 +279,7 @@ pub fn resolve_class_fully(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
 ) -> ClassInfo {
-    resolve_class_fully_inner(class, class_loader, None)
+    resolve_class_fully_inner(class, class_loader, None, &[])
 }
 
 /// Cached variant of [`resolve_class_fully`].
@@ -275,7 +299,7 @@ pub fn resolve_class_fully_cached(
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     cache: &ResolvedClassCache,
 ) -> ClassInfo {
-    resolve_class_fully_inner(class, class_loader, Some(cache))
+    resolve_class_fully_inner(class, class_loader, Some(cache), &[])
 }
 
 /// Resolve a class fully, using the cache when available.
@@ -290,7 +314,7 @@ pub fn resolve_class_fully_maybe_cached(
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     cache: Option<&ResolvedClassCache>,
 ) -> ClassInfo {
-    resolve_class_fully_inner(class, class_loader, cache)
+    resolve_class_fully_inner(class, class_loader, cache, &[])
 }
 
 /// Compute the fully-qualified name used as the cache key.
@@ -311,13 +335,15 @@ fn resolve_class_fully_inner(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     cache: Option<&ResolvedClassCache>,
+    generic_args: &[String],
 ) -> ClassInfo {
     let fqn = class_fqn(class);
+    let cache_key: ResolvedClassCacheKey = (fqn.clone(), generic_args.to_vec());
 
     // ── Cache lookup ────────────────────────────────────────────────
     if let Some(cache) = cache
         && let Ok(map) = cache.lock()
-        && let Some(cached) = map.get(&fqn)
+        && let Some(cached) = map.get(&cache_key)
     {
         return cached.clone();
     }
@@ -362,10 +388,10 @@ fn resolve_class_fully_inner(
             // Use the cache for interface resolution too — many classes
             // implement the same interfaces (e.g. Countable, Iterator)
             // and this avoids re-resolving them every time.
-            let iface_fqn = class_fqn(&iface);
+            let iface_key: ResolvedClassCacheKey = (class_fqn(&iface), Vec::new());
             if let Some(c) = cache
                 && let Ok(map) = c.lock()
-                && let Some(cached) = map.get(&iface_fqn)
+                && let Some(cached) = map.get(&iface_key)
             {
                 let resolved_iface = cached.clone();
                 drop(map);
@@ -413,7 +439,7 @@ fn resolve_class_fully_inner(
     if let Some(cache) = cache
         && let Ok(mut map) = cache.lock()
     {
-        map.insert(fqn, merged.clone());
+        map.insert(cache_key, merged.clone());
     }
 
     merged

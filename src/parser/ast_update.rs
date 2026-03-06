@@ -277,26 +277,24 @@ impl Backend {
 
         let uri_string = uri.to_string();
 
-        // Collect the FQNs of classes that were previously defined in this
-        // file.  When we invalidate the resolved-class cache below, we
-        // need to remove both the old FQNs (in case a class was renamed
-        // or its namespace changed) and the new FQNs.
-        let old_fqns: Vec<String> = if let Ok(map) = self.ast_map.lock() {
-            if let Some(old_classes) = map.get(&uri_string) {
-                old_classes
-                    .iter()
-                    .filter(|c| !c.name.starts_with("__anonymous@"))
-                    .map(|c| match &c.file_namespace {
-                        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
-                        _ => c.name.clone(),
-                    })
-                    .collect()
+        // Collect old ClassInfo values (not just FQNs) before the ast_map
+        // entry is overwritten.  These are compared against the new classes
+        // using `signature_eq` to decide whether each FQN's cache entry
+        // actually needs eviction (signature-level cache invalidation).
+        let old_classes_snapshot: Vec<crate::types::ClassInfo> =
+            if let Ok(map) = self.ast_map.lock() {
+                map.get(&uri_string).cloned().unwrap_or_default()
             } else {
                 Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+            };
+        let old_fqns: Vec<String> = old_classes_snapshot
+            .iter()
+            .filter(|c| !c.name.starts_with("__anonymous@"))
+            .map(|c| match &c.file_namespace {
+                Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
+                _ => c.name.clone(),
+            })
+            .collect();
 
         // Populate the class_index with FQN → URI mappings for every class
         // found in this file.  This enables reliable lookup of classes that
@@ -345,22 +343,23 @@ impl Backend {
             map.insert(uri_string, namespace);
         }
 
-        // Selectively invalidate the resolved-class cache.
+        // Selectively invalidate the resolved-class cache with
+        // signature-level granularity.
         //
-        // Instead of clearing the entire cache on every keystroke, only
-        // remove entries for classes defined in this file.  Classes from
-        // other files (vendor, stubs, other user files) keep their cached
-        // resolution, avoiding redundant inheritance walks and virtual
-        // member injection on every edit.
+        // Instead of evicting every FQN defined in this file on every
+        // keystroke, compare the old and new ClassInfo values using
+        // `signature_eq`.  When the signature has not changed (the
+        // overwhelmingly common case during normal editing inside a
+        // method body), the cache entry is kept warm.
         //
-        // We remove both old FQNs (from before this parse) and new FQNs
-        // (from the current parse) to handle renames and namespace changes.
+        // FQNs that only appear in the old set (renamed/removed classes)
+        // or only in the new set (newly added classes) are always evicted.
+        // FQNs present in both sets are evicted only when their signature
+        // differs.
+        //
         // Dependents (classes that extend/use a changed class) may briefly
         // hold stale data, but they self-correct on the next edit because
         // re-resolution calls class_loader which returns the fresh class.
-        // Changing an inheritance relationship (extends, implements, use)
-        // is rare during normal editing; the common case is editing method
-        // bodies, which does not affect other classes' resolved forms.
         if let Ok(mut cache) = self.resolved_class_cache.lock() {
             // Collect new FQNs from the classes we just parsed.
             let new_fqns: Vec<String> = classes_with_ns
@@ -372,8 +371,51 @@ impl Backend {
                 })
                 .collect();
 
-            for fqn in old_fqns.iter().chain(new_fqns.iter()) {
-                cache.remove(fqn);
+            // Evict old FQNs that no longer exist (renames / removals),
+            // or whose signature changed.
+            for (i, fqn) in old_fqns.iter().enumerate() {
+                let old_cls = &old_classes_snapshot[old_classes_snapshot
+                    .iter()
+                    .position(|c| {
+                        !c.name.starts_with("__anonymous@") && {
+                            let f = match &c.file_namespace {
+                                Some(ns) if !ns.is_empty() => {
+                                    format!("{}\\{}", ns, c.name)
+                                }
+                                _ => c.name.clone(),
+                            };
+                            f == *fqn
+                        }
+                    })
+                    .unwrap_or(i)];
+
+                // Find the matching new class by FQN.
+                let new_cls = classes_with_ns.iter().find(|(c, ns)| {
+                    !c.name.starts_with("__anonymous@") && {
+                        let f = match ns {
+                            Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
+                            _ => c.name.clone(),
+                        };
+                        f == *fqn
+                    }
+                });
+
+                match new_cls {
+                    Some((new, _)) if old_cls.signature_eq(new) => {
+                        // Signature unchanged — keep the cache entry warm.
+                    }
+                    _ => {
+                        // Signature changed or class was removed — evict.
+                        crate::virtual_members::evict_fqn(&mut cache, fqn);
+                    }
+                }
+            }
+
+            // Evict new FQNs that did not exist before (new classes).
+            for fqn in &new_fqns {
+                if !old_fqns.contains(fqn) {
+                    crate::virtual_members::evict_fqn(&mut cache, fqn);
+                }
             }
         }
     }

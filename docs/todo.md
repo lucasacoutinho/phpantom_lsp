@@ -96,8 +96,6 @@ deepens that lead and rounds out the remaining feature surface.
 | 38 | Property hooks (PHP 8.4) | Medium | Type Inference | [type-inference.md §6](todo/type-inference.md#6-property-hooks-php-84) |
 | 39 | Simplify with null coalescing / null-safe operator (code action) | Medium | Code Actions | [actions.md §2](todo/actions.md#2-simplify-with-null-coalescing--null-safe-operator) |
 | 40 | Inlay hints (`textDocument/inlayHint`) | Medium | LSP Features | [lsp-features.md §9](todo/lsp-features.md#9-inlay-hints-textdocumentinlayhint) |
-| 41 | Resolved-class cache: key by FQN + generic args | Medium | Type Inference | [type-inference.md §31](todo/type-inference.md#31-resolved-class-cache-key-by-fqn--generic-args) |
-| 42 | Signature-level cache invalidation | Low-Medium | Type Inference | [type-inference.md §33](todo/type-inference.md#33-signature-level-cache-invalidation-skip-eviction-when-only-method-bodies-change) |
 
 **After Sprint 5:** PHPantom has a complete, polished LSP feature set.
 Users moving to Zed/Neovim/Helix lose nothing on the intelligence side

@@ -248,6 +248,22 @@ pub struct ParameterInfo {
     pub is_reference: bool,
 }
 
+impl ParameterInfo {
+    /// Compare two parameters by signature-relevant fields only.
+    ///
+    /// Ignores `name_offset` (not present on this struct) and
+    /// `description` (display-only).  Everything else affects type
+    /// resolution and must trigger cache eviction when it changes.
+    pub fn signature_eq(&self, other: &ParameterInfo) -> bool {
+        self.name == other.name
+            && self.is_required == other.is_required
+            && self.type_hint == other.type_hint
+            && self.default_value == other.default_value
+            && self.is_variadic == other.is_variadic
+            && self.is_reference == other.is_reference
+    }
+}
+
 /// Stores extracted method information from a parsed PHP class.
 #[derive(Debug, Clone)]
 pub struct MethodInfo {
@@ -361,6 +377,37 @@ pub struct MethodInfo {
 }
 
 impl MethodInfo {
+    /// Compare two methods by signature-relevant fields only.
+    ///
+    /// Ignores fields that change on every keystroke (byte offsets) and
+    /// fields that are display-only (descriptions, links).  Everything
+    /// else affects type resolution, inheritance, or virtual member
+    /// injection and must trigger cache eviction when it changes.
+    ///
+    /// Parameters are compared in order (not as sets) because parameter
+    /// order matters for signature help and call resolution.
+    pub fn signature_eq(&self, other: &MethodInfo) -> bool {
+        self.name == other.name
+            && self.is_static == other.is_static
+            && self.visibility == other.visibility
+            && self.return_type == other.return_type
+            && self.native_return_type == other.native_return_type
+            && self.conditional_return == other.conditional_return
+            && self.deprecation_message == other.deprecation_message
+            && self.template_params == other.template_params
+            && self.template_param_bounds == other.template_param_bounds
+            && self.template_bindings == other.template_bindings
+            && self.has_scope_attribute == other.has_scope_attribute
+            && self.is_abstract == other.is_abstract
+            && self.is_virtual == other.is_virtual
+            && self.parameters.len() == other.parameters.len()
+            && self
+                .parameters
+                .iter()
+                .zip(other.parameters.iter())
+                .all(|(a, b)| a.signature_eq(b))
+    }
+
     /// Create a virtual `MethodInfo` with sensible defaults.
     ///
     /// The method is public, non-static, non-deprecated, with no
@@ -451,6 +498,20 @@ pub struct PropertyInfo {
 }
 
 impl PropertyInfo {
+    /// Compare two properties by signature-relevant fields only.
+    ///
+    /// Ignores `name_offset` (changes on every keystroke) and
+    /// `description` (display-only).  Everything else affects type
+    /// resolution and must trigger cache eviction when it changes.
+    pub fn signature_eq(&self, other: &PropertyInfo) -> bool {
+        self.name == other.name
+            && self.type_hint == other.type_hint
+            && self.visibility == other.visibility
+            && self.is_static == other.is_static
+            && self.deprecation_message == other.deprecation_message
+            && self.is_virtual == other.is_virtual
+    }
+
     /// Create a virtual `PropertyInfo` with sensible defaults.
     ///
     /// The property is public, non-static, with no deprecation message and
@@ -523,6 +584,24 @@ pub struct ConstantInfo {
     /// Set to `true` by providers; set to `false` by the parser for real
     /// declared constants.
     pub is_virtual: bool,
+}
+
+impl ConstantInfo {
+    /// Compare two constants by signature-relevant fields only.
+    ///
+    /// Ignores `name_offset` (changes on every keystroke) and
+    /// `description` (display-only).  Everything else affects type
+    /// resolution and must trigger cache eviction when it changes.
+    pub fn signature_eq(&self, other: &ConstantInfo) -> bool {
+        self.name == other.name
+            && self.type_hint == other.type_hint
+            && self.visibility == other.visibility
+            && self.deprecation_message == other.deprecation_message
+            && self.is_enum_case == other.is_enum_case
+            && self.enum_value == other.enum_value
+            && self.value == other.value
+            && self.is_virtual == other.is_virtual
+    }
 }
 
 /// Stores extracted information about a global constant defined via
@@ -829,7 +908,7 @@ pub enum ClassLikeKind {
 /// Grouped into a sub-struct to keep the core `ClassInfo` focused on
 /// PHP semantics. All fields default to empty/`None`, so non-Laravel
 /// classes carry no overhead beyond a single struct value.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LaravelMetadata {
     /// Custom collection class for Eloquent models.
     ///
@@ -1036,6 +1115,93 @@ pub struct ClassInfo {
 // ─── ClassInfo helpers ──────────────────────────────────────────────────────
 
 impl ClassInfo {
+    /// Compare two `ClassInfo` values by signature-relevant fields only.
+    ///
+    /// Returns `true` when the two classes have identical signatures,
+    /// meaning the resolved-class cache entry for this FQN does not need
+    /// to be evicted.  This is the key predicate for signature-level
+    /// cache invalidation (§33 in the roadmap).
+    ///
+    /// **Ignored fields** (change on every keystroke or are display-only):
+    /// - `start_offset`, `end_offset`, `keyword_offset`
+    /// - `link` (display-only URL from `@link`)
+    ///
+    /// **Compared fields** (affect resolution, inheritance, or virtual
+    /// member injection):
+    /// - All class-level metadata (`kind`, `name`, `parent_class`, etc.)
+    /// - Methods, properties, and constants (compared as name-keyed sets
+    ///   so that reordering members in source does not trigger eviction)
+    /// - `class_docblock` (adding/removing `@method`/`@property` tags)
+    /// - `laravel` metadata (affects virtual member providers)
+    pub fn signature_eq(&self, other: &ClassInfo) -> bool {
+        // ── Class-level metadata ────────────────────────────────────
+        if self.kind != other.kind
+            || self.name != other.name
+            || self.file_namespace != other.file_namespace
+            || self.parent_class != other.parent_class
+            || self.interfaces != other.interfaces
+            || self.used_traits != other.used_traits
+            || self.mixins != other.mixins
+            || self.is_final != other.is_final
+            || self.is_abstract != other.is_abstract
+            || self.deprecation_message != other.deprecation_message
+            || self.template_params != other.template_params
+            || self.template_param_bounds != other.template_param_bounds
+            || self.extends_generics != other.extends_generics
+            || self.implements_generics != other.implements_generics
+            || self.use_generics != other.use_generics
+            || self.type_aliases != other.type_aliases
+            || self.trait_precedences != other.trait_precedences
+            || self.trait_aliases != other.trait_aliases
+            || self.class_docblock != other.class_docblock
+            || self.backed_type != other.backed_type
+            || self.laravel != other.laravel
+        {
+            return false;
+        }
+
+        // ── Methods (compared as a name-keyed set) ──────────────────
+        if self.methods.len() != other.methods.len() {
+            return false;
+        }
+        for method in &self.methods {
+            let Some(other_method) = other.methods.iter().find(|m| m.name == method.name) else {
+                return false;
+            };
+            if !method.signature_eq(other_method) {
+                return false;
+            }
+        }
+
+        // ── Properties (compared as a name-keyed set) ───────────────
+        if self.properties.len() != other.properties.len() {
+            return false;
+        }
+        for prop in &self.properties {
+            let Some(other_prop) = other.properties.iter().find(|p| p.name == prop.name) else {
+                return false;
+            };
+            if !prop.signature_eq(other_prop) {
+                return false;
+            }
+        }
+
+        // ── Constants (compared as a name-keyed set) ────────────────
+        if self.constants.len() != other.constants.len() {
+            return false;
+        }
+        for constant in &self.constants {
+            let Some(other_const) = other.constants.iter().find(|c| c.name == constant.name) else {
+                return false;
+            };
+            if !constant.signature_eq(other_const) {
+                return false;
+            }
+        }
+
+        true
+    }
+
     /// Return a mutable reference to the `LaravelMetadata`, creating it
     /// if absent.
     ///
@@ -1146,3 +1312,769 @@ pub(crate) const MAX_MIXIN_DEPTH: u32 = 10;
 /// Maximum depth when resolving `@phpstan-type` / `@psalm-type` aliases
 /// (an alias can reference another alias).
 pub(crate) const MAX_ALIAS_DEPTH: u8 = 10;
+
+// ─── Tests ──────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a minimal MethodInfo for testing signature_eq.
+    fn method(name: &str) -> MethodInfo {
+        MethodInfo::virtual_method(name, Some("void"))
+    }
+
+    /// Helper: create a minimal PropertyInfo for testing signature_eq.
+    fn prop(name: &str, type_hint: &str) -> PropertyInfo {
+        PropertyInfo::virtual_property(name, Some(type_hint))
+    }
+
+    /// Helper: create a minimal ConstantInfo for testing signature_eq.
+    fn constant(name: &str) -> ConstantInfo {
+        ConstantInfo {
+            name: name.to_string(),
+            name_offset: 0,
+            type_hint: Some("string".to_string()),
+            visibility: Visibility::Public,
+            deprecation_message: None,
+            description: None,
+            is_enum_case: false,
+            enum_value: None,
+            value: Some("'hello'".to_string()),
+            is_virtual: false,
+        }
+    }
+
+    /// Helper: create a minimal ParameterInfo for testing signature_eq.
+    fn param(name: &str, type_hint: &str) -> ParameterInfo {
+        ParameterInfo {
+            name: name.to_string(),
+            is_required: true,
+            type_hint: Some(type_hint.to_string()),
+            native_type_hint: None,
+            description: None,
+            default_value: None,
+            is_variadic: false,
+            is_reference: false,
+        }
+    }
+
+    // ── ParameterInfo::signature_eq ─────────────────────────────────
+
+    #[test]
+    fn param_signature_eq_identical() {
+        let a = param("$x", "int");
+        let b = param("$x", "int");
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn param_signature_eq_different_name() {
+        let a = param("$x", "int");
+        let b = param("$y", "int");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn param_signature_eq_different_type() {
+        let a = param("$x", "int");
+        let b = param("$x", "string");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn param_signature_eq_different_variadic() {
+        let a = param("$x", "int");
+        let mut b = param("$x", "int");
+        b.is_variadic = true;
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn param_signature_eq_different_reference() {
+        let a = param("$x", "int");
+        let mut b = param("$x", "int");
+        b.is_reference = true;
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn param_signature_eq_different_default() {
+        let a = param("$x", "int");
+        let mut b = param("$x", "int");
+        b.default_value = Some("42".to_string());
+        b.is_required = false;
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn param_signature_eq_ignores_description() {
+        let mut a = param("$x", "int");
+        let mut b = param("$x", "int");
+        a.description = Some("First param".to_string());
+        b.description = Some("Different description".to_string());
+        assert!(a.signature_eq(&b));
+    }
+
+    // ── MethodInfo::signature_eq ────────────────────────────────────
+
+    #[test]
+    fn method_signature_eq_identical() {
+        let a = method("foo");
+        let b = method("foo");
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_different_name() {
+        let a = method("foo");
+        let b = method("bar");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_different_return_type() {
+        let a = MethodInfo::virtual_method("foo", Some("int"));
+        let b = MethodInfo::virtual_method("foo", Some("string"));
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_different_visibility() {
+        let a = method("foo");
+        let mut b = method("foo");
+        b.visibility = Visibility::Protected;
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_different_static() {
+        let a = method("foo");
+        let mut b = method("foo");
+        b.is_static = true;
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_different_deprecation() {
+        let a = method("foo");
+        let mut b = method("foo");
+        b.deprecation_message = Some("Use bar() instead".to_string());
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_different_params() {
+        let mut a = method("foo");
+        a.parameters = vec![param("$x", "int")];
+        let mut b = method("foo");
+        b.parameters = vec![param("$x", "string")];
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_different_param_count() {
+        let mut a = method("foo");
+        a.parameters = vec![param("$x", "int")];
+        let mut b = method("foo");
+        b.parameters = vec![param("$x", "int"), param("$y", "string")];
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_ignores_name_offset() {
+        let mut a = method("foo");
+        a.name_offset = 100;
+        let mut b = method("foo");
+        b.name_offset = 200;
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_ignores_description() {
+        let mut a = method("foo");
+        a.description = Some("Does stuff".to_string());
+        let mut b = method("foo");
+        b.description = Some("Different description".to_string());
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_ignores_return_description() {
+        let mut a = method("foo");
+        a.return_description = Some("The result".to_string());
+        let mut b = method("foo");
+        b.return_description = None;
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_ignores_link() {
+        let mut a = method("foo");
+        a.link = Some("https://example.com".to_string());
+        let b = method("foo");
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_detects_template_change() {
+        let mut a = method("foo");
+        a.template_params = vec!["T".to_string()];
+        let b = method("foo");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_detects_conditional_return() {
+        let mut a = method("foo");
+        a.conditional_return = Some(ConditionalReturnType::Concrete("int".to_string()));
+        let b = method("foo");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_detects_scope_attribute() {
+        let mut a = method("foo");
+        a.has_scope_attribute = true;
+        let b = method("foo");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn method_signature_eq_detects_abstract_change() {
+        let mut a = method("foo");
+        a.is_abstract = true;
+        let b = method("foo");
+        assert!(!a.signature_eq(&b));
+    }
+
+    // ── PropertyInfo::signature_eq ──────────────────────────────────
+
+    #[test]
+    fn prop_signature_eq_identical() {
+        let a = prop("name", "string");
+        let b = prop("name", "string");
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn prop_signature_eq_different_name() {
+        let a = prop("name", "string");
+        let b = prop("email", "string");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn prop_signature_eq_different_type() {
+        let a = prop("name", "string");
+        let b = prop("name", "int");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn prop_signature_eq_different_visibility() {
+        let a = prop("name", "string");
+        let mut b = prop("name", "string");
+        b.visibility = Visibility::Private;
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn prop_signature_eq_different_static() {
+        let a = prop("name", "string");
+        let mut b = prop("name", "string");
+        b.is_static = true;
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn prop_signature_eq_ignores_name_offset() {
+        let mut a = prop("name", "string");
+        a.name_offset = 10;
+        let mut b = prop("name", "string");
+        b.name_offset = 200;
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn prop_signature_eq_ignores_description() {
+        let mut a = prop("name", "string");
+        a.description = Some("The user's name".to_string());
+        let b = prop("name", "string");
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn prop_signature_eq_detects_deprecation() {
+        let mut a = prop("name", "string");
+        a.deprecation_message = Some("Use fullName".to_string());
+        let b = prop("name", "string");
+        assert!(!a.signature_eq(&b));
+    }
+
+    // ── ConstantInfo::signature_eq ──────────────────────────────────
+
+    #[test]
+    fn constant_signature_eq_identical() {
+        let a = constant("MAX");
+        let b = constant("MAX");
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn constant_signature_eq_different_name() {
+        let a = constant("MAX");
+        let b = constant("MIN");
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn constant_signature_eq_different_value() {
+        let a = constant("MAX");
+        let mut b = constant("MAX");
+        b.value = Some("'world'".to_string());
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn constant_signature_eq_different_visibility() {
+        let a = constant("MAX");
+        let mut b = constant("MAX");
+        b.visibility = Visibility::Protected;
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn constant_signature_eq_ignores_name_offset() {
+        let mut a = constant("MAX");
+        a.name_offset = 50;
+        let mut b = constant("MAX");
+        b.name_offset = 300;
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn constant_signature_eq_ignores_description() {
+        let mut a = constant("MAX");
+        a.description = Some("Maximum value".to_string());
+        let b = constant("MAX");
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn constant_signature_eq_detects_enum_case() {
+        let a = constant("Active");
+        let mut b = constant("Active");
+        b.is_enum_case = true;
+        assert!(!a.signature_eq(&b));
+    }
+
+    // ── ClassInfo::signature_eq ─────────────────────────────────────
+
+    #[test]
+    fn class_signature_eq_identical_empty() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            ..Default::default()
+        };
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_different_name() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Bar".to_string(),
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_different_kind() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            kind: ClassLikeKind::Class,
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            kind: ClassLikeKind::Interface,
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_different_parent() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            parent_class: Some("Base".to_string()),
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            parent_class: Some("OtherBase".to_string()),
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_different_interfaces() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            interfaces: vec!["Countable".to_string()],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            interfaces: vec![],
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_ignores_offsets() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: 100,
+            end_offset: 500,
+            keyword_offset: 95,
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: 200,
+            end_offset: 600,
+            keyword_offset: 195,
+            ..Default::default()
+        };
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_ignores_link() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            link: Some("https://example.com".to_string()),
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            link: None,
+            ..Default::default()
+        };
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_methods_order_insensitive() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            methods: vec![method("alpha"), method("beta")],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            methods: vec![method("beta"), method("alpha")],
+            ..Default::default()
+        };
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_methods_different_count() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            methods: vec![method("alpha")],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            methods: vec![method("alpha"), method("beta")],
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_methods_different_signature() {
+        let mut m = method("foo");
+        m.return_type = Some("int".to_string());
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            methods: vec![m],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            methods: vec![method("foo")],
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_properties_order_insensitive() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            properties: vec![prop("x", "int"), prop("y", "string")],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            properties: vec![prop("y", "string"), prop("x", "int")],
+            ..Default::default()
+        };
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_constants_order_insensitive() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            constants: vec![constant("A"), constant("B")],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            constants: vec![constant("B"), constant("A")],
+            ..Default::default()
+        };
+        assert!(a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_docblock_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            class_docblock: Some("/** @method void bar() */".to_string()),
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            class_docblock: None,
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_template_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            template_params: vec!["T".to_string()],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            template_params: vec![],
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_extends_generics_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            extends_generics: vec![("Base".to_string(), vec!["int".to_string()])],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            extends_generics: vec![("Base".to_string(), vec!["string".to_string()])],
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_trait_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            used_traits: vec!["SomeTrait".to_string()],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            used_traits: vec![],
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_final_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            is_final: true,
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            is_final: false,
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_abstract_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            is_abstract: true,
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            is_abstract: false,
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_deprecation_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            deprecation_message: Some("Use Bar".to_string()),
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            deprecation_message: None,
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_backed_type_change() {
+        let a = ClassInfo {
+            name: "Status".to_string(),
+            kind: ClassLikeKind::Enum,
+            backed_type: Some("string".to_string()),
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Status".to_string(),
+            kind: ClassLikeKind::Enum,
+            backed_type: Some("int".to_string()),
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_laravel_metadata_change() {
+        let mut a = ClassInfo {
+            name: "User".to_string(),
+            ..Default::default()
+        };
+        a.laravel_mut().custom_collection = Some("UserCollection".to_string());
+
+        let b = ClassInfo {
+            name: "User".to_string(),
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_mixin_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            mixins: vec!["SomeClass".to_string()],
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            mixins: vec![],
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    #[test]
+    fn class_signature_eq_detects_namespace_change() {
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            file_namespace: Some("App\\Models".to_string()),
+            ..Default::default()
+        };
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            file_namespace: Some("App\\Services".to_string()),
+            ..Default::default()
+        };
+        assert!(!a.signature_eq(&b));
+    }
+
+    /// Body-only changes (offsets shift, descriptions change) must not
+    /// trigger eviction.
+    #[test]
+    fn class_signature_eq_body_only_change() {
+        let mut m_a = method("doWork");
+        m_a.name_offset = 100;
+        m_a.description = Some("Old description".to_string());
+        m_a.return_description = Some("Old return desc".to_string());
+        m_a.link = Some("https://old.example.com".to_string());
+        let mut p_a = prop("name", "string");
+        p_a.name_offset = 200;
+        p_a.description = Some("Old prop desc".to_string());
+        let mut c_a = constant("MAX");
+        c_a.name_offset = 300;
+        c_a.description = Some("Old const desc".to_string());
+
+        let a = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: 10,
+            end_offset: 500,
+            keyword_offset: 5,
+            methods: vec![m_a],
+            properties: vec![p_a],
+            constants: vec![c_a],
+            link: Some("https://old.example.com".to_string()),
+            ..Default::default()
+        };
+
+        let mut m_b = method("doWork");
+        m_b.name_offset = 150;
+        m_b.description = Some("New description".to_string());
+        m_b.return_description = Some("New return desc".to_string());
+        m_b.link = Some("https://new.example.com".to_string());
+        let mut p_b = prop("name", "string");
+        p_b.name_offset = 250;
+        p_b.description = Some("New prop desc".to_string());
+        let mut c_b = constant("MAX");
+        c_b.name_offset = 350;
+        c_b.description = Some("New const desc".to_string());
+
+        let b = ClassInfo {
+            name: "Foo".to_string(),
+            start_offset: 15,
+            end_offset: 510,
+            keyword_offset: 10,
+            methods: vec![m_b],
+            properties: vec![p_b],
+            constants: vec![c_b],
+            link: Some("https://new.example.com".to_string()),
+            ..Default::default()
+        };
+
+        assert!(
+            a.signature_eq(&b),
+            "Body-only changes (offsets, descriptions, links) must not break signature_eq"
+        );
+    }
+}

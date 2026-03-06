@@ -68,19 +68,20 @@ pub(super) fn build_builder_forwarded_methods(
     // including @mixin Query\Builder).  This is safe because Builder
     // does not extend Model, so the LaravelModelProvider will not
     // recurse.
-    // Use the uncached variant here.  Although the Builder is a
-    // different class from the model being resolved (no deadlock
-    // risk), caching the Builder causes a subtle problem: the
-    // cached Builder entry gets shared across all models, but
-    // scope injection (which is model-specific) happens at a
-    // higher layer (`try_inject_builder_scopes` in type
-    // resolution).  If the Builder is cached during one model's
-    // resolution, subsequent models may get a stale cached
-    // Builder that interferes with the scope injection path.
-    // The top-level `resolve_class_fully_cached` call on the
-    // model class already caches the final merged result
-    // (including these forwarded methods), so the per-model
-    // cost is paid only once anyway.
+    //
+    // Use the uncached variant here.  The cache is keyed by
+    // (FQN, generic_args), but the base Builder resolved here has
+    // empty generic args.  If we stored it in the cache, later code
+    // paths that call `resolve_class_fully_cached` on a Builder
+    // candidate (e.g. `build_union_completion_items`) would get this
+    // pre-scope-injection version back instead of computing a fresh
+    // resolution.  Scope methods are model-specific and injected at
+    // a higher layer (`try_inject_builder_scopes` in type resolution),
+    // so the base Builder must not be cached here.
+    //
+    // The top-level `resolve_class_fully_cached` call on the model
+    // class already caches the final merged result (including these
+    // forwarded methods), so the per-model cost is paid only once.
     let resolved_builder =
         crate::virtual_members::resolve_class_fully(&builder_class, class_loader);
 

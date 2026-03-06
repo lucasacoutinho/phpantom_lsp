@@ -46,7 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Async diagnostics.** Diagnostics now run in a background task with 500 ms debounce instead of blocking every `did_change` response. Completion, hover, and signature help remain responsive while diagnostics compute in the background.
-- **Targeted cache invalidation.** Editing a file now only evicts resolved-class cache entries for classes defined in that file, instead of clearing the entire cache. Classes from other files (vendor, stubs, other user code) keep their cached resolution across edits.
+- **Smarter cache invalidation.** Editing inside a method body no longer evicts any resolved-class cache entries. PHPantom compares the old and new class signatures (method names, types, visibility, inheritance, docblock tags) and only evicts when something resolution-relevant actually changed. Combined with per-FQN targeted invalidation and generic-aware cache keys, this means typing inside a method body keeps the entire cache warm, while changing a type hint or adding a method evicts only the affected class.
 
 ### Fixed
 

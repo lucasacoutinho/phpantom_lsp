@@ -222,7 +222,7 @@ impl Backend {
                     Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
                     _ => cls.name.clone(),
                 };
-                cache.remove(&fqn);
+                crate::virtual_members::evict_fqn(&mut cache, &fqn);
             }
         }
 
