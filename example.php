@@ -619,8 +619,8 @@ class CollectionForeachDemo
 // ── Type Aliases (@phpstan-type / @phpstan-import-type) ─────────────────────
 
 /**
- * @phpstan-type UserData array{name: string, email: string, age: int}
- * @phpstan-type StatusInfo array{code: int, label: string}
+ * @phpstan-type UserData array{name: string, email: string, pen: Pen}
+ * @phpstan-type StatusInfo array{code: int, label: string, owner: User}
  * @phpstan-type UserList array<int, Profile>
  */
 class TypeAliasDemo
@@ -629,9 +629,11 @@ class TypeAliasDemo
     {
         $data = $this->getUserData();
         $data['name'];                    // @phpstan-type → array shape key completion
+        $data['pen']->write();            // object value → method completion
 
         $status = $this->getStatus();
         $status['label'];                 // StatusInfo alias → array shape keys
+        $status['owner']->getEmail();     // object value → method completion
 
         // Type alias resolves through foreach iteration
         foreach ($this->getUsers() as $user) {
@@ -642,13 +644,13 @@ class TypeAliasDemo
     /** @return UserData */
     public function getUserData(): array
     {
-        return ['name' => 'Alice', 'email' => 'alice@example.com', 'age' => 30];
+        return ['name' => 'Alice', 'email' => 'alice@example.com', 'pen' => new Pen()];
     }
 
     /** @return StatusInfo */
     public function getStatus(): array
     {
-        return ['code' => 200, 'label' => 'OK'];
+        return ['code' => 200, 'label' => 'OK', 'owner' => new User('Alice', 'alice@example.com')];
     }
 
     /** @return UserList */
@@ -668,21 +670,23 @@ class TypeAliasImportDemo
     {
         $user = $this->fetchUser();
         $user['email'];                   // imported UserData → array shape keys
+        $user['pen']->color();            // object value → method completion
 
         $status = $this->fetchStatus();
         $status['code'];                  // AliasedStatus → StatusInfo → array shape keys
+        $status['owner']->getName();      // object value → method completion
     }
 
     /** @return UserData */
     public function fetchUser(): array
     {
-        return ['name' => 'Bob', 'email' => 'bob@example.com', 'age' => 25];
+        return ['name' => 'Bob', 'email' => 'bob@example.com', 'pen' => new Pen()];
     }
 
     /** @return AliasedStatus */
     public function fetchStatus(): array
     {
-        return ['code' => 404, 'label' => 'Not Found'];
+        return ['code' => 404, 'label' => 'Not Found', 'owner' => new User('Bob', 'bob@example.com')];
     }
 }
 
@@ -1214,10 +1218,12 @@ class GeneratorYieldDemo
     /** @return \Generator<int, Pen> */
     public function findAll(): \Generator
     {
-        // yield $var infers the variable as Pen (TValue = 2nd param)
+        // yield $var — the LSP infers $pen as Pen from @return Generator<int, Pen>
+        $pen = new Pen('blue');
         yield $pen;
         $pen->write();                    // resolves to Pen
 
+        $anotherPen = new Pen('red');
         yield 0 => $anotherPen;
         $anotherPen->color();             // key => value yields also work
     }
@@ -1226,6 +1232,7 @@ class GeneratorYieldDemo
     public function yieldInsideControlFlow(): \Generator
     {
         if (true) {
+            $pen = new Pen('green');
             yield $pen;
             $pen->write();                // resolves inside control flow blocks
         }
@@ -1234,6 +1241,7 @@ class GeneratorYieldDemo
     /** @return \Generator<int, Pen> */
     public function chainingThroughYieldInferred(): \Generator
     {
+        $pen = new Pen('black');
         yield $pen;
         $pen->rename('Bold')->color();    // chains through inferred type
     }
@@ -2064,16 +2072,15 @@ class UnresolvedMemberAccessDemo
 
 
 // ── Implement Missing Methods (Code Action) ─────────────────────────────────
-// Place the cursor inside ImplementMethodsDemo and trigger "Quick Fix" or
-// "Code Action" to see "Implement 3 missing methods".  The generated stubs
-// include correct visibility, parameter types, defaults, and return types.
+// Uncomment the class below, place the cursor inside it, and trigger
+// "Quick Fix" or "Code Action" to see "Implement 3 missing methods".
+// The generated stubs include correct visibility, parameter types, defaults,
+// and return types.  Re-comment when done (PHP fatals on unimplemented
+// abstract methods).
 
-abstract class ImplementMethodsDemo extends ScaffoldingAbstractShape implements ScaffoldingDrawable
-{
-    // Try: trigger "Quick Fix" here — you should see
-    //   "Implement 3 missing methods"
-    // which generates stubs for area(), perimeter(), and draw().
-}
+// class ImplementMethodsDemo extends ScaffoldingAbstractShape implements ScaffoldingDrawable
+// {
+// }
 
 
 // ── Property-Level Narrowing ────────────────────────────────────────────────
@@ -2161,6 +2168,17 @@ class TreeMapperImpl
 // If a demo needs a richer object, create a NEW class in a demo-specific
 // section instead of expanding a shared one. Every member you add to a
 // shared class leaks into every demo that uses it.
+//
+// RUNTIME ASSERTIONS: When adding a new demo, add matching assert() calls
+// to runDemoAssertions() at the bottom of the Demo namespace. This catches
+// cases where our scaffolding stubs don't actually return what their
+// docblocks claim. Run: php -d zend.assertions=1 example.php
+//
+// HOISTING PITFALL: Do NOT add __toString() to any class that is
+// forward-referenced via `extends` or `implements`. PHP implicitly adds
+// `implements \Stringable`, which prevents class hoisting. This is a
+// known PHP limitation (php-src#7873), not a bug that will be fixed.
+// The same applies to `interface Foo extends \Stringable`.
 
 
 // ── Demo-Specific Scaffolding ───────────────────────────────────────────────
@@ -2272,6 +2290,24 @@ class Zoo extends ZooBase implements ZooContract
     ) {
         parent::__construct();
     }
+
+    public function __get(string $name): mixed
+    {
+        return match ($name) {
+            'gorilla' => 'gorilla-value',   // @property string $gorilla
+            'iguana'  => 'iguana-value',     // @property-read string $iguana (ZooContract)
+            default   => null,
+        };
+    }
+
+    public function __call(string $name, array $args): mixed
+    {
+        return match ($name) {
+            'hyena'  => true,               // @method bool hyena(string $x)
+            'jaguar' => 'jaguar-value',     // @method string jaguar() (ZooContract)
+            default  => null,
+        };
+    }
 }
 
 abstract class ZooBase
@@ -2313,13 +2349,13 @@ class ScaffoldingChainingDemo
 
 class ScaffoldingExpressionType
 {
-    public ?Container $backup;
+    public ?Response $backup;
     public Response $primary;
 
     public function __construct()
     {
-        $this->backup = new Container();
-        $this->primary = new Response(200);
+        $this->backup = new Response(500, 'Backup');
+        $this->primary = new Response(200, 'OK');
     }
 }
 
@@ -2338,8 +2374,10 @@ class ScaffoldingGenericContext
     /** @var Box<Gift> */
     public $chest;
 
+    public function __construct() { $this->chest = new Box(new Gift()); }
+
     /** @return TypedCollection<int, Gift> */
-    public function display(): TypedCollection { return new TypedCollection(); }
+    public function display(): TypedCollection { return new TypedCollection([new Gift()]); }
 }
 
 class ScaffoldingIteration
@@ -2376,6 +2414,8 @@ class ScaffoldingClosureParamInference
 {
     /** @var FluentCollection<int, Pen> */
     public FluentCollection $items;
+
+    public function __construct() { $this->items = new FluentCollection([new Pen('red'), new Pen('blue')]); }
 }
 
 class ScaffoldingPipeline
@@ -2452,7 +2492,7 @@ class ObjectMapper
     public function wrap(object $item): TypedCollection
     {
         /** @var TypedCollection<int, T> */
-        return new TypedCollection();
+        return new TypedCollection([$item]);
     }
 
     /**
@@ -2886,7 +2926,10 @@ class ItemIterableCollection extends IterableCollection {}
 class TypedCollection
 {
     /** @var array<TKey, TValue> */
-    protected array $items = [];
+    protected array $items;
+
+    /** @param array<TKey, TValue> $items */
+    public function __construct(array $items = []) { $this->items = $items; }
 
     /** @return TValue */
     public function first() { return reset($this->items); }
@@ -2933,7 +2976,7 @@ class Container
         if ($abstract === null) {
             return $this;
         }
-        return $this->bindings[$abstract] ?? new Exception();
+        return $this->bindings[$abstract] ?? new $abstract();
     }
 
     public function bind(string $abstract, object $obj): void
@@ -2958,7 +3001,7 @@ class ServiceLocator
      */
     public function get(string $id): object
     {
-        return new \stdClass();
+        return new $id();
     }
 
     /**
@@ -2968,7 +3011,7 @@ class ServiceLocator
      */
     public function getAny(string ...$ids): object
     {
-        return new \stdClass();
+        return new ($ids[0])();
     }
 
     /**
@@ -2976,9 +3019,9 @@ class ServiceLocator
      * @param class-string<T> $id
      * @return Box<T>
      */
-    public function wrap(string $id): Box
+    public function wrap(string $id): object
     {
-        return new Box();
+        return new Box(new $id());
     }
 }
 
@@ -3004,6 +3047,9 @@ class Box
 {
     /** @var T */
     public $value;
+
+    /** @param T $value */
+    public function __construct(mixed $value = null) { $this->value = $value; }
 
     /** @return T */
     public function unwrap() { return $this->value; }
@@ -3287,6 +3333,12 @@ class StaticAssert
  */
 class FluentCollection
 {
+    /** @var array<TKey, TValue> */
+    private array $items;
+
+    /** @param array<TKey, TValue> $items */
+    public function __construct(array $items = []) { $this->items = $items; }
+
     /**
      * @template TGroupKey of array-key
      *
@@ -3319,6 +3371,10 @@ class FluentCollection
      */
     public function each(callable $callback)
     {
+        foreach ($this->items as $key => $value) {
+            $callback($value, $key);
+        }
+        return $this;
     }
 
     /**
@@ -3342,7 +3398,7 @@ class FluentCollection
 /** @return FluentCollection */
 function collect(mixed $value = []): FluentCollection
 {
-    return new FluentCollection();
+    return new FluentCollection(is_array($value) ? $value : []);
 }
 
 class BrokenDocRecovery
@@ -3579,6 +3635,612 @@ enum OrderStatus: string
     public function label(): string { return $this->value; }
     public function isPending(): bool { return $this === self::Pending; }
 }
+
+// ── Runtime Assertions ──────────────────────────────────────────────────────
+// Verify that the type claims in demo comments match reality.
+// Run: php example.php
+
+function runDemoAssertions(): void
+{
+    // ── Return Type: static ─────────────────────────────────────────────
+    $pen = Pen::make();
+    assert($pen instanceof Pen, 'Pen::make() must return Pen');
+
+    $marker = Marker::make();
+    assert($marker instanceof Marker, 'Marker::make() must return Marker (not Pen)');
+
+    $fluent = $marker->rename('Bold');
+    assert($fluent instanceof Marker, 'Marker::rename() returns static, must stay Marker');
+
+    // ── Return Type: function ───────────────────────────────────────────
+    $created = makePen();
+    assert($created instanceof Pen, 'makePen() must return Pen');
+
+    $union = pickPenOrPencil();
+    assert($union instanceof Pen || $union instanceof Pencil, 'pickPenOrPencil() must return Pen|Pencil');
+
+    $rock = pickRockOrBanana();
+    assert($rock instanceof Rock || $rock instanceof Banana, 'pickRockOrBanana() must return Rock|Banana');
+
+    $user = createUser('Alice', 'alice@example.com');
+    assert($user instanceof User, 'createUser() must return User');
+
+    // ── Chaining ────────────────────────────────────────────────────────
+    $brush = new Brush();
+    $sized = $brush->setSize('large');
+    assert($sized instanceof Brush, 'Brush::setSize() returns static, must stay Brush');
+    $styled = $sized->setStyle('pointed');
+    assert($styled instanceof Brush, 'Brush::setStyle() returns static, must stay Brush');
+
+    $canvas = $brush->getCanvas();
+    assert($canvas instanceof Canvas, 'Brush::getCanvas() must return Canvas');
+
+    $backToBrush = $canvas->getBrush();
+    assert($backToBrush instanceof Brush, 'Canvas::getBrush() must return Brush');
+
+    $easel = $canvas->easel;
+    assert($easel instanceof Easel, 'Canvas::$easel must be Easel');
+
+    // ── Fluent Model chains (static return) ─────────────────────────────
+    $userObj = new User('Bob', 'bob@example.com');
+    $renamed = $userObj->setName('Robert');
+    assert($renamed instanceof User, 'User::setName() returns static, must stay User');
+
+    $timestamped = $userObj->setCreatedAt('2024-01-01');
+    assert($timestamped instanceof User, 'HasTimestamps::setCreatedAt() returns static, must stay User');
+
+    // ── User method return types ────────────────────────────────────────
+    $profile = $userObj->getProfile();
+    assert($profile instanceof UserProfile, 'User::getProfile() must return UserProfile');
+
+    $status = $userObj->getStatus();
+    assert($status instanceof Status, 'User::getStatus() must return Status');
+
+    // ── Type narrowing: instanceof ──────────────────────────────────────
+    $specimen = pickRockOrBanana();
+    if ($specimen instanceof Rock) {
+        assert(method_exists($specimen, 'crush'), 'Rock must have crush()');
+    } else {
+        assert($specimen instanceof Banana, 'Not Rock must be Banana');
+        assert(method_exists($specimen, 'peel'), 'Banana must have peel()');
+    }
+
+    // ── Type narrowing: negated instanceof ──────────────────────────────
+    $specimen2 = pickRockOrBanana();
+    if (!$specimen2 instanceof Rock) {
+        assert($specimen2 instanceof Banana, 'Not Rock must be Banana');
+    }
+
+    // ── Type narrowing: assert() ────────────────────────────────────────
+    $target = pickRockOrBanana();
+    if ($target instanceof Banana) {
+        assert(method_exists($target, 'peel'), 'assert narrowed Banana must have peel()');
+    }
+
+    // ── Custom assert functions ─────────────────────────────────────────
+    $unknown = new Rock();
+    assertRock($unknown);
+    assert($unknown instanceof Rock, 'assertRock() must narrow to Rock');
+
+    assert(isRock(new Rock()) === true, 'isRock(Rock) must return true');
+    assert(isRock(new Banana()) === false, 'isRock(Banana) must return false');
+    assert(isNotRock(new Rock()) === false, 'isNotRock(Rock) must return false');
+    assert(isNotRock(new Banana()) === true, 'isNotRock(Banana) must return true');
+
+    // ── Static assert functions ─────────────────────────────────────────
+    $unknown2 = new Rock();
+    StaticAssert::assertRock($unknown2);
+    assert($unknown2 instanceof Rock, 'StaticAssert::assertRock() must narrow to Rock');
+
+    assert(StaticAssert::isRock(new Rock()) === true, 'StaticAssert::isRock(Rock) must return true');
+    assert(StaticAssert::isNotRock(new Banana()) === true, 'StaticAssert::isNotRock(Banana) must return true');
+
+    // ── Method-level @template (runtime resolution) ─────────────────────
+    $locator = new ServiceLocator();
+    $locatedPen = $locator->get(Pen::class);
+    assert($locatedPen instanceof Pen, 'ServiceLocator::get(Pen::class) must return Pen');
+
+    $createdPen = Factory::create(Pen::class);
+    assert($createdPen instanceof Pen, 'Factory::create(Pen::class) must return Pen');
+
+    $resolved = resolve(Marker::class);
+    assert($resolved instanceof Marker, 'resolve(Marker::class) must return Marker');
+
+    // ── ObjectMapper::wrap() → TypedCollection ──────────────────────────
+    $mapper = new ObjectMapper();
+    $wrapped = $mapper->wrap(new Pen());
+    assert($wrapped instanceof TypedCollection, 'ObjectMapper::wrap() must return TypedCollection');
+    $first = $wrapped->first();
+    assert($first instanceof Pen, 'wrap(Pen)->first() must return Pen');
+
+    // ── Nested generic: ServiceLocator::wrap → Box::unwrap ──────────────
+    $boxed = $locator->wrap(Pen::class);
+    assert($boxed instanceof Box, 'ServiceLocator::wrap() must return Box');
+    $unboxed = $boxed->unwrap();
+    assert($unboxed instanceof Pen, 'Box::unwrap() must return Pen (from wrap(Pen::class))');
+
+    // ── __invoke() return types ─────────────────────────────────────────
+    $formatter = new ScaffoldingFormatter();
+    $invoked = $formatter();
+    assert($invoked instanceof Pen, 'ScaffoldingFormatter::__invoke() must return Pen');
+
+    $factory = new ScaffoldingPenFactory();
+    $factoryResult = $factory();
+    assert($factoryResult instanceof Pen, 'ScaffoldingPenFactory::__invoke() must return Pen');
+
+    // ── Enum from() ─────────────────────────────────────────────────────
+    $active = Status::from('active');
+    assert($active instanceof Status, 'Status::from() must return Status');
+    assert($active === Status::Active, 'Status::from("active") must be Status::Active');
+
+    // ── Clone preserves type ────────────────────────────────────────────
+    $original = new Pen('blue');
+    $copy = clone $original;
+    assert($copy instanceof Pen, 'clone must preserve Pen type');
+    assert($copy !== $original, 'clone must be a different instance');
+
+    // ── class-string variable → new $var ────────────────────────────────
+    $cls = Pen::class;
+    $fromClassString = new $cls();
+    assert($fromClassString instanceof Pen, 'new $cls where $cls = Pen::class must be Pen');
+
+    // ── Zoo: inheritance, traits, promoted properties ────────────────────
+    $zoo = new Zoo();
+    assert($zoo instanceof Zoo, 'new Zoo() must be Zoo');
+    assert($zoo instanceof ZooBase, 'Zoo must extend ZooBase');
+    assert(method_exists($zoo, 'aardvark'), 'Zoo must have own method aardvark()');
+    assert(method_exists($zoo, 'dingo'), 'Zoo must have trait method dingo()');
+    assert(method_exists($zoo, 'elephant'), 'Zoo must have trait method elephant()');
+    assert(method_exists($zoo, 'falcon'), 'Zoo must have inherited method falcon()');
+
+    // @property and @method via __get/__call
+    assert($zoo->gorilla === 'gorilla-value', '@property $gorilla must work via __get');
+    assert($zoo->iguana === 'iguana-value', '@property-read $iguana (ZooContract) must work via __get');
+    assert($zoo->hyena('x') === true, '@method hyena() must work via __call');
+    assert($zoo->jaguar() === 'jaguar-value', '@method jaguar() (ZooContract) must work via __call');
+
+    // Visibility: protected/private must not be accessible
+    assert(property_exists($zoo, 'baboon'), 'Zoo must have public $baboon');
+    assert((new \ReflectionProperty($zoo, 'keeper'))->isProtected(), '$keeper must be protected');
+    assert((new \ReflectionProperty($zoo, 'ceo'))->isPrivate(), '$ceo must be private');
+    assert((new \ReflectionMethod($zoo, 'nocturnal'))->isPrivate(), 'nocturnal() must be private');
+
+    // ── Expression types: null-coalescing ────────────────────────────────
+    $src = new ScaffoldingExpressionType();
+    $fallback = $src->backup ?? $src->primary;
+    assert($fallback instanceof Response, 'Null-coalescing must resolve to Response');
+
+    // ── ChainingDemo scaffolding ────────────────────────────────────────
+    $studio = new ScaffoldingChainingDemo();
+    assert($studio->brush instanceof Brush, 'ScaffoldingChainingDemo::$brush must be Brush');
+    assert($studio->canvas instanceof Canvas, 'ScaffoldingChainingDemo::$canvas must be Canvas');
+
+    // ── Trait conflict resolution ───────────────────────────────────────
+    $tc = new TraitConflictDemo();
+    assert(method_exists($tc, 'serialize'), 'TraitConflictDemo must have serialize()');
+    assert(method_exists($tc, 'toJson'), 'TraitConflictDemo must have toJson()');
+    assert(method_exists($tc, 'toXml'), 'TraitConflictDemo must have toXml()');
+
+    // ── AdminUser extends User extends Model ────────────────────────────
+    $admin = new AdminUser('Admin', 'admin@example.com');
+    assert($admin instanceof AdminUser, 'new AdminUser() must be AdminUser');
+    assert($admin instanceof User, 'AdminUser must extend User');
+    assert($admin instanceof Model, 'AdminUser must extend Model (via User)');
+
+    // ── ClassFilteringDemo extends Model implements Renderable ───────────
+    $cfd = new ClassFilteringDemo();
+    assert($cfd instanceof Model, 'ClassFilteringDemo must extend Model');
+    assert($cfd instanceof Renderable, 'ClassFilteringDemo must implement Renderable');
+
+    // ── Inline new chaining ─────────────────────────────────────────────
+    $fromNew = (new Canvas())->getBrush();
+    assert($fromNew instanceof Brush, '(new Canvas())->getBrush() must be Brush');
+
+    // ── Parenthesized assignment ────────────────────────────────────────
+    $parenPen = (new Pen('red'));
+    assert($parenPen instanceof Pen, 'Parenthesized new must still be Pen');
+
+    // ── Constructor @param override (ParamOverrideDemo) ─────────────────
+    $ingredient = new Ingredient();
+    assert($ingredient instanceof Ingredient, 'new Ingredient() must be Ingredient');
+    assert(property_exists($ingredient, 'name'), 'Ingredient must have $name');
+
+    $recipe = new Recipe([new Ingredient()]);
+    assert($recipe instanceof Recipe, 'new Recipe() must be Recipe');
+
+    // ── Container / app() conditional return types ──────────────────────
+    $container = new Container();
+    $containerPen = $container->make(Pen::class);
+    assert($containerPen instanceof Pen, 'Container::make(Pen::class) must return Pen');
+
+    $appPen = app(Pen::class);
+    assert($appPen instanceof Pen, 'app(Pen::class) must return Pen');
+
+    $appSelf = app();
+    assert($appSelf instanceof Container, 'app() with no args must return Container');
+
+    // ── Closure / arrow function return types ───────────────────────────
+    $makePenClosure = function(): Pen { return new Pen(); };
+    assert($makePenClosure() instanceof Pen, 'Closure returning Pen must return Pen');
+
+    $makePencilArrow = fn(): Pencil => new Pencil();
+    assert($makePencilArrow() instanceof Pencil, 'Arrow fn returning Pencil must return Pencil');
+
+    $builder = function(): Pen { return new Pen(); };
+    $chained = $builder()->rename('Bold');
+    assert($chained instanceof Pen, 'Closure()->rename() must chain to Pen');
+
+    // ── Closure members ─────────────────────────────────────────────────
+    $typedClosure = function(Pen $pen): string { return $pen->write(); };
+    assert(method_exists($typedClosure, 'bindTo'), 'Closure must have bindTo()');
+    assert(method_exists($typedClosure, 'call'), 'Closure must have call()');
+    assert($typedClosure instanceof \Closure, 'Function expression must be Closure');
+
+    $typedArrow = fn(int $x): float => $x * 1.5;
+    assert($typedArrow instanceof \Closure, 'Arrow function must be Closure');
+
+    // ── Enum methods and properties ─────────────────────────────────────
+    $activeStatus = Status::Active;
+    assert($activeStatus instanceof Status, 'Status::Active must be Status');
+    assert($activeStatus->name === 'Active', 'Status::Active->name must be "Active"');
+    assert($activeStatus->value === 'active', 'Status::Active->value must be "active"');
+    assert($activeStatus->label() === 'Active', 'Status::Active->label() must return "Active"');
+    assert($activeStatus->isActive() === true, 'Status::Active->isActive() must be true');
+
+    $pending = Status::Pending;
+    assert($pending->isActive() === false, 'Status::Pending->isActive() must be false');
+
+    $high = Priority::High;
+    assert($high instanceof Priority, 'Priority::High must be Priority');
+    assert($high->name === 'High', 'Priority::High->name must be "High"');
+    assert($high->value === 3, 'Priority::High->value must be 3');
+
+    $manual = Mode::Manual;
+    assert($manual instanceof Mode, 'Mode::Manual must be Mode');
+    assert($manual->name === 'Manual', 'Mode::Manual->name must be "Manual"');
+
+    $fromString = Status::from('active');
+    assert($fromString === Status::Active, 'Status::from("active") must be Status::Active');
+
+    $tryFrom = Status::tryFrom('nonexistent');
+    assert($tryFrom === null, 'Status::tryFrom("nonexistent") must be null');
+
+    // ── Response methods ────────────────────────────────────────────────
+    $response = new Response(200, 'OK');
+    assert($response->getStatusCode() === 200, 'Response::getStatusCode() must return 200');
+    assert($response->getBody() === 'OK', 'Response::getBody() must return "OK"');
+    assert($response->isSuccess() === true, 'Response(200) must be success');
+
+    $errResponse = new Response(500);
+    assert($errResponse->isSuccess() === false, 'Response(500) must not be success');
+
+    // ── UserProfile methods ─────────────────────────────────────────────
+    $userForProfile = new User('Eve', 'eve@example.com');
+    $prof = $userForProfile->getProfile();
+    assert($prof instanceof UserProfile, 'User::getProfile() must return UserProfile');
+    assert(method_exists($prof, 'getDisplayName'), 'UserProfile must have getDisplayName()');
+    assert(method_exists($prof, 'setBio'), 'UserProfile must have setBio()');
+    $bioResult = $prof->setBio('Hello');
+    assert($bioResult instanceof UserProfile, 'UserProfile::setBio() returns static');
+
+    // ── Generator yield types ───────────────────────────────────────────
+    $genDemo = new GeneratorDemo();
+    $gen = $genDemo->getPens();
+    assert($gen instanceof \Generator, 'getPens() must return Generator');
+    foreach ($gen as $genPen) {
+        assert($genPen instanceof Pen, 'Generator<int, Pen> must yield Pen');
+        break;
+    }
+
+    $pencilGen = $genDemo->processPencils();
+    foreach ($pencilGen as $genPencil) {
+        assert($genPencil instanceof Pencil, 'Generator<int, Pencil, mixed, Pen> must yield Pencil');
+        break;
+    }
+
+    // ── Generator yield inference (GeneratorYieldDemo) ───────────────────
+    $yieldDemo = new GeneratorYieldDemo();
+    foreach ($yieldDemo->findAll() as $yieldedPen) {
+        assert($yieldedPen instanceof Pen, 'GeneratorYieldDemo::findAll() must yield Pen');
+        break;
+    }
+    foreach ($yieldDemo->chainingThroughYieldInferred() as $chainPen) {
+        assert($chainPen instanceof Pen, 'chainingThroughYieldInferred() must yield Pen');
+        break;
+    }
+
+    // ── GenericContext: Box<Gift> and TypedCollection<int, Gift> ─────────
+    $gcSrc = new ScaffoldingGenericContext();
+    $unwrapped = $gcSrc->chest->unwrap();
+    assert($unwrapped instanceof Gift, 'Box<Gift>::unwrap() must return Gift');
+    $displayFirst = $gcSrc->display()->first();
+    assert($displayFirst instanceof Gift, 'TypedCollection<int, Gift>::first() must return Gift');
+
+    // ── CompoundNegatedNarrowing ────────────────────────────────────────
+    $compoundRock = new Rock();
+    $compoundDemo = new CompoundNegatedNarrowingDemo();
+    // Rock passes both negated checks (is Rock, is not "not Rock")
+    // so it doesn't return early — weigh() must exist
+    assert(method_exists($compoundRock, 'weigh'), 'Rock must have weigh()');
+    $compoundBanana = new Banana();
+    assert(method_exists($compoundBanana, 'weigh'), 'Banana must have weigh()');
+    // Lamp would cause the early return — verify it lacks weigh()
+    assert(!method_exists(new Lamp(), 'weigh'), 'Lamp must NOT have weigh()');
+
+    // ── InArrayNarrowing ────────────────────────────────────────────────
+    $rockList = [new Rock()];
+    $testRock = new Rock();
+    assert(in_array($testRock, $rockList, true) === false, 'Different Rock instances are not strictly identical');
+    $sameRock = $rockList[0];
+    assert(in_array($sameRock, $rockList, true) === true, 'Same Rock instance must be in_array strict');
+
+    // ── MatchClassStringDemo: class-string through match → Container ────
+    $mcsContainer = new Container();
+    $mcsType = match (0) {
+        0 => ElasticProductReviewIndexService::class,
+        1 => ElasticBrandIndexService::class,
+    };
+    $mcsResult = $mcsContainer->make($mcsType);
+    assert($mcsResult instanceof ElasticProductReviewIndexService,
+        'Container::make(match class-string) must return the matched class');
+    assert(method_exists($mcsResult, 'index'), 'Match-resolved instance must have index()');
+
+    $mcsCls = Pen::class;
+    $mcsPen = $mcsContainer->make($mcsCls);
+    assert($mcsPen instanceof Pen, 'Container::make(Pen::class via variable) must return Pen');
+
+    $mcsTernary = true ? Pen::class : Pencil::class;
+    $mcsObj = $mcsContainer->make($mcsTernary);
+    assert($mcsObj instanceof Pen, 'Container::make(ternary class-string) must return Pen');
+
+    // ── ExceptionDemo: exception hierarchy ──────────────────────────────
+    assert(is_subclass_of(NotFoundException::class, \RuntimeException::class),
+        'NotFoundException must extend RuntimeException');
+    assert(is_subclass_of(ValidationException::class, \RuntimeException::class),
+        'ValidationException must extend RuntimeException');
+    assert(is_subclass_of(AuthorizationException::class, \RuntimeException::class),
+        'AuthorizationException must extend RuntimeException');
+
+    try {
+        throw new ValidationException('test');
+    } catch (ValidationException $e) {
+        assert($e instanceof ValidationException, 'Caught exception must be ValidationException');
+        assert($e->getMessage() === 'test', 'Exception message must propagate');
+    }
+
+    // ── Closure parameter inference ─────────────────────────────────────
+    $closureSrc = new ScaffoldingClosureParamInference();
+    $closureReceived = [];
+    $closureSrc->items->each(function ($pen) use (&$closureReceived) {
+        assert($pen instanceof Pen, 'Closure param from FluentCollection<int, Pen>::each() must be Pen');
+        $closureReceived[] = $pen;
+    });
+    assert(count($closureReceived) === 2, 'each() must invoke callback for every item');
+
+    // ── Type alias resolution ───────────────────────────────────────────
+    $aliasDemo = new TypeAliasDemo();
+    $userData = $aliasDemo->getUserData();
+    assert(is_string($userData['name']), 'UserData["name"] must be string');
+    assert($userData['pen'] instanceof Pen, 'UserData["pen"] must be Pen');
+
+    $statusInfo = $aliasDemo->getStatus();
+    assert(is_int($statusInfo['code']), 'StatusInfo["code"] must be int');
+    assert($statusInfo['owner'] instanceof User, 'StatusInfo["owner"] must be User');
+
+    $importDemo = new TypeAliasImportDemo();
+    $imported = $importDemo->fetchUser();
+    assert($imported['pen'] instanceof Pen, 'Imported UserData["pen"] must be Pen');
+    $importedStatus = $importDemo->fetchStatus();
+    assert($importedStatus['owner'] instanceof User, 'Imported StatusInfo["owner"] must be User');
+
+    // ── String interpolation ────────────────────────────────────────────
+    $interpPen = new Pen('blue');
+    ob_start();
+    echo "Ink is {$interpPen->color()}";
+    $braceOutput = ob_get_clean();
+    assert($braceOutput === 'Ink is blue', 'Brace interpolation must call method: got ' . $braceOutput);
+
+    ob_start();
+    echo "Tool: $interpPen->ink";
+    $simpleOutput = ob_get_clean();
+    assert($simpleOutput === 'Tool: blue', 'Simple interpolation must access property: got ' . $simpleOutput);
+
+    ob_start();
+    echo 'no $interpPen-> here';
+    $singleOutput = ob_get_clean();
+    assert($singleOutput === 'no $interpPen-> here', 'Single-quoted must stay literal: got ' . $singleOutput);
+
+    // ── Diagnostics: class/method/property existence ────────────────────
+    // These verify the claims made by the UnknownMemberDemo and related demos.
+    assert(class_exists(User::class), 'User class must exist');
+    assert(class_exists(Pen::class), 'Pen class must exist');
+    assert(class_exists(Model::class), 'Model class must exist');
+    assert(class_exists(AdminUser::class), 'AdminUser class must exist');
+    assert(interface_exists(Renderable::class), 'Renderable interface must exist');
+    assert(trait_exists(HasTimestamps::class), 'HasTimestamps trait must exist');
+    assert(trait_exists(HasSlug::class), 'HasSlug trait must exist');
+    assert(enum_exists(Status::class), 'Status enum must exist');
+    assert(enum_exists(Priority::class), 'Priority enum must exist');
+
+    // User members that demos reference
+    assert(method_exists(User::class, 'getEmail'), 'User must have getEmail()');
+    assert(method_exists(User::class, 'getName'), 'User must have getName() (inherited)');
+    assert(method_exists(User::class, 'getProfile'), 'User must have getProfile()');
+    assert(method_exists(User::class, 'getStatus'), 'User must have getStatus()');
+    assert(method_exists(User::class, 'setName'), 'User must have setName() (inherited)');
+    assert(method_exists(User::class, 'findByEmail'), 'User must have static findByEmail()');
+    assert(method_exists(User::class, 'hashPassword'), 'User must have static hashPassword()');
+    assert(property_exists(User::class, 'email'), 'User must have $email');
+    assert(property_exists(User::class, 'defaultRole'), 'User must have static $defaultRole');
+
+    // UnknownMemberDemo: nonexistentMethod must NOT exist
+    assert(!method_exists(User::class, 'nonexistentMethod'), 'User must NOT have nonexistentMethod()');
+
+    // Pen members
+    assert(method_exists(Pen::class, 'write'), 'Pen must have write()');
+    assert(method_exists(Pen::class, 'color'), 'Pen must have color()');
+    assert(method_exists(Pen::class, 'label'), 'Pen must have label()');
+    assert(method_exists(Pen::class, 'rename'), 'Pen must have rename()');
+    assert(method_exists(Pen::class, 'make'), 'Pen must have static make()');
+
+    // Marker extends Pen
+    assert(method_exists(Marker::class, 'highlight'), 'Marker must have highlight()');
+    assert(method_exists(Marker::class, 'write'), 'Marker must inherit write() from Pen');
+
+    // Pencil members
+    assert(method_exists(Pencil::class, 'sketch'), 'Pencil must have sketch()');
+    assert(method_exists(Pencil::class, 'sharpen'), 'Pencil must have sharpen()');
+
+    // Rock and Banana members (narrowing demos rely on these)
+    assert(method_exists(Rock::class, 'crush'), 'Rock must have crush()');
+    assert(method_exists(Rock::class, 'weigh'), 'Rock must have weigh()');
+    assert(!method_exists(Rock::class, 'peel'), 'Rock must NOT have peel()');
+    assert(method_exists(Banana::class, 'peel'), 'Banana must have peel()');
+    assert(method_exists(Banana::class, 'weigh'), 'Banana must have weigh()');
+    assert(!method_exists(Banana::class, 'crush'), 'Banana must NOT have crush()');
+
+    // ── Array functions preserve types ───────────────────────────────────
+    $penArray = [new Pen('red'), new Pen('blue'), new Pen('green')];
+    $filtered = array_filter($penArray, fn(Pen $p) => $p->color() === 'blue');
+    assert(count($filtered) === 1, 'array_filter must filter correctly');
+    assert(reset($filtered) instanceof Pen, 'array_filter must preserve Pen type');
+
+    $vals = array_values($penArray);
+    assert($vals[0] instanceof Pen, 'array_values must preserve Pen type');
+
+    $popped = array_pop($penArray);
+    assert($popped instanceof Pen, 'array_pop must return Pen');
+
+    $penArray2 = [new Pen('a'), new Pen('b')];
+    $cur = current($penArray2);
+    assert($cur instanceof Pen, 'current() must return Pen');
+
+    $last = end($penArray2);
+    assert($last instanceof Pen, 'end() must return Pen');
+
+    // ── Match expression types ──────────────────────────────────────────
+    $matchResult = match (0) {
+        0 => new ElasticProductReviewIndexService(),
+        1 => new ElasticBrandIndexService(),
+    };
+    assert($matchResult instanceof ElasticProductReviewIndexService
+        || $matchResult instanceof ElasticBrandIndexService,
+        'Match expression must return one of the branch types');
+    assert(method_exists($matchResult, 'index'), 'Match result must have shared index() method');
+
+    // ── Ternary expression types ────────────────────────────────────────
+    $ternaryResult = true
+        ? new ElasticProductReviewIndexService()
+        : new ElasticBrandIndexService();
+    assert(method_exists($ternaryResult, 'index'), 'Ternary result must have shared index() method');
+
+    // ── Intersection types ──────────────────────────────────────────────
+    // Can't instantiate an intersection directly, but we can verify interfaces
+    assert(method_exists(Envelope::class, 'seal'), 'Envelope must have seal()');
+    assert(interface_exists(Printable::class), 'Printable must be an interface');
+
+    // ── First-class callable syntax ─────────────────────────────────────
+    $fun = makePen(...);
+    assert($fun instanceof \Closure, 'makePen(...) must be a Closure');
+    $funResult = $fun();
+    assert($funResult instanceof Pen, 'makePen(...)() must return Pen');
+
+    $staticCallable = Pen::make(...);
+    assert($staticCallable instanceof \Closure, 'Pen::make(...) must be a Closure');
+    $staticResult = $staticCallable();
+    assert($staticResult instanceof Pen, 'Pen::make(...)() must return Pen');
+
+    $src2 = new ScaffoldingFirstClassCallable();
+    $methodCallable = $src2->dispatch(...);
+    assert($methodCallable instanceof \Closure, '$obj->method(...) must be a Closure');
+    $methodResult = $methodCallable();
+    assert($methodResult instanceof Pen, 'dispatch(...)() must return Pen');
+
+    // ── Class alias (use ... as) ────────────────────────────────────────
+    $aliasProfile = new Profile($userForProfile);
+    assert($aliasProfile instanceof UserProfile, 'Profile alias must be UserProfile');
+    assert($aliasProfile instanceof Profile, 'Profile alias instanceof must work');
+
+    // ── HoverOriginsDemo extends Model implements Renderable ────────────
+    $hod = new HoverOriginsDemo();
+    assert($hod instanceof Model, 'HoverOriginsDemo must extend Model');
+    assert($hod instanceof Renderable, 'HoverOriginsDemo must implement Renderable');
+    assert(method_exists($hod, 'format'), 'HoverOriginsDemo must have format()');
+    assert(method_exists($hod, 'toArray'), 'HoverOriginsDemo must have toArray()');
+    assert(method_exists($hod, 'getName'), 'HoverOriginsDemo must inherit getName()');
+
+    // ── Switch statement type tracking ──────────────────────────────────
+    $switchType = 'reviews';
+    switch ($switchType) {
+        case 'reviews':
+            $switchService = new ElasticProductReviewIndexService();
+            break;
+        default:
+            $switchService = new ElasticBrandIndexService();
+            break;
+    }
+    assert(method_exists($switchService, 'index'), 'Switch-assigned variable must have index()');
+
+    // ── Spread operator ─────────────────────────────────────────────────
+    $spreadSource = [new Pen('a'), new Pen('b')];
+    $spread = [...$spreadSource];
+    assert($spread[0] instanceof Pen, 'Spread must preserve Pen type');
+    assert(count($spread) === 2, 'Spread must preserve array length');
+
+    $pencilSource = [new Pencil()];
+    $mixed = [...$spreadSource, ...$pencilSource];
+    assert($mixed[0] instanceof Pen || $mixed[0] instanceof Pencil, 'Multi-spread must contain Pen|Pencil');
+
+    // ── Array destructuring ─────────────────────────────────────────────
+    $destructSource = [new Pen('x'), new Pen('y')];
+    [$dFirst, $dSecond] = $destructSource;
+    assert($dFirst instanceof Pen, 'Destructured element must be Pen');
+    assert($dSecond instanceof Pen, 'Second destructured element must be Pen');
+
+    // ── Named key destructuring from shape ──────────────────────────────
+    $shapeSource = ['pen' => new Pen(), 'pencil' => new Pencil()];
+    ['pen' => $dPen, 'pencil' => $dPencil] = $shapeSource;
+    assert($dPen instanceof Pen, 'Named destructured pen must be Pen');
+    assert($dPencil instanceof Pencil, 'Named destructured pencil must be Pencil');
+
+    // ── Ambiguous variables ─────────────────────────────────────────────
+    if (rand(0, 1)) {
+        $ambiguous = new Lamp();
+    } else {
+        $ambiguous = new Faucet();
+    }
+    assert($ambiguous instanceof Lamp || $ambiguous instanceof Faucet,
+        'Ambiguous var must be Lamp|Faucet');
+    assert(method_exists($ambiguous, 'turnOff'), 'Both Lamp and Faucet have turnOff()');
+
+    // ── Guard clause narrowing ──────────────────────────────────────────
+    $guardSubject = pickRockOrBanana();
+    if (!$guardSubject instanceof Banana) {
+        // would return in real code; just verify type
+        assert($guardSubject instanceof Rock, 'Guard: not Banana must be Rock');
+    } else {
+        assert($guardSubject instanceof Banana, 'Guard: else must be Banana');
+    }
+
+    // ── Ternary narrowing ───────────────────────────────────────────────
+    $ternaryThing = pickRockOrBanana();
+    $ternaryResult2 = $ternaryThing instanceof Rock ? $ternaryThing->crush() : $ternaryThing->peel();
+    assert(is_string($ternaryResult2), 'Ternary narrowed call must return string');
+
+    // ── User::toArray() ─────────────────────────────────────────────────
+    $userArr = (new User('Test', 'test@example.com'))->toArray();
+    assert(is_array($userArr), 'User::toArray() must return array');
+
+    // ── AstNode (template bounds) ───────────────────────────────────────
+    $astNode = new AstNode();
+    assert($astNode->getType() === '' || is_string($astNode->getType()), 'AstNode::getType() must return string');
+    $children = $astNode->getChildren();
+    assert(is_array($children), 'AstNode::getChildren() must return array');
+
+    echo "All assertions passed.\n";
+}
+
+runDemoAssertions();
 
 } // end namespace Demo
 
