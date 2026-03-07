@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Pipe operator (PHP 8.5).** `$input |> trim(...) |> createDate(...)` resolves through the chain, returning the last callable's return type. Completion works after assigning the pipe result to a variable.
+- **Pass-by-reference parameter type inference.** After calling a function that accepts a typed `&$var` parameter (e.g. `function foo(Baz &$bar)`), the variable acquires the parameter's type for subsequent completion.
+- **Generic `@phpstan-assert` with `class-string<T>`.** `@phpstan-assert T $value` combined with a `@template T` bound via `class-string<T>` now resolves the narrowed type from the call-site argument. For example, `Assert::assertInstanceOf(Foo::class, $obj)` narrows `$obj` to `Foo`.
+- **Interface template inheritance.** When a class implements an interface whose methods use `@template`, `@param class-string<T>`, or `@return T`, the implementing class's overridden methods now inherit the template parameters, bindings, conditional return types, and type assertions. Previously these were lost during interface merging.
 - **Invoked closure and arrow function return types.** `(fn(): Foo => new Foo())()` and `(function(): Bar { return new Bar(); })()` now resolve to the return type of the closure or arrow function. Previously these patterns produced no completions.
 - **`new $classStringVar` and `$classStringVar::method()`.** When a variable holds a class-string value (e.g. `$f = Foo::class`), `new $f` resolves to `Foo` and `$f::staticMethod()` resolves through `Foo`'s static members.
 - **`iterator_to_array()` element type.** `iterator_to_array($iter)` now resolves the element type from the iterator's generic annotation, so `$items[0]->` offers the correct completions.

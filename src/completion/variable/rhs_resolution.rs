@@ -83,6 +83,11 @@ pub(in crate::completion) fn resolve_rhs_expression<'b>(
             combined
         }
         Expression::Clone(clone_expr) => resolve_rhs_clone(clone_expr, ctx),
+        // ── Pipe operator (PHP 8.5): `$expr |> callable(...)` ──
+        // The result type is the return type of the callable.
+        // The callable is typically a first-class callable reference
+        // (PartialApplication) such as `trim(...)` or `createDate(...)`.
+        Expression::Pipe(pipe) => resolve_rhs_pipe(pipe, ctx),
         Expression::PartialApplication(_)
         | Expression::Closure(_)
         | Expression::ArrowFunction(_) => {
@@ -117,6 +122,45 @@ pub(in crate::completion) fn resolve_rhs_expression<'b>(
             }
             vec![]
         }
+        _ => vec![],
+    }
+}
+
+/// Resolve a pipe expression `$input |> callable(...)` to the callable's
+/// return type.
+///
+/// The pipe operator passes `$input` as the first argument to `callable`
+/// and returns its result.  Chains like `$a |> f(...) |> g(...)` are
+/// nested: the outer pipe's input is the inner pipe expression.
+///
+/// Currently handles function-level callables (e.g. `createDate(...)`).
+/// Method and static method callables are not yet supported.
+fn resolve_rhs_pipe(pipe: &Pipe<'_>, ctx: &VarResolutionCtx<'_>) -> Vec<ClassInfo> {
+    // The callable determines the result type.
+    // For `PartialApplication::Function`, extract the function name
+    // and look up its return type.
+    match pipe.callable {
+        Expression::PartialApplication(PartialApplication::Function(fpa)) => {
+            let func_name = match fpa.function {
+                Expression::Identifier(ident) => ident.value().to_string(),
+                _ => return vec![],
+            };
+            if let Some(fl) = ctx.function_loader
+                && let Some(func_info) = fl(&func_name)
+                && let Some(ref ret) = func_info.return_type
+            {
+                return crate::completion::type_resolution::type_hint_to_classes(
+                    ret,
+                    &ctx.current_class.name,
+                    ctx.all_classes,
+                    ctx.class_loader,
+                );
+            }
+            vec![]
+        }
+        // Method callable: `$input |> $obj->method(...)`
+        // Static callable: `$input |> Class::method(...)`
+        // Not yet supported — fall back to empty.
         _ => vec![],
     }
 }

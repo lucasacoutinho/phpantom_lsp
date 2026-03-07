@@ -15,32 +15,6 @@ within the same impact tier.
 
 ---
 
-## 1. Pipe operator (PHP 8.5)
-**Impact: High · Effort: Low**
-
-PHP 8.5 introduced the pipe operator (`|>`):
-
-```php
-$result = $input
-    |> htmlspecialchars(...)
-    |> strtoupper(...)
-    |> fn($s) => "<b>$s</b>";
-```
-
-The mago parser already produces `Expression::Pipe` nodes, and the
-closure resolution module walks into pipe sub-expressions to find
-closures. However, **no type resolution** is performed for the pipe
-result — the RHS callable's return type is never resolved, so
-`$result->` after a pipe chain produces no completions.
-
-**Fix:** In `resolve_rhs_expression`, add a `Expression::Pipe` arm
-that resolves the RHS callable (function reference, closure, or
-arrow function) and returns its return type. For first-class
-callable syntax (`htmlspecialchars(...)`), reuse the existing
-`extract_first_class_callable_return_type` logic.
-
----
-
 ## 3. Parse and resolve `($param is T ? A : B)` return types
 **Impact: High · Effort: Medium**
 
@@ -239,35 +213,6 @@ completion. However:
 explicitly, walk hook bodies for anonymous classes and variable
 scopes, and parse the set-visibility modifier into a new
 `set_visibility` field on `PropertyInfo`.
-
----
-
-## 7. Narrow types of `&$var` parameters after function calls
-**Impact: Medium · Effort: Medium**
-
-When a function takes a parameter by reference, the variable's type
-after the call should reflect what the function writes to it.  PHPStan
-has `FunctionParameterOutTypeExtension` for this.
-
-Key examples:
-
-| Function | Parameter | Type after call |
-|---|---|---|
-| `preg_match($pattern, $subject, &$matches)` | `$matches` | Typed array shape based on the regex |
-| `preg_match_all($pattern, $subject, &$matches)` | `$matches` | Nested typed array based on the regex |
-| `parse_str($string, &$result)` | `$result` | `array<string, string>` |
-| `sscanf($string, $format, &...$vars)` | `$vars` | Types based on format specifiers |
-
-The most impactful case is `preg_match` — PHPStan's
-`RegexArrayShapeMatcher` parses the regex pattern to produce a precise
-array shape for `$matches`, including named capture groups.  A simpler
-first step would be to just type `$matches` as `array<int|string,
-string>` when passed to `preg_match`.
-
-**Implementation:** When resolving a variable's type after a function
-call where the variable was passed by reference, look up the
-function's parameter annotations for `@param-out` tags (PHPStan/Psalm
-extension) or use a built-in map for known functions.
 
 ---
 
@@ -480,43 +425,6 @@ type:
 - If the inner type is `array<K, V>`, extract `K` or `V` directly.
 - If the inner type is still an unresolved template parameter, leave
   it as-is (it may resolve later in the chain).
-
----
-
-## 20. Generic `@phpstan-assert` with `class-string<T>` parameter inference
-**Impact: Medium · Effort: Medium-High**
-
-When a function declares `@phpstan-assert T $value` with a
-`@template T` bound via a `class-string<T>` parameter, the narrowed
-type should be inferred from the class-string argument at the call
-site. For example:
-
-```php
-/**
- * @template T of object
- * @param class-string<T> $class
- * @phpstan-assert T $value
- */
-function assertInstanceOf(string $class, mixed $value): void {}
-
-assertInstanceOf(Foo::class, $x);
-$x->fooMethod(); // $x should be narrowed to Foo
-```
-
-**Discovered via:** fixture conversion (phpstan_assert_generic).
-
----
-
-## 25. `class-string<T>` on interface method not inherited
-**Impact: Medium · Effort: Medium**
-
-When an interface method uses `class-string<T>` in its return type
-and a class implements that interface, the implementing class's method
-does not inherit the generic return type. The `class-string<T>`
-pattern works on the interface directly but is lost during
-inheritance merging.
-
-**Discovered via:** fixture conversion (class_string_generic_interface).
 
 ---
 

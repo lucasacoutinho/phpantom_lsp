@@ -565,7 +565,34 @@ fn merge_interface_members_into(
         {
             // Fill in missing return type from the interface.
             if existing.return_type.is_none() && iface_method.return_type.is_some() {
-                existing.return_type = iface_method.return_type;
+                existing.return_type = iface_method.return_type.clone();
+            }
+            // Fill in missing template information from the interface.
+            // When a class implements an interface with a generic method
+            // (e.g. `@template T` + `@param class-string<T>` + `@return T`),
+            // the implementing class's override typically lacks these
+            // docblock annotations.  Inheriting them lets the call-site
+            // resolver build template substitutions and resolve the
+            // concrete return type.
+            if existing.template_params.is_empty() && !iface_method.template_params.is_empty() {
+                existing.template_params = iface_method.template_params;
+                existing.template_param_bounds = iface_method.template_param_bounds;
+                existing.template_bindings = iface_method.template_bindings;
+                // Also inherit the return type if the interface provides
+                // one and we haven't already set it above — template
+                // return types like `T` only make sense when the template
+                // params are present.
+                if existing.return_type.is_none() {
+                    existing.return_type = iface_method.return_type;
+                }
+            }
+            // Fill in missing conditional return type from the interface.
+            if existing.conditional_return.is_none() && iface_method.conditional_return.is_some() {
+                existing.conditional_return = iface_method.conditional_return;
+            }
+            // Fill in missing type assertions from the interface.
+            if existing.type_assertions.is_empty() && !iface_method.type_assertions.is_empty() {
+                existing.type_assertions = iface_method.type_assertions;
             }
             // Fill in parameter docblock types from the interface.
             // When the class parameter's type_hint equals its native_type_hint

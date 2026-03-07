@@ -556,6 +556,12 @@ pub(in crate::completion) fn walk_statements_for_assignments<'b>(
                     assert_narrowed_types.clear();
                 }
 
+                // ── Pass-by-reference parameter type inference ──
+                // When a function call passes our variable to a
+                // parameter declared as `Type &$param`, the variable
+                // acquires that type after the call.
+                try_apply_pass_by_reference_type(expr_stmt.expression, ctx, results, conditional);
+
                 // ── assert($var instanceof ClassName) narrowing ──
                 // When `assert($var instanceof Foo)` appears before
                 // the cursor, narrow the variable to `Foo` for the
@@ -1396,6 +1402,81 @@ pub(in crate::completion) fn resolve_arg_raw_type<'b>(
     }
     // Fall back to structural extraction (method calls, etc.)
     super::foreach_resolution::extract_rhs_iterable_raw_type(arg_expr, ctx)
+}
+
+/// Check whether a call expression passes the target variable to a
+/// pass-by-reference parameter with a type hint, and if so, push the
+/// resolved type into `results`.
+///
+/// For example, given `function foo(Baz &$bar): void {}` and the call
+/// `foo($bar)`, this function detects that `$bar` is passed to a `&`
+/// parameter typed as `Baz` and resolves `$bar` to `Baz`.
+///
+/// Currently handles standalone function calls (via `function_loader`).
+/// Method and static method calls with by-ref parameters are not yet
+/// supported.
+fn try_apply_pass_by_reference_type(
+    expr: &Expression<'_>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+    conditional: bool,
+) {
+    let (argument_list, parameters) = match expr {
+        Expression::Call(Call::Function(func_call)) => {
+            let func_name = match func_call.function {
+                Expression::Identifier(ident) => ident.value().to_string(),
+                _ => return,
+            };
+            let fl = match ctx.function_loader {
+                Some(fl) => fl,
+                None => return,
+            };
+            let func_info = match fl(&func_name) {
+                Some(fi) => fi,
+                None => return,
+            };
+            // Borrow the argument list and clone the parameters so we
+            // can iterate them together.
+            (&func_call.argument_list, func_info.parameters)
+        }
+        _ => return,
+    };
+
+    for (i, arg) in argument_list.arguments.iter().enumerate() {
+        let arg_expr = match arg {
+            Argument::Positional(pos) => pos.value,
+            Argument::Named(named) => named.value,
+        };
+
+        // Check if this argument is our target variable.
+        let is_our_var = match arg_expr {
+            Expression::Variable(Variable::Direct(dv)) => dv.name == ctx.var_name,
+            _ => false,
+        };
+        if !is_our_var {
+            continue;
+        }
+
+        // Check if the corresponding parameter is pass-by-reference
+        // with a type hint.
+        if let Some(param) = parameters.get(i)
+            && param.is_reference
+            && let Some(ref type_hint) = param.type_hint
+        {
+            let resolved = crate::completion::type_resolution::type_hint_to_classes(
+                type_hint,
+                &ctx.current_class.name,
+                ctx.all_classes,
+                ctx.class_loader,
+            );
+            if !resolved.is_empty() {
+                if !conditional {
+                    results.clear();
+                }
+                ClassInfo::extend_unique(results, resolved);
+            }
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,6 @@
 // feature: completion
 // Adapted from phpactor variable/pass-by-ref.test
 // After calling foo(&$bar) where $bar is typed as Baz, $bar should resolve to Baz
-// ignore: pass-by-reference parameter type inference not yet supported (todo.md backlog)
 // expect: doWork(
 ---
 <?php

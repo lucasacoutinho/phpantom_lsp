@@ -25,7 +25,6 @@ with each step.
 | [Laravel](todo/laravel.md) | Model property gaps, relationship methods, type narrowing, custom builders |
 | [Blade](todo/blade.md) | Preprocessor, component support, cross-file view intelligence |
 | [Bug Fixes](todo/bugs.md) | Incorrect behaviour that should be fixed regardless of feature priority |
-| [Testing](todo/testing.md) | Ignored fixture tasks grouped by missing feature, with effort estimates |
 | [Configuration](todo/config.md) | Per-project `.phpantom.toml` file, PHP version override, diagnostic tool toggles, prompt-and-remember settings |
 | [Refactoring](todo/refactor.md) | Technical debt and cleanup tasks. Gate check between sprints: clear all items before starting the next sprint |
 

@@ -1,7 +1,7 @@
 // test: generic narrowing with @phpstan-assert and class-string<T> resolves type
 // feature: completion
 // Adapted from phpactor narrowing/narrow-generic.test
-// ignore: needs generic @phpstan-assert with class-string<T> parameter inference
+
 // expect: fooMethod(
 ---
 <?php

@@ -2140,6 +2140,48 @@ class AttributeSigHelpDemo
 }
 
 
+// ── Pass-by-Reference Parameter Type ────────────────────────────────────────
+
+class PassByReferenceDemo
+{
+    public function demo(): void
+    {
+        // When a function takes a typed &$var parameter, the variable
+        // acquires that type after the call.
+        initPen($pen);
+        $pen->write();                    // $pen is now Pen
+    }
+}
+
+
+// ── Interface Template Inheritance ──────────────────────────────────────────
+
+class InterfaceTemplateDemo
+{
+    public function demo(): void
+    {
+        // When a class implements an interface with @template + class-string<T>,
+        // the implementing class inherits the template machinery.
+        $locator = new ScaffoldingEntityLocator();
+        $locator->find(Pen::class)->write();   // T resolves to Pen via class-string<T>
+    }
+}
+
+
+// ── Generic @phpstan-assert Narrowing ───────────────────────────────────────
+
+class GenericAssertNarrowingDemo
+{
+    public function demo(object $obj): void
+    {
+        // @phpstan-assert with @template + class-string<T> resolves
+        // the narrowed type from the call-site argument.
+        ScaffoldingAssert::assertInstanceOf(Pen::class, $obj);
+        $obj->write();                    // $obj narrowed to Pen
+    }
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
@@ -3333,6 +3375,51 @@ class StaticAssert
     }
 }
 
+// ─── Pipe Operator / Pass-by-Reference / Interface Template / Generic Assert ─
+
+function createPenFromString(string $input): Pen
+{
+    return new Pen();
+}
+
+function initPen(?Pen &$pen): void
+{
+    $pen = new Pen();
+}
+
+interface ScaffoldingEntityFinder
+{
+    /**
+     * @template T
+     * @param class-string<T> $class
+     * @return T
+     */
+    public function find(string $class): object;
+}
+
+class ScaffoldingEntityLocator implements ScaffoldingEntityFinder
+{
+    public function find(string $class): object
+    {
+        return new $class();
+    }
+}
+
+class ScaffoldingAssert
+{
+    /**
+     * @template ExpectedType of object
+     * @param class-string<ExpectedType> $expected
+     * @phpstan-assert ExpectedType $actual
+     */
+    public static function assertInstanceOf(string $expected, object $actual): void
+    {
+        if (!$actual instanceof $expected) {
+            throw new \InvalidArgumentException('Type mismatch');
+        }
+    }
+}
+
 // ─── Multi-line @return & Broken Docblock Recovery ──────────────────────────
 
 /**
@@ -4246,6 +4333,21 @@ function runDemoAssertions(): void
     assert($astNode->getType() === '' || is_string($astNode->getType()), 'AstNode::getType() must return string');
     $children = $astNode->getChildren();
     assert(is_array($children), 'AstNode::getChildren() must return array');
+
+    // ── Pass-by-reference parameter type ────────────────────────────────
+    $refPen = null;
+    initPen($refPen);
+    assert($refPen instanceof Pen, 'initPen(&$pen) must give $pen type Pen');
+
+    // ── Interface template inheritance (class-string<T>) ────────────────
+    $locator = new ScaffoldingEntityLocator();
+    $locatorResult = $locator->find(Pen::class);
+    assert($locatorResult instanceof Pen, 'ScaffoldingEntityLocator::find(Pen::class) must return Pen');
+
+    // ── Generic @phpstan-assert narrowing ────────────────────────────────
+    $assertObj = new Pen();
+    ScaffoldingAssert::assertInstanceOf(Pen::class, $assertObj);
+    assert($assertObj instanceof Pen, 'ScaffoldingAssert::assertInstanceOf(Pen::class, $obj) must narrow to Pen');
 
     echo "All assertions passed.\n";
 }

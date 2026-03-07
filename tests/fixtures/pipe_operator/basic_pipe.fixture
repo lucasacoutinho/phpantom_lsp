@@ -1,7 +1,6 @@
 // test: PHP 8.5 pipe operator resolves type through chain
 // feature: completion
 // Adapted from phpactor pipe-operator/pipe-operator.test
-// ignore: needs todo.md §1 (PHP 8.5 pipe operator support)
 // expect: getTimestamp(
 ---
 <?php

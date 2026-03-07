@@ -450,6 +450,10 @@ struct CallAssertionInfo<'a> {
     parameters: &'a [ParameterInfo],
     /// The call-site argument list.
     argument_list: &'a ArgumentList<'a>,
+    /// Template parameter names from the callee's `@template` tags.
+    template_params: &'a [String],
+    /// Template parameter → parameter name bindings (e.g. `("T", "$class")`).
+    template_bindings: &'a [(String, String)],
 }
 
 /// Try to extract assertion metadata from a call expression.
@@ -484,6 +488,8 @@ fn extract_call_assertions<'a>(
                 assertions: &func_info.type_assertions,
                 parameters: &func_info.parameters,
                 argument_list: &func_call.argument_list,
+                template_params: &func_info.template_params,
+                template_bindings: &func_info.template_bindings,
             })
         }
         Call::StaticMethod(static_call) => {
@@ -511,6 +517,8 @@ fn extract_call_assertions<'a>(
                 assertions: &method.type_assertions,
                 parameters: &method.parameters,
                 argument_list: &static_call.argument_list,
+                template_params: &method.template_params,
+                template_bindings: &method.template_bindings,
             })
         }
         _ => None,
@@ -548,13 +556,100 @@ pub(in crate::completion) fn try_apply_custom_assert_narrowing(
             find_assertion_arg_variable(info.argument_list, &assertion.param_name, info.parameters)
             && arg_var == ctx.var_name
         {
+            // Resolve the asserted type.  When the type is a template
+            // parameter (e.g. `ExpectedType` from `@phpstan-assert
+            // ExpectedType $actual`), substitute it using the call-site
+            // argument bound via `class-string<T>`.
+            let effective_type =
+                resolve_assertion_template_type(&assertion.asserted_type, &info, ctx);
+
             if assertion.negated {
-                apply_instanceof_exclusion(&assertion.asserted_type, ctx, results);
+                apply_instanceof_exclusion(&effective_type, ctx, results);
             } else {
-                apply_instanceof_inclusion(&assertion.asserted_type, ctx, results);
+                apply_instanceof_inclusion(&effective_type, ctx, results);
             }
         }
     }
+}
+
+/// If `asserted_type` is a template parameter name, resolve it to a
+/// concrete type using the call-site arguments and template bindings.
+///
+/// For example, given:
+///   `@template ExpectedType of object`
+///   `@param class-string<ExpectedType> $expected`
+///   `@phpstan-assert ExpectedType $actual`
+///   Call: `Assert::assertFoobar(Foobar::class, $obj)`
+///
+/// The asserted type `ExpectedType` is resolved to `Foobar` by:
+///   1. Finding `ExpectedType` in `template_params`
+///   2. Looking up its binding: `("ExpectedType", "$expected")`
+///   3. Finding positional index of `$expected` in `parameters`
+///   4. Reading the call-site argument at that index: `Foobar::class`
+///   5. Extracting the class name `Foobar`
+///
+/// Returns the original type unchanged when it is not a template param
+/// or when the concrete type cannot be determined.
+fn resolve_assertion_template_type(
+    asserted_type: &str,
+    info: &CallAssertionInfo<'_>,
+    ctx: &VarResolutionCtx<'_>,
+) -> String {
+    // Check if the asserted type is a template parameter.
+    if !info.template_params.iter().any(|t| t == asserted_type) {
+        return asserted_type.to_string();
+    }
+
+    // Find the parameter name that binds this template param.
+    let bound_param = info
+        .template_bindings
+        .iter()
+        .find(|(tpl, _)| tpl == asserted_type)
+        .map(|(_, param)| param.as_str());
+
+    let bound_param = match bound_param {
+        Some(p) => p,
+        None => return asserted_type.to_string(),
+    };
+
+    // Find the positional index of that parameter.
+    let param_idx = match info.parameters.iter().position(|p| p.name == bound_param) {
+        Some(idx) => idx,
+        None => return asserted_type.to_string(),
+    };
+
+    // Get the call-site argument at that position.
+    let arg_expr = match info.argument_list.arguments.iter().nth(param_idx) {
+        Some(Argument::Positional(pos)) => pos.value,
+        Some(Argument::Named(named)) => named.value,
+        None => return asserted_type.to_string(),
+    };
+
+    // Try to extract a class name from the argument expression.
+    // Handles `Foo::class` and `\Foo\Bar::class`.
+    // Reuses the existing helper from the conditional module.
+    if let Some(class_name) = extract_class_string_from_expr(arg_expr) {
+        return class_name;
+    }
+
+    // Try to resolve a variable argument's class-string type.
+    if let Expression::Variable(Variable::Direct(dv)) = arg_expr {
+        let var_name = dv.name.to_string();
+        let targets =
+            crate::completion::variable::class_string_resolution::resolve_class_string_targets(
+                &var_name,
+                ctx.current_class,
+                ctx.all_classes,
+                ctx.content,
+                ctx.cursor_offset,
+                ctx.class_loader,
+            );
+        if let Some(first) = targets.into_iter().next() {
+            return first.name;
+        }
+    }
+
+    asserted_type.to_string()
 }
 
 /// Apply narrowing from `@phpstan-assert-if-true` / `-if-false`

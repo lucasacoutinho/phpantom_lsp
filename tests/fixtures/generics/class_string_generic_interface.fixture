@@ -1,6 +1,5 @@
 // test: class-string generic on interface resolves T to the concrete class
 // feature: completion
-// ignore: class-string<T> on interface method not inherited by implementing class yet
 // Adapted from phpactor generics/class-string-generic-decared-interface.test
 // expect: fooMethod(
 ---
