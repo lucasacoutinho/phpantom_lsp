@@ -1,11 +1,11 @@
 # PHPantom — Ignored Fixture Tasks
 
-There are **228 fixture tests** in `tests/fixtures/`. Of these, **176
-pass** and **52 are ignored** because they exercise features or bug
+There are **228 fixture tests** in `tests/fixtures/`. Of these, **177
+pass** and **51 are ignored** because they exercise features or bug
 fixes that are not yet implemented. Each ignored fixture has a
 `// ignore:` comment explaining what is missing.
 
-This document groups the 52 ignored fixtures by the underlying work
+This document groups the 51 ignored fixtures by the underlying work
 needed to un-ignore them. Tasks are ordered by the number of fixtures
 they unblock (descending), then by estimated effort. Once a task is
 complete, remove the `// ignore:` line from each fixture, verify the
@@ -367,20 +367,6 @@ class-string argument at the call site.
 
 ---
 
-## 17. Accessor on new line with whitespace (1 fixture)
-
-**Ref:** [bugs.md §8](bugs.md#8-accessor-on-new-line-with-extra-whitespace-not-resolved)
-**Impact: Medium · Effort: Low**
-
-When `->` is on a new line with leading whitespace before the cursor,
-subject extraction fails.
-
-**Fixture:**
-
-- [ ] `completion/accessor_on_new_line.fixture` — `$obj\n    ->` resolves
-
----
-
 ## 18. Partial static property prefix filtering (1 fixture)
 
 **Ref:** [bugs.md §11](bugs.md#11-partial-static-property-prefix-filtering-returns-empty-results)
@@ -532,7 +518,6 @@ Quick wins (Low effort, 1 fixture each):
 
 | Task | Fixture |
 |---|---|
-| §17 Accessor on new line | `completion/accessor_on_new_line` |
 | §18 Partial static property prefix | `completion/partial_static_property` |
 | §23 `@phpstan-type` in foreach | `type/phpstan_type_alias` |
 | §12 Sequential assert accumulation | `combination/intersect_interface_assert` |

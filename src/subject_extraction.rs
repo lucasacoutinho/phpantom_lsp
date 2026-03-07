@@ -539,10 +539,15 @@ pub(crate) fn detect_access_operator(chars: &[char], col: usize) -> Option<(Stri
         return None;
     }
 
-    // Walk backwards past any partial identifier the user has typed.
+    // Walk backwards past any partial identifier the user has typed,
+    // then skip whitespace so that `->   ` (operator followed by
+    // spaces but no identifier yet) is still detected.
     let operator_end = {
         let mut i = col;
         while i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+            i -= 1;
+        }
+        while i > 0 && chars[i - 1] == ' ' {
             i -= 1;
         }
         i

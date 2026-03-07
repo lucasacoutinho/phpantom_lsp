@@ -65,6 +65,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Inline `@var` annotations no longer leak across scopes.** A `/** @var Type $var */` annotation in one method no longer affects hover or completion for a same-named variable in a different method or class.
 - **Docblock tag parsing in description text.** Tags like `@throws` appearing mid-sentence in docblock descriptions (e.g. `"filtered out of @throws suggestions."`) are no longer mistakenly parsed as tags. Only `@` at a valid tag position (after the `* ` line prefix) is recognized.
 - **Double-negated `instanceof` narrowing.** `if (!!$x instanceof Foo)` now correctly narrows `$x` to `Foo` inside the block. Previously the double negation was not simplified and the type stayed unresolved.
+- **Accessor on new line with whitespace.** Completion now works when `->` is on a new line with extra whitespace before the cursor (e.g. `$obj\n    ->   `). Previously the subject extraction failed to find the operator across the whitespace gap.
 
 ## [0.4.0] - 2026-03-01
 

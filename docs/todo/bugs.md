@@ -138,26 +138,6 @@ error message.
 
 ---
 
-## 8. Accessor on new line with extra whitespace not resolved
-**Impact: Medium · Effort: Low**
-
-When the `->` or `::` accessor is on a new line with leading whitespace
-before the cursor, the subject extraction fails to find the object
-expression. For example:
-
-```php
-$obj
-    -><cursor>
-```
-
-The subject extractor searches backwards from the cursor for the `->` token
-but does not account for the line break and indentation between the object
-and the accessor.
-
-**Discovered via:** fixture conversion (completion/accessor_on_new_line).
-
----
-
 ## 9. Enum case instance properties not shown in `->` completion
 **Impact: Medium · Effort: Low**
 

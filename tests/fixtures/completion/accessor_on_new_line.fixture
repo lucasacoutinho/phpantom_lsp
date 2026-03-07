@@ -1,7 +1,6 @@
 // test: accessor on new line resolves type
 // feature: completion
 // Adapted from phpactor WorseClassMemberCompletorTest 'Accessor on new line'
-// ignore: accessor on new line with extra whitespace before cursor not resolved
 // expect: foobar
 ---
 <?php
