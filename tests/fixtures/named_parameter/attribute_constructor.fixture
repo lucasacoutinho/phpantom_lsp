@@ -1,7 +1,6 @@
 // test: named parameter completion in attribute constructor
 // feature: completion
 // Adapted from phpactor WorseNamedParameterCompletorTest 'Attributes'
-// ignore: named parameter completion in attribute context not yet supported
 // expect: param:
 ---
 <?php

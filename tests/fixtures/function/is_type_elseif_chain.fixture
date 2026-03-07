@@ -1,7 +1,6 @@
 // test: elseif chain with is_string/is_int narrows type in each branch
 // feature: completion
 // Adapted from phpactor if-statement/elseif.test
-// ignore: needs todo.md §3 (conditional return type parsing from stubs for is_*() narrowing)
 // expect: fooMethod(
 ---
 <?php
@@ -10,12 +9,12 @@ class Foobar {
     public function fooMethod(): void {}
 }
 
-/** @var Foobar|string|int $foo */
-
-if (is_string($foo)) {
-    // string branch
-} elseif (is_int($foo)) {
-    // int branch
-} else {
-    $foo-><>
+function test(Foobar|string|int $foo): void {
+    if (is_string($foo)) {
+        // string branch
+    } elseif (is_int($foo)) {
+        // int branch
+    } else {
+        $foo-><>
+    }
 }

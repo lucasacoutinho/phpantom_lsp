@@ -2076,6 +2076,55 @@ class ImplementMethodsDemo extends ScaffoldingAbstractShape implements Scaffoldi
 }
 
 
+// ── Property-Level Narrowing ────────────────────────────────────────────────
+
+class PropertyNarrowingDemo
+{
+    private Pen|Pencil $tool;
+
+    /** @var Pen|Pencil|null */
+    public $untyped;
+
+    public function demo(): void
+    {
+        // instanceof narrows a property inside the then-body
+        if ($this->tool instanceof Pen) {
+            $this->tool->write();             // narrowed to Pen
+        }
+
+        // Negated instanceof + early return narrows after the guard
+        if (!$this->tool instanceof Pencil) {
+            return;
+        }
+        $this->tool->sketch();                // narrowed to Pencil
+
+        // assert() narrows an untyped property
+        assert($this->untyped instanceof Pen);
+        $this->untyped->color();              // narrowed to Pen
+    }
+}
+
+
+// ── Attribute Signature Help ────────────────────────────────────────────────
+
+#[Attribute]
+class DemoRoute
+{
+    public function __construct(
+        public string $path,
+        public string $method = 'GET',
+    ) {}
+}
+
+class AttributeSigHelpDemo
+{
+    // Try: place cursor inside the attribute parens and trigger signature help.
+    // Named parameter completion also works: type "method:" after the first arg.
+    #[DemoRoute('/users', method: 'POST')]
+    public function store(): void {}
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃

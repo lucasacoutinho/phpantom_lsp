@@ -250,6 +250,24 @@ pub(in crate::completion) fn resolve_target_classes_expr(
                 );
                 ClassInfo::extend_unique(&mut results, resolved);
             }
+
+            // ── Property-level narrowing ────────────────────────
+            // When the property chain resolves to a union (or a
+            // broad interface type), an enclosing `instanceof`
+            // check like `if ($this->prop instanceof Foo)` should
+            // narrow the result set, just as it does for plain
+            // variables.  Build the full access path (e.g.
+            // `$this->timeline`) and run the narrowing walk.
+            //
+            // This also handles untyped properties: when the
+            // property has no type hint, `results` is empty but
+            // an `instanceof` check or `assert()` can still
+            // provide a type via `apply_instanceof_inclusion`.
+            if let Some(cc) = current_class {
+                let full_path = format!("{}->{}", base.to_subject_text(), property);
+                apply_property_narrowing(&full_path, cc, ctx, &mut results);
+            }
+
             results
         }
 
@@ -389,4 +407,290 @@ pub(in crate::completion) fn resolve_static_owner_class(
                     .next()
             })
     }
+}
+
+/// Apply instanceof / assert narrowing for a property-access path.
+///
+/// This is the property-level analog of the narrowing that
+/// [`super::variable::resolution::walk_statements_for_assignments`]
+/// performs for plain variables.  It re-parses the source, locates
+/// the enclosing method body, and walks its statements with a
+/// [`VarResolutionCtx`] whose `var_name` is the full property path
+/// (e.g. `$this->timeline`).  The existing narrowing functions in
+/// [`super::types::narrowing`] already support property paths via
+/// [`super::types::narrowing::expr_to_subject_key`], so no changes
+/// to those functions are required.
+fn apply_property_narrowing(
+    property_path: &str,
+    current_class: &ClassInfo,
+    rctx: &ResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    use crate::parser::with_parsed_program;
+
+    with_parsed_program(
+        rctx.content,
+        "apply_property_narrowing",
+        |program, _content| {
+            let ctx = VarResolutionCtx {
+                var_name: property_path,
+                current_class,
+                all_classes: rctx.all_classes,
+                content: rctx.content,
+                cursor_offset: rctx.cursor_offset,
+                class_loader: rctx.class_loader,
+                function_loader: rctx.function_loader,
+                resolved_class_cache: None,
+                enclosing_return_type: None,
+            };
+            walk_property_narrowing_in_statements(program.statements.iter(), &ctx, results);
+        },
+    );
+}
+
+/// Walk top-level statements to find the class + method containing the
+/// cursor, then apply narrowing to `results` for the given property path.
+fn walk_property_narrowing_in_statements<'b>(
+    statements: impl Iterator<Item = &'b mago_syntax::ast::Statement<'b>>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    use mago_span::HasSpan;
+    use mago_syntax::ast::*;
+
+    for stmt in statements {
+        match stmt {
+            Statement::Class(class) => {
+                let start = class.left_brace.start.offset;
+                let end = class.right_brace.end.offset;
+                if ctx.cursor_offset >= start && ctx.cursor_offset <= end {
+                    walk_property_narrowing_in_members(class.members.iter(), ctx, results);
+                    return;
+                }
+            }
+            Statement::Trait(trait_def) => {
+                let start = trait_def.left_brace.start.offset;
+                let end = trait_def.right_brace.end.offset;
+                if ctx.cursor_offset >= start && ctx.cursor_offset <= end {
+                    walk_property_narrowing_in_members(trait_def.members.iter(), ctx, results);
+                    return;
+                }
+            }
+            Statement::Namespace(ns) => {
+                let ns_span = ns.span();
+                if ctx.cursor_offset >= ns_span.start.offset
+                    && ctx.cursor_offset <= ns_span.end.offset
+                {
+                    walk_property_narrowing_in_statements(ns.statements().iter(), ctx, results);
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Walk class members to find the method containing the cursor, then
+/// apply instanceof / guard-clause narrowing for the property path.
+fn walk_property_narrowing_in_members<'b>(
+    members: impl Iterator<Item = &'b mago_syntax::ast::class_like::member::ClassLikeMember<'b>>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    use mago_syntax::ast::class_like::member::ClassLikeMember;
+    use mago_syntax::ast::class_like::method::MethodBody;
+
+    for member in members {
+        if let ClassLikeMember::Method(method) = member {
+            let body = match &method.body {
+                MethodBody::Concrete(block) => block,
+                _ => continue,
+            };
+            let body_start = body.left_brace.start.offset;
+            let body_end = body.right_brace.end.offset;
+            if ctx.cursor_offset >= body_start && ctx.cursor_offset <= body_end {
+                walk_property_narrowing_stmts(body.statements.iter(), ctx, results);
+                return;
+            }
+        }
+    }
+}
+
+/// Walk statements applying only narrowing (no assignment scanning)
+/// for a property path like `$this->prop`.
+fn walk_property_narrowing_stmts<'b>(
+    statements: impl Iterator<Item = &'b mago_syntax::ast::Statement<'b>>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    use mago_span::HasSpan;
+    use mago_syntax::ast::*;
+
+    use super::types::narrowing;
+
+    for stmt in statements {
+        let stmt_span = stmt.span();
+        // Only consider statements whose start is before the cursor.
+        if stmt_span.start.offset >= ctx.cursor_offset {
+            continue;
+        }
+
+        match stmt {
+            Statement::If(if_stmt) => {
+                walk_property_narrowing_if(if_stmt, stmt, ctx, results);
+            }
+            Statement::Block(block) => {
+                walk_property_narrowing_stmts(block.statements.iter(), ctx, results);
+            }
+            Statement::Expression(expr_stmt) => {
+                // assert($this->prop instanceof Foo) — unconditional
+                narrowing::try_apply_assert_instanceof_narrowing(
+                    expr_stmt.expression,
+                    ctx,
+                    results,
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Apply property-level narrowing inside an if / elseif / else chain.
+fn walk_property_narrowing_if<'b>(
+    if_stmt: &'b mago_syntax::ast::If<'b>,
+    enclosing_stmt: &'b mago_syntax::ast::Statement<'b>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    use mago_span::HasSpan;
+    use mago_syntax::ast::*;
+
+    use super::types::narrowing;
+
+    match &if_stmt.body {
+        IfBody::Statement(body) => {
+            // ── then-body narrowing ──
+            narrowing::try_apply_instanceof_narrowing(
+                if_stmt.condition,
+                body.statement.span(),
+                ctx,
+                results,
+            );
+            walk_property_narrowing_stmt(body.statement, ctx, results);
+
+            // ── elseif narrowing ──
+            for else_if in body.else_if_clauses.iter() {
+                narrowing::try_apply_instanceof_narrowing(
+                    else_if.condition,
+                    else_if.statement.span(),
+                    ctx,
+                    results,
+                );
+                walk_property_narrowing_stmt(else_if.statement, ctx, results);
+            }
+
+            // ── else-body inverse narrowing ──
+            if let Some(else_clause) = &body.else_clause {
+                let else_span = else_clause.statement.span();
+                narrowing::try_apply_instanceof_narrowing_inverse(
+                    if_stmt.condition,
+                    else_span,
+                    ctx,
+                    results,
+                );
+                for else_if in body.else_if_clauses.iter() {
+                    narrowing::try_apply_instanceof_narrowing_inverse(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
+                }
+                walk_property_narrowing_stmt(else_clause.statement, ctx, results);
+            }
+        }
+        IfBody::ColonDelimited(body) => {
+            let then_end = if !body.else_if_clauses.is_empty() {
+                body.else_if_clauses
+                    .first()
+                    .unwrap()
+                    .elseif
+                    .span()
+                    .start
+                    .offset
+            } else if let Some(ref ec) = body.else_clause {
+                ec.r#else.span().start.offset
+            } else {
+                body.endif.span().start.offset
+            };
+            let then_span = mago_span::Span::new(
+                body.colon.file_id,
+                body.colon.start,
+                mago_span::Position::new(then_end),
+            );
+            narrowing::try_apply_instanceof_narrowing(if_stmt.condition, then_span, ctx, results);
+            walk_property_narrowing_stmts(body.statements.iter(), ctx, results);
+
+            for else_if in body.else_if_clauses.iter() {
+                let ei_span = mago_span::Span::new(
+                    else_if.colon.file_id,
+                    else_if.colon.start,
+                    mago_span::Position::new(
+                        else_if
+                            .statements
+                            .span(else_if.colon.file_id, else_if.colon.end)
+                            .end
+                            .offset,
+                    ),
+                );
+                narrowing::try_apply_instanceof_narrowing(else_if.condition, ei_span, ctx, results);
+                walk_property_narrowing_stmts(else_if.statements.iter(), ctx, results);
+            }
+
+            if let Some(else_clause) = &body.else_clause {
+                let else_span = mago_span::Span::new(
+                    else_clause.colon.file_id,
+                    else_clause.colon.start,
+                    mago_span::Position::new(
+                        else_clause
+                            .statements
+                            .span(else_clause.colon.file_id, else_clause.colon.end)
+                            .end
+                            .offset,
+                    ),
+                );
+                narrowing::try_apply_instanceof_narrowing_inverse(
+                    if_stmt.condition,
+                    else_span,
+                    ctx,
+                    results,
+                );
+                for else_if in body.else_if_clauses.iter() {
+                    narrowing::try_apply_instanceof_narrowing_inverse(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
+                }
+                walk_property_narrowing_stmts(else_clause.statements.iter(), ctx, results);
+            }
+        }
+    }
+
+    // ── Guard clause narrowing ──
+    // When the then-body unconditionally exits and there are no
+    // elseif / else branches, apply inverse narrowing after the if.
+    if enclosing_stmt.span().end.offset < ctx.cursor_offset {
+        narrowing::apply_guard_clause_narrowing(if_stmt, ctx, results);
+    }
+}
+
+/// Dispatch a single statement to `walk_property_narrowing_stmts`.
+fn walk_property_narrowing_stmt<'b>(
+    stmt: &'b mago_syntax::ast::Statement<'b>,
+    ctx: &VarResolutionCtx<'_>,
+    results: &mut Vec<ClassInfo>,
+) {
+    walk_property_narrowing_stmts(std::iter::once(stmt), ctx, results);
 }

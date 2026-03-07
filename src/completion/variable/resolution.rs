@@ -734,25 +734,50 @@ fn walk_if_statement<'b>(
                 // ── inverse instanceof narrowing for else-body ──
                 // `if ($v instanceof Foo) { … } else { ← here }`
                 // means $v is NOT Foo in the else branch.
+                let else_span = else_clause.statement.span();
                 narrowing::try_apply_instanceof_narrowing_inverse(
                     if_stmt.condition,
-                    else_clause.statement.span(),
+                    else_span,
                     ctx,
                     results,
                 );
                 narrowing::try_apply_assert_condition_narrowing(
                     if_stmt.condition,
-                    else_clause.statement.span(),
+                    else_span,
                     ctx,
                     results,
                     true, // inverted — this is the else-body
                 );
                 narrowing::try_apply_in_array_narrowing_inverse(
                     if_stmt.condition,
-                    else_clause.statement.span(),
+                    else_span,
                     ctx,
                     results,
                 );
+                // Also apply inverse narrowing for every elseif condition.
+                // In the else branch, all preceding conditions were false,
+                // so each elseif's condition is also inverted.
+                for else_if in body.else_if_clauses.iter() {
+                    narrowing::try_apply_instanceof_narrowing_inverse(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
+                    narrowing::try_apply_assert_condition_narrowing(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                        true,
+                    );
+                    narrowing::try_apply_in_array_narrowing_inverse(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
+                }
                 check_statement_for_assignments(else_clause.statement, ctx, results, true);
             }
         }
@@ -842,6 +867,28 @@ fn walk_if_statement<'b>(
                     ctx,
                     results,
                 );
+                // Also apply inverse narrowing for every elseif condition.
+                for else_if in body.else_if_clauses.iter() {
+                    narrowing::try_apply_instanceof_narrowing_inverse(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
+                    narrowing::try_apply_assert_condition_narrowing(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                        true,
+                    );
+                    narrowing::try_apply_in_array_narrowing_inverse(
+                        else_if.condition,
+                        else_span,
+                        ctx,
+                        results,
+                    );
+                }
                 walk_statements_for_assignments(else_clause.statements.iter(), ctx, results, true);
             }
         }

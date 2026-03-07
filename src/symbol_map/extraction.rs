@@ -615,9 +615,15 @@ fn extract_from_attribute_lists<'a>(
                 &raw,
             ));
 
-            // Attribute arguments.
+            // Attribute arguments — also emit a CallSite so that
+            // signature help and named parameter completion work
+            // inside `#[Attr(...)]` just like `new Attr(...)`.
             if let Some(ref arg_list) = attr.argument_list {
                 extract_from_arguments(&arg_list.arguments, ctx, scope_start);
+                let class_name = raw.trim_start_matches('\\');
+                if !class_name.is_empty() {
+                    emit_call_site(format!("new {}", class_name), arg_list, &mut ctx.call_sites);
+                }
             }
         }
     }

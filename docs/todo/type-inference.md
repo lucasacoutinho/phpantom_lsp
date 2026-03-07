@@ -507,18 +507,6 @@ $x->fooMethod(); // $x should be narrowed to Foo
 
 ---
 
-## 21. Property-level narrowing
-**Impact: Medium · Effort: Medium**
-
-`$this->prop instanceof Foo` inside an `if` block does not narrow the
-type of `$this->prop` for subsequent member access. Only local
-variables participate in narrowing today.
-
-**Discovered via:** fixture conversion (property_narrowing,
-property_narrowing_negated, combination/property_instanceof).
-
----
-
 ## 25. `class-string<T>` on interface method not inherited
 **Impact: Medium · Effort: Medium**
 

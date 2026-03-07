@@ -1,7 +1,6 @@
 // test: property narrowing with instanceof in if block
 // feature: completion
 // Adapted from phpactor combination/property.test
-// ignore: property-level narrowing ($this->prop instanceof X) not supported
 // expect: getLinkedCustomer(
 ---
 <?php

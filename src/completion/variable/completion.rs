@@ -203,8 +203,12 @@ fn find_scope_and_collect<'b>(
 ) {
     let stmts: Vec<&Statement> = statements.collect();
 
-    // First pass: check if cursor is inside a class, function, or namespace.
+    // First pass: check if cursor is inside a class, function, namespace,
+    // or a closure/arrow-function (which introduces a new variable scope).
     for &stmt in &stmts {
+        if try_collect_from_enclosing_closure(content, stmt, cursor_offset, vars) {
+            return;
+        }
         match stmt {
             Statement::Class(class) => {
                 let start = class.left_brace.start.offset;
@@ -291,6 +295,356 @@ fn find_scope_and_collect<'b>(
 
     // Cursor is in top-level code — collect from all top-level statements.
     collect_from_statements(content, stmts.into_iter(), cursor_offset, vars);
+}
+
+/// Recursively search a statement for a closure or arrow function whose body
+/// contains the cursor.  If found, collect only the variables from that
+/// closure's scope (parameters + `use()` clause + body) and return `true`.
+///
+/// PHP closures have strict scope isolation: only variables captured via
+/// `use($var)`, the closure's own parameters, variables defined in the body,
+/// and superglobals are visible inside.  This prevents outer variables from
+/// leaking into the closure's completion list.
+fn try_collect_from_enclosing_closure<'b>(
+    content: &str,
+    stmt: &'b Statement<'b>,
+    cursor_offset: u32,
+    vars: &mut HashSet<String>,
+) -> bool {
+    let stmt_span = stmt.span();
+    if cursor_offset < stmt_span.start.offset || cursor_offset > stmt_span.end.offset {
+        return false;
+    }
+    // Scan all expressions in the statement for closures/arrow functions.
+    match stmt {
+        Statement::Expression(expr_stmt) => {
+            expr_contains_enclosing_closure(content, expr_stmt.expression, cursor_offset, vars)
+        }
+        Statement::Return(ret) => {
+            if let Some(expr) = ret.value {
+                expr_contains_enclosing_closure(content, expr, cursor_offset, vars)
+            } else {
+                false
+            }
+        }
+        Statement::Echo(echo) => echo
+            .values
+            .iter()
+            .any(|expr| expr_contains_enclosing_closure(content, expr, cursor_offset, vars)),
+        Statement::If(if_stmt) => {
+            if expr_contains_enclosing_closure(content, if_stmt.condition, cursor_offset, vars) {
+                return true;
+            }
+            match &if_stmt.body {
+                IfBody::Statement(body) => {
+                    if try_collect_from_enclosing_closure(
+                        content,
+                        body.statement,
+                        cursor_offset,
+                        vars,
+                    ) {
+                        return true;
+                    }
+                    for else_if in body.else_if_clauses.iter() {
+                        if expr_contains_enclosing_closure(
+                            content,
+                            else_if.condition,
+                            cursor_offset,
+                            vars,
+                        ) {
+                            return true;
+                        }
+                        if try_collect_from_enclosing_closure(
+                            content,
+                            else_if.statement,
+                            cursor_offset,
+                            vars,
+                        ) {
+                            return true;
+                        }
+                    }
+                    if let Some(else_clause) = &body.else_clause
+                        && try_collect_from_enclosing_closure(
+                            content,
+                            else_clause.statement,
+                            cursor_offset,
+                            vars,
+                        )
+                    {
+                        return true;
+                    }
+                }
+                IfBody::ColonDelimited(body) => {
+                    for s in body.statements.iter() {
+                        if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                            return true;
+                        }
+                    }
+                    for else_if in body.else_if_clauses.iter() {
+                        if expr_contains_enclosing_closure(
+                            content,
+                            else_if.condition,
+                            cursor_offset,
+                            vars,
+                        ) {
+                            return true;
+                        }
+                        for s in else_if.statements.iter() {
+                            if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                                return true;
+                            }
+                        }
+                    }
+                    if let Some(else_clause) = &body.else_clause {
+                        for s in else_clause.statements.iter() {
+                            if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        Statement::Block(block) => block
+            .statements
+            .iter()
+            .any(|s| try_collect_from_enclosing_closure(content, s, cursor_offset, vars)),
+        Statement::Foreach(foreach) => {
+            for s in foreach.body.statements() {
+                if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                    return true;
+                }
+            }
+            false
+        }
+        Statement::For(for_stmt) => {
+            for init in for_stmt.initializations.iter() {
+                if expr_contains_enclosing_closure(content, init, cursor_offset, vars) {
+                    return true;
+                }
+            }
+            match &for_stmt.body {
+                ForBody::Statement(s) => {
+                    try_collect_from_enclosing_closure(content, s, cursor_offset, vars)
+                }
+                ForBody::ColonDelimited(body) => body
+                    .statements
+                    .iter()
+                    .any(|s| try_collect_from_enclosing_closure(content, s, cursor_offset, vars)),
+            }
+        }
+        Statement::While(while_stmt) => match &while_stmt.body {
+            WhileBody::Statement(s) => {
+                try_collect_from_enclosing_closure(content, s, cursor_offset, vars)
+            }
+            WhileBody::ColonDelimited(body) => body
+                .statements
+                .iter()
+                .any(|s| try_collect_from_enclosing_closure(content, s, cursor_offset, vars)),
+        },
+        Statement::DoWhile(dw) => {
+            try_collect_from_enclosing_closure(content, dw.statement, cursor_offset, vars)
+        }
+        Statement::Try(try_stmt) => {
+            for s in try_stmt.block.statements.iter() {
+                if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                    return true;
+                }
+            }
+            for catch in try_stmt.catch_clauses.iter() {
+                for s in catch.block.statements.iter() {
+                    if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                        return true;
+                    }
+                }
+            }
+            if let Some(finally) = &try_stmt.finally_clause {
+                for s in finally.block.statements.iter() {
+                    if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                        return true;
+                    }
+                }
+            }
+            false
+        }
+        Statement::Switch(switch) => {
+            match &switch.body {
+                SwitchBody::BraceDelimited(body) => {
+                    for case in body.cases.iter() {
+                        for s in case.statements().iter() {
+                            if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                SwitchBody::ColonDelimited(body) => {
+                    for case in body.cases.iter() {
+                        for s in case.statements().iter() {
+                            if try_collect_from_enclosing_closure(content, s, cursor_offset, vars) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Recursively check if an expression contains a closure or arrow function
+/// whose body encloses the cursor.  If found, collect from that closure's
+/// scope and return `true`.
+fn expr_contains_enclosing_closure<'b>(
+    content: &str,
+    expr: &'b Expression<'b>,
+    cursor_offset: u32,
+    vars: &mut HashSet<String>,
+) -> bool {
+    let expr_span = expr.span();
+    if cursor_offset < expr_span.start.offset || cursor_offset > expr_span.end.offset {
+        return false;
+    }
+    match expr {
+        Expression::Closure(closure) => {
+            let body_start = closure.body.left_brace.start.offset;
+            let body_end = closure.body.right_brace.end.offset;
+            if cursor_offset >= body_start && cursor_offset <= body_end {
+                collect_from_params(&closure.parameter_list, vars);
+                if let Some(ref use_clause) = closure.use_clause {
+                    for use_var in use_clause.variables.iter() {
+                        vars.insert(use_var.variable.name.to_string());
+                    }
+                }
+                collect_from_statements(
+                    content,
+                    closure.body.statements.iter(),
+                    cursor_offset,
+                    vars,
+                );
+                return true;
+            }
+            false
+        }
+        Expression::ArrowFunction(arrow) => {
+            let span = arrow.span();
+            if cursor_offset >= span.start.offset && cursor_offset <= span.end.offset {
+                // Arrow functions inherit the outer scope (like JS), but
+                // also have their own parameters.  However, for the purpose
+                // of variable *completion*, the arrow function body is
+                // inside the enclosing scope — we do NOT isolate it.
+                // Let the caller handle it.
+            }
+            false
+        }
+        Expression::Assignment(assignment) => {
+            // Check the RHS — closures commonly appear as `$f = function() { ... }`
+            expr_contains_enclosing_closure(content, assignment.rhs, cursor_offset, vars)
+        }
+        Expression::Call(call) => {
+            let arg_list = call.get_argument_list();
+            for arg in arg_list.arguments.iter() {
+                let arg_expr = match arg {
+                    Argument::Positional(a) => a.value,
+                    Argument::Named(a) => a.value,
+                };
+                if expr_contains_enclosing_closure(content, arg_expr, cursor_offset, vars) {
+                    return true;
+                }
+            }
+            // Also check the object/class expression for method calls.
+            match call {
+                Call::Method(mc) => {
+                    if expr_contains_enclosing_closure(content, mc.object, cursor_offset, vars) {
+                        return true;
+                    }
+                }
+                Call::NullSafeMethod(nmc) => {
+                    if expr_contains_enclosing_closure(content, nmc.object, cursor_offset, vars) {
+                        return true;
+                    }
+                }
+                Call::StaticMethod(sc) => {
+                    if expr_contains_enclosing_closure(content, sc.class, cursor_offset, vars) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+            false
+        }
+
+        Expression::Parenthesized(p) => {
+            expr_contains_enclosing_closure(content, p.expression, cursor_offset, vars)
+        }
+        Expression::Array(arr) => {
+            for elem in arr.elements.iter() {
+                match elem {
+                    ArrayElement::KeyValue(kv) => {
+                        if expr_contains_enclosing_closure(content, kv.value, cursor_offset, vars) {
+                            return true;
+                        }
+                    }
+                    ArrayElement::Value(v) => {
+                        if expr_contains_enclosing_closure(content, v.value, cursor_offset, vars) {
+                            return true;
+                        }
+                    }
+                    ArrayElement::Variadic(v) => {
+                        if expr_contains_enclosing_closure(content, v.value, cursor_offset, vars) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        Expression::LegacyArray(arr) => {
+            for elem in arr.elements.iter() {
+                match elem {
+                    ArrayElement::KeyValue(kv) => {
+                        if expr_contains_enclosing_closure(content, kv.value, cursor_offset, vars) {
+                            return true;
+                        }
+                    }
+                    ArrayElement::Value(v) => {
+                        if expr_contains_enclosing_closure(content, v.value, cursor_offset, vars) {
+                            return true;
+                        }
+                    }
+                    ArrayElement::Variadic(v) => {
+                        if expr_contains_enclosing_closure(content, v.value, cursor_offset, vars) {
+                            return true;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            false
+        }
+        Expression::Conditional(cond) => {
+            if expr_contains_enclosing_closure(content, cond.condition, cursor_offset, vars) {
+                return true;
+            }
+            if let Some(then_expr) = cond.then
+                && expr_contains_enclosing_closure(content, then_expr, cursor_offset, vars)
+            {
+                return true;
+            }
+            expr_contains_enclosing_closure(content, cond.r#else, cursor_offset, vars)
+        }
+        Expression::Binary(binary) => {
+            if expr_contains_enclosing_closure(content, binary.lhs, cursor_offset, vars) {
+                return true;
+            }
+            expr_contains_enclosing_closure(content, binary.rhs, cursor_offset, vars)
+        }
+        _ => false,
+    }
 }
 
 /// Scan class-like members to find the method containing the cursor

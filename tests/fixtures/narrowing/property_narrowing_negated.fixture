@@ -1,6 +1,5 @@
 // test: negated instanceof on property narrows type after early return
 // feature: completion
-// ignore: needs property-level narrowing (narrowing currently operates on variables, not member access chains)
 // Adapted from phpactor if-statement/property_negated.test
 // expect: barMethod(
 ---

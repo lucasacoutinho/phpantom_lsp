@@ -1,7 +1,6 @@
 // test: property narrowing with instanceof resolves narrowed type members
 // feature: completion
 // Adapted from phpactor member-access/access-from-union.test
-// ignore: narrowing on $this->prop not supported (property-level narrowing)
 // expect: getLinkedCustomer(
 ---
 <?php

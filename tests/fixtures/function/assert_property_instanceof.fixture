@@ -1,7 +1,6 @@
 // test: assert on property instanceof narrows property type
 // feature: completion
 // Adapted from phpactor function/assert.properties.test
-// ignore: needs property-level narrowing (assert on $this->prop)
 // expect: barMethod(
 ---
 <?php

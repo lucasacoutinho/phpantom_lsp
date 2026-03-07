@@ -36,60 +36,6 @@ the popup.
 
 ## Tier 2 — New Extraction Work
 
-### 4. Attribute constructor signature help
-**Impact: Medium · Effort: Medium**
-
-PHP 8 attributes take constructor arguments:
-
-```php
-#[Route('/users', methods: ['GET'])]
-class UserController {}
-```
-
-Signature help should fire inside the attribute's parentheses and show
-the attribute class's `__construct` parameters — the same as `new Route(`.
-
-#### Current state
-
-`emit_call_site` in `symbol_map/extraction.rs` only handles
-`CallExpression`, `ObjectCreationExpression`, and their variants.
-`Attribute` nodes are not visited for call-site emission.
-
-#### Implementation
-
-1. **Emit `CallSite` for attributes** — in `symbol_map/extraction.rs`,
-   add handling in the attribute extraction path.  When an `Attribute`
-   node has an `argument_list`, emit a `CallSite` with:
-   - `call_expression: format!("new {}", attr_name)` — so the existing
-     constructor resolution path picks it up.
-   - `args_start` / `args_end` from the attribute's argument list parens.
-   - `comma_offsets` from the argument list's separator tokens.
-
-2. **Resolve the attribute name** — the attribute name must be resolved
-   through the file's use-map (same as class references).  The existing
-   `CallSite` resolution in `resolve_callable_target` handles `new ClassName`
-   and resolves it via the class loader, so this should work automatically.
-
-3. **Edge case: nested attributes** (PHP 8.1) — `#[Outer(new Inner(...))]`
-   should show `Inner`'s constructor when the cursor is inside `Inner(`.
-   This should work naturally since `ObjectCreationExpression` inside
-   attribute argument lists is already handled.
-
-#### Tests
-
-- Unit test: `extract_symbol_map` on `#[FooAttr($x, ` → assert a
-  `CallSite` with `call_expression: "new FooAttr"` and correct
-  `args_start` / `comma_offsets`.
-- Integration test: define an attribute class with `__construct(string $path, array $methods)`,
-  use it as `#[FooAttr(`, request signature help → assert the constructor
-  parameters appear.
-- Integration test: cursor on second parameter `#[FooAttr('/path', ` →
-  assert `active_parameter` is 1.
-- Integration test: nested `#[Outer(new Inner(` → assert Inner's
-  constructor is shown.
-
----
-
 ### 5. Closure / arrow function parameter signature help
 **Impact: Medium · Effort: Medium**
 
@@ -219,7 +165,6 @@ the parameter list.
 
 | # | Item | Impact | Effort | Data Ready | Target |
 |---|---|---|---|---|---|
-| 4 | Attribute constructor sig help | Medium | Medium | ❌ | Sprint 2 |
 | 5 | Closure/arrow function sig help | Medium | Medium | ❌ | Sprint 2 |
 | 7 | Multiple overloaded signatures | Low | Medium-High | ❌ | Backlog |
 | 8 | Named argument active parameter | Low | Medium | ❌ | Backlog |
