@@ -560,3 +560,39 @@ text sync is lower priority because full-file sync is rarely the
 bottleneck in practice. Partial result streaming has a more immediate
 user-visible impact for go-to-implementation, find references, and
 workspace symbols on large codebases.
+
+---
+
+## 18. Work-done progress for GTI and Find References
+**Impact: Medium · Effort: Low**
+
+Go-to-Implementation takes ~3 seconds on large codebases (first
+invocation) and Find References takes ~2 seconds. On older hardware
+these numbers can be significantly higher. With no feedback, the user
+cannot tell whether the request is working or frozen.
+
+Add `workDoneProgress` reporting to both handlers so the editor shows
+a progress indicator (e.g. "Scanning: 1,234 / 5,678 files") while
+the scan runs.
+
+**Implementation:**
+
+1. In `goto_implementation` and `references`, check whether the
+   client provided a `workDoneToken` in the request params.
+2. If yes, send `WorkDoneProgressBegin` before starting the scan.
+3. During file processing, send `WorkDoneProgressReport` with a
+   percentage and message (file count or current phase). Throttle
+   to at most one report per 100 ms to avoid notification spam.
+4. Send `WorkDoneProgressEnd` when the scan completes.
+5. If no token was provided, behave exactly as today.
+
+The total file count is known up front (classmap size for GTI,
+workspace file list for Find References), so percentage reporting is
+straightforward.
+
+**Relationship with partial result streaming (§6):** Work-done
+progress tells the user "I'm working on it." Partial result streaming
+(§6) additionally sends results incrementally as they are found. This
+item is much simpler and provides immediate value without the
+complexity of streaming partial results. §6 can build on top of it
+later.

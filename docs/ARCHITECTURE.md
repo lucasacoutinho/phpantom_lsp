@@ -23,6 +23,18 @@ Both features follow the same principle for vendor code: the Composer classmap i
 
 The two walkers differ in scope because GTI only needs class declarations (which live in PSR-4 roots), while Find References needs any usage of a symbol, which could be in a standalone script, config file, or `index.php` at the project root.
 
+## Design Philosophy
+
+PHPantom is built in layers. Each layer is independently useful and independently testable.
+
+- **Layer 0: Stubs.** Embedded PHP standard library types. Available immediately, no project context needed.
+- **Layer 1: Single file.** Parse the open file, extract classes/functions/symbols. Completion, hover, and go-to-definition work within the file with no cross-file resolution at all.
+- **Layer 2: On-demand resolution.** When a symbol references a class in another file, resolve it through the classmap or PSR-4 and parse that file. Only the files actually needed are touched.
+- **Layer 3: Classmap.** A name-to-path index covering the whole project. Enables class name completion and O(1) cross-file lookup. Built from Composer's output or self-generated via a fast byte-level scan.
+- **Layer 4: Full index (opt-in).** Background-parse every file in the classmap. Enables workspace symbols, fast find-references, and rich completion item detail.
+
+Each layer builds on the one below it. A bug in classmap generation doesn't break single-file completion. A slow full index doesn't block on-demand resolution. New features can be developed and tested against the lower layers without waiting for a full project scan. This is also why PHPantom starts fast: Layer 0-2 are ready in milliseconds, Layer 3 takes seconds, and Layer 4 (when enabled) fills in over the following minute.
+
 ## Module Layout
 
 ```
