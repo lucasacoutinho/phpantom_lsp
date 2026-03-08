@@ -24,16 +24,10 @@ cargo build --release
 
 ## Project Requirements
 
-> [!IMPORTANT]
-> Run `composer install -o` (or `composer dump-autoload -o`) **in your PHP project** to generate the optimized autoload files PHPantom needs for cross-file class resolution.
+PHPantom works with any PHP project. It reads `composer.json` when present to discover autoload directories and vendor packages, and falls back to scanning the workspace when not present.
 
-If your project doesn't use Composer, you can create a minimal `composer.json`:
-
-```json
-{ "autoload": { "classmap": ["src/"] } }
-```
-
-Then run `composer dump-autoload -o`.
+> [!TIP]
+> Running `composer dump-autoload -o` is optional but gives PHPantom a pre-built classmap, making startup almost instant.
 
 ## Configuration
 

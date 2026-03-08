@@ -29,8 +29,8 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | Find references | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Diagnostics | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Rename / refactoring | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Time to ready | 3 s | 1 min 25 s | 3 min 17 s | 15 min 39 s | 19 min 38 s |
-| RAM usage | 40 MB | 520 MB | 3.9 GB | 498 MB | 2.0 GB |
+| Time to ready | < 1 s | 1 min 25 s | 3 min 17 s | 15 min 39 s | 19 min 38 s |
+| RAM usage | 21 MB | 520 MB | 3.9 GB | 498 MB | 2.0 GB |
 | Disk cache | 0 | 45 MB | 0 | 4.1 GB | 551 MB |
 
 <sub>Performance measured on a production codebase: 21K PHP files, 1.5M lines of code (vendor + application). 🚧 = partial support. 🧩 = requires plugin.</sub>
@@ -50,23 +50,14 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 
 ## Project Awareness
 
-PHPantom understands Composer projects out of the box:
+PHPantom understands Composer projects out of the box, but works without setup on non-Composer projects too:
 
-- **Autoloader-accurate results.** Completions and go-to-definition only surface classes that Composer's autoloader can actually load, avoiding false positives from internal, inaccessible, or duplicate vendor classes. The classmap is the source of truth, so you see exactly what your application can use.
+- **Autoloader-accurate results.** Completions and go-to-definition only surface classes that Composer's autoloader can actually load, avoiding false positives from internal, inaccessible, or duplicate vendor classes. You see exactly what your application can use.
 - **PSR-4 autoloading.** Resolves classes across files on demand.
 - **Classmap and file autoloading.** `autoload_classmap.php` and `autoload_files.php`.
 - **Embedded PHP stubs** from [phpstorm-stubs](https://github.com/JetBrains/phpstorm-stubs) bundled in the binary, no runtime downloads needed.
 - **`require_once` discovery.** Functions from required files are available for completion.
 - **Go-to-implementation.** Jump from an interface or abstract class to all concrete implementations. Scans open files, classmap, PSR-4 directories, and embedded stubs.
-
-> [!IMPORTANT]
-> Run `composer install -o` (or `composer dump-autoload -o`) in your project to generate the optimized autoload files PHPantom needs for cross-file class resolution.
->
-> If your project doesn't use Composer, you can create a minimal `composer.json`:
-> ```json
-> { "autoload": { "classmap": ["src/"] } }
-> ```
-> Then run `composer dump-autoload -o`.
 
 ## Documentation
 
