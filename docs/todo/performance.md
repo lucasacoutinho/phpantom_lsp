@@ -116,49 +116,26 @@ dependency.
 ---
 
 ## 4. `HashSet` dedup in inheritance merging
-**Impact: Medium · Effort: Low**
+**Impact: Medium · Effort: Low (fixed)**
 
-Throughout `inheritance.rs` and `virtual_members/`, member
-deduplication uses linear scans:
+**Status:** Fixed. All member deduplication during inheritance merging
+now uses `HashSet<String>` lookups instead of linear scans.
 
-```rust
-if merged.methods.iter().any(|m| m.name == method.name) {
-    continue;
-}
-```
+A `MergeDedup` struct (with `methods`, `properties`, and `constants`
+`HashSet`s) is built from the class's own members at the start of
+`resolve_class_with_inheritance` and threaded through
+`merge_traits_into` (including recursive calls) so that every
+addition is checked in O(1).
 
-This pattern appears 19+ times across the codebase. For a class with
-deep inheritance (Eloquent models with traits, parent chain,
-interfaces, and mixins can easily accumulate 100+ methods), each
-method merge checks against all previously-merged methods.
-
-With M methods across D inheritance levels, each dedup check is O(M),
-giving O(M x D) per method and O(M² x D) total. For an Eloquent
-model with ~150 inherited methods across ~8 inheritance levels, this
-is ~180,000 string comparisons per resolution.
-
-### Fix
-
-At the start of `resolve_class_with_inheritance` and
-`merge_traits_into`, build a `HashSet<String>` (or
-`HashSet<&str>` borrowing from `merged.methods`) containing the
-names of already-present members. Check the set instead of
-scanning the vec. Update the set when a new member is pushed.
-
-Do the same for properties (`merged.properties`) and constants
-(`merged.constants`).
-
-### Scope
-
-The fix touches `resolve_class_with_inheritance`,
-`merge_traits_into`, `merge_interface_members_into`, and
-`collect_mixin_members` in the virtual members provider. All use
-the same pattern and can share the approach.
+The same pattern is applied in `merge_virtual_members`,
+`merge_interface_members_into`, `PHPDocProvider::provide` (Phases 1,
+1b, 1c, and mixin collection), `collect_mixin_members` (via a
+`MixinDedup` struct passed through recursion), and
+`LaravelModelProvider::provide`.
 
 The `merged.methods.iter().any(...)` calls in
-`definition/implementation.rs` (member existence checks, not
-merging loops) do not need this fix because they run once per
-lookup, not per-member-per-level.
+`definition/implementation.rs` were intentionally left as linear scans
+because they run once per lookup, not per-member-per-level.
 
 ---
 

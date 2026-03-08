@@ -51,7 +51,7 @@
 pub mod laravel;
 pub mod phpdoc;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -203,13 +203,15 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
             }
         }
     }
+    let mut prop_names: HashSet<String> = class.properties.iter().map(|p| p.name.clone()).collect();
     for property in virtual_members.properties {
-        if !class.properties.iter().any(|p| p.name == property.name) {
+        if prop_names.insert(property.name.clone()) {
             class.properties.push(property);
         }
     }
+    let mut const_names: HashSet<String> = class.constants.iter().map(|c| c.name.clone()).collect();
     for constant in virtual_members.constants {
-        if !class.constants.iter().any(|c| c.name == constant.name) {
+        if const_names.insert(constant.name.clone()) {
             class.constants.push(constant);
         }
     }
@@ -614,13 +616,17 @@ fn merge_interface_members_into(
             merged.methods.push(iface_method);
         }
     }
+    let existing_props: HashSet<String> =
+        merged.properties.iter().map(|p| p.name.clone()).collect();
     for property in resolved_iface.properties {
-        if !merged.properties.iter().any(|p| p.name == property.name) {
+        if !existing_props.contains(&property.name) {
             merged.properties.push(property);
         }
     }
+    let existing_consts: HashSet<String> =
+        merged.constants.iter().map(|c| c.name.clone()).collect();
     for constant in resolved_iface.constants {
-        if !merged.constants.iter().any(|c| c.name == constant.name) {
+        if !existing_consts.contains(&constant.name) {
             merged.constants.push(constant);
         }
     }

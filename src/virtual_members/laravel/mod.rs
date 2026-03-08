@@ -273,18 +273,20 @@ impl VirtualMemberProvider for LaravelModelProvider {
     ) -> VirtualMembers {
         let mut properties = Vec::new();
         let mut methods = Vec::new();
+        let mut seen_props: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // ── Cast properties ─────────────────────────────────────────
         if let Some(laravel) = class.laravel() {
             for (column, cast_type) in &laravel.casts_definitions {
                 let php_type = cast_type_to_php_type(cast_type, class_loader);
+                seen_props.insert(column.clone());
                 properties.push(PropertyInfo::virtual_property(column, Some(&php_type)));
             }
 
             // ── Attribute default properties (fallback) ─────────────
             // Only add properties for columns not already covered by $casts.
             for (column, php_type) in &laravel.attributes_definitions {
-                if properties.iter().any(|p| p.name == *column) {
+                if !seen_props.insert(column.clone()) {
                     continue;
                 }
                 properties.push(PropertyInfo::virtual_property(column, Some(php_type)));
@@ -294,7 +296,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
             // $fillable, $guarded, and $hidden provide column names without
             // type information.  Only add for columns not already covered.
             for column in &laravel.column_names {
-                if properties.iter().any(|p| p.name == *column) {
+                if !seen_props.insert(column.clone()) {
                     continue;
                 }
                 properties.push(PropertyInfo::virtual_property(column, Some("mixed")));
@@ -393,7 +395,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
                 continue;
             }
             let count_name = count_property_name(&method.name);
-            if properties.iter().any(|p| p.name == count_name) {
+            if !seen_props.insert(count_name.clone()) {
                 continue;
             }
             properties.push(PropertyInfo::virtual_property(&count_name, Some("int")));

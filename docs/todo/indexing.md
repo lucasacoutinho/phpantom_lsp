@@ -549,10 +549,9 @@ scanning, and complete completion item detail.
   every completion/hover request to wait for the current background
   parse to finish its map insertion. `RwLock` lets reads proceed
   concurrently with other reads; only the brief write window blocks.
-- **§4 `HashSet` dedup.** Full indexing means every class resolution
-  pulls from a fully populated inheritance tree. Eloquent models with
-  150+ inherited methods across 8+ levels hit the O(N²) dedup path
-  on every resolution. The `HashSet` fix brings this to O(N).
+- **§4 `HashSet` dedup.** ✅ Done. All member deduplication during
+  inheritance merging now uses `HashSet` lookups, bringing the
+  per-resolution cost from O(N²) to O(N).
 
 ### Trigger
 

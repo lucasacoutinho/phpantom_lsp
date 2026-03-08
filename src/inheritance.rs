@@ -16,7 +16,44 @@
 /// parent has `@template T1` / `@template T2`, the inherited methods and
 /// properties have their template parameter references replaced with the
 /// concrete types.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// Bundles the trait-level configuration passed through
+/// [`merge_traits_into`] so the function stays within clippy's
+/// argument-count limit.
+pub(crate) struct TraitContext<'a> {
+    /// Generic type arguments for `@use Trait<Type>` declarations.
+    pub use_generics: &'a [(String, Vec<String>)],
+    /// `insteadof` precedence declarations.
+    pub precedences: &'a [TraitPrecedence],
+    /// `as` alias declarations.
+    pub aliases: &'a [TraitAlias],
+}
+
+/// Tracks member names already present during inheritance merging.
+///
+/// Passed through `resolve_class_with_inheritance` and `merge_traits_into`
+/// (including recursive calls) so that every addition is checked in O(1)
+/// instead of scanning the full member vectors.
+pub(crate) struct MergeDedup {
+    /// Method names already merged.
+    pub methods: HashSet<String>,
+    /// Property names already merged.
+    pub properties: HashSet<String>,
+    /// Constant names already merged.
+    pub constants: HashSet<String>,
+}
+
+impl MergeDedup {
+    /// Build from the members already present on a `ClassInfo`.
+    fn from_class(class: &ClassInfo) -> Self {
+        Self {
+            methods: class.methods.iter().map(|m| m.name.clone()).collect(),
+            properties: class.properties.iter().map(|p| p.name.clone()).collect(),
+            constants: class.constants.iter().map(|c| c.name.clone()).collect(),
+        }
+    }
+}
 
 use crate::docblock::types::{find_matching_close, split_generic_args};
 use crate::types::{
@@ -50,6 +87,11 @@ pub(crate) fn resolve_class_with_inheritance(
 ) -> ClassInfo {
     let mut merged = class.clone();
 
+    // Build dedup sets from the class's own members.  These are passed
+    // through trait merging and the parent chain walk so that every
+    // addition is tracked in O(1) across all recursion levels.
+    let mut dedup = MergeDedup::from_class(&merged);
+
     // 1. Merge traits used by this class.
     //    PHP precedence: class methods > trait methods > inherited methods.
     //    Since `merged` already contains the class's own members, we only
@@ -57,11 +99,14 @@ pub(crate) fn resolve_class_with_inheritance(
     merge_traits_into(
         &mut merged,
         &class.used_traits,
-        &class.use_generics,
-        &class.trait_precedences,
-        &class.trait_aliases,
+        &TraitContext {
+            use_generics: &class.use_generics,
+            precedences: &class.trait_precedences,
+            aliases: &class.trait_aliases,
+        },
         class_loader,
         0,
+        &mut dedup,
     );
 
     // 2. Walk up the `extends` chain and merge parent members.
@@ -128,11 +173,14 @@ pub(crate) fn resolve_class_with_inheritance(
         merge_traits_into(
             &mut merged,
             &parent.used_traits,
-            &parent.use_generics,
-            &parent.trait_precedences,
-            &parent.trait_aliases,
+            &TraitContext {
+                use_generics: &parent.use_generics,
+                precedences: &parent.trait_precedences,
+                aliases: &parent.trait_aliases,
+            },
             class_loader,
             0,
+            &mut dedup,
         );
 
         // Merge parent methods — skip private, skip if child already has one with same name
@@ -140,7 +188,7 @@ pub(crate) fn resolve_class_with_inheritance(
             if method.visibility == Visibility::Private {
                 continue;
             }
-            if merged.methods.iter().any(|m| m.name == method.name) {
+            if !dedup.methods.insert(method.name.clone()) {
                 continue;
             }
             let mut method = method.clone();
@@ -155,7 +203,7 @@ pub(crate) fn resolve_class_with_inheritance(
             if property.visibility == Visibility::Private {
                 continue;
             }
-            if merged.properties.iter().any(|p| p.name == property.name) {
+            if !dedup.properties.insert(property.name.clone()) {
                 continue;
             }
             let mut property = property.clone();
@@ -170,7 +218,7 @@ pub(crate) fn resolve_class_with_inheritance(
             if constant.visibility == Visibility::Private {
                 continue;
             }
-            if merged.constants.iter().any(|c| c.name == constant.name) {
+            if !dedup.constants.insert(constant.name.clone()) {
                 continue;
             }
             merged.constants.push(constant.clone());
@@ -255,11 +303,10 @@ pub(crate) fn resolve_property_type_hint(
 fn merge_traits_into(
     merged: &mut ClassInfo,
     trait_names: &[String],
-    use_generics: &[(String, Vec<String>)],
-    trait_precedences: &[TraitPrecedence],
-    trait_aliases: &[TraitAlias],
+    ctx: &TraitContext<'_>,
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     depth: u32,
+    dedup: &mut MergeDedup,
 ) {
     if depth > MAX_TRAIT_DEPTH {
         return;
@@ -275,7 +322,8 @@ fn merge_traits_into(
         // Build a substitution map for this trait if the using class
         // declared `@use TraitName<Type1, Type2>` and the trait has
         // `@template` parameters.
-        let mut trait_subs = build_trait_substitution_map(trait_name, &trait_info, use_generics);
+        let mut trait_subs =
+            build_trait_substitution_map(trait_name, &trait_info, ctx.use_generics);
 
         // ── Convention-based HasFactory fallback ─────────────────
         // When a model uses `HasFactory` without `@use HasFactory<X>`,
@@ -306,11 +354,14 @@ fn merge_traits_into(
             merge_traits_into(
                 merged,
                 &trait_info.used_traits,
-                &trait_info.use_generics,
-                &trait_info.trait_precedences,
-                &trait_info.trait_aliases,
+                &TraitContext {
+                    use_generics: &trait_info.use_generics,
+                    precedences: &trait_info.trait_precedences,
+                    aliases: &trait_info.trait_aliases,
+                },
                 class_loader,
                 depth + 1,
+                dedup,
             );
         }
 
@@ -337,11 +388,14 @@ fn merge_traits_into(
                 merge_traits_into(
                     merged,
                     &parent.used_traits,
-                    &parent.use_generics,
-                    &parent.trait_precedences,
-                    &parent.trait_aliases,
+                    &TraitContext {
+                        use_generics: &parent.use_generics,
+                        precedences: &parent.trait_precedences,
+                        aliases: &parent.trait_aliases,
+                    },
                     class_loader,
                     parent_depth + 1,
+                    dedup,
                 );
             }
 
@@ -350,7 +404,7 @@ fn merge_traits_into(
                 if method.visibility == Visibility::Private {
                     continue;
                 }
-                if merged.methods.iter().any(|m| m.name == method.name) {
+                if !dedup.methods.insert(method.name.clone()) {
                     continue;
                 }
                 merged.methods.push(method.clone());
@@ -361,7 +415,7 @@ fn merge_traits_into(
                 if property.visibility == Visibility::Private {
                     continue;
                 }
-                if merged.properties.iter().any(|p| p.name == property.name) {
+                if !dedup.properties.insert(property.name.clone()) {
                     continue;
                 }
                 merged.properties.push(property.clone());
@@ -372,7 +426,7 @@ fn merge_traits_into(
                 if constant.visibility == Visibility::Private {
                     continue;
                 }
-                if merged.constants.iter().any(|c| c.name == constant.name) {
+                if !dedup.constants.insert(constant.name.clone()) {
                     continue;
                 }
                 merged.constants.push(constant.clone());
@@ -389,7 +443,7 @@ fn merge_traits_into(
             // `insteadof` declaration.  For example, if the class has
             // `TraitA::method insteadof TraitB`, then when merging
             // TraitB's methods, `method` should be skipped.
-            let excluded = trait_precedences.iter().any(|p| {
+            let excluded = ctx.precedences.iter().any(|p| {
                 p.method_name == method.name
                     && p.insteadof.iter().any(|excluded_trait| {
                         excluded_trait == trait_name
@@ -400,7 +454,7 @@ fn merge_traits_into(
                 continue;
             }
 
-            if merged.methods.iter().any(|m| m.name == method.name) {
+            if !dedup.methods.insert(method.name.clone()) {
                 continue;
             }
             let mut method = method.clone();
@@ -408,7 +462,7 @@ fn merge_traits_into(
             // Apply visibility-only `as` changes (no alias name).
             // For example, `TraitA::method as protected` changes the
             // visibility of `method` without creating an alias.
-            for alias in trait_aliases {
+            for alias in ctx.aliases {
                 if alias.method_name == method.name
                     && alias.alias.is_none()
                     && let Some(vis) = alias.visibility
@@ -432,7 +486,7 @@ fn merge_traits_into(
 
         // Merge trait properties — apply substitution.
         for property in &trait_info.properties {
-            if merged.properties.iter().any(|p| p.name == property.name) {
+            if !dedup.properties.insert(property.name.clone()) {
                 continue;
             }
             let mut property = property.clone();
@@ -444,7 +498,7 @@ fn merge_traits_into(
 
         // Merge trait constants
         for constant in &trait_info.constants {
-            if merged.constants.iter().any(|c| c.name == constant.name) {
+            if !dedup.constants.insert(constant.name.clone()) {
                 continue;
             }
             merged.constants.push(constant.clone());
@@ -453,7 +507,7 @@ fn merge_traits_into(
         // Apply `as` alias declarations that create new method names.
         // For example, `TraitB::method as traitBMethod` creates a copy
         // of `method` accessible as `traitBMethod`.
-        for alias in trait_aliases {
+        for alias in ctx.aliases {
             // Only process aliases that have a new name.
             let alias_name = match &alias.alias {
                 Some(name) => name,
@@ -480,7 +534,7 @@ fn merge_traits_into(
             };
 
             // Skip if an alias with this name already exists.
-            if merged.methods.iter().any(|m| m.name == *alias_name) {
+            if !dedup.methods.insert(alias_name.clone()) {
                 continue;
             }
 

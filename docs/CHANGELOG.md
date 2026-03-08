@@ -29,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Faster class lookups.** Class resolution now uses an O(1) hash-map lookup by fully-qualified name instead of scanning every parsed file. Projects with hundreds of open files see reduced latency on completion, hover, and go-to-definition requests.
+- **Faster inheritance merging.** Member deduplication during inheritance resolution uses hash-set lookups instead of linear scans. Classes with deep inheritance chains (e.g. Eloquent models with 150+ methods across 8+ levels) resolve noticeably faster.
 
 ### Fixed
 

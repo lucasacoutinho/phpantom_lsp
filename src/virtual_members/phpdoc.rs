@@ -16,11 +16,27 @@
 //! are driven by PHPDoc tags, they are now unified into a single provider
 //! with internal precedence rules.
 
+use std::collections::HashSet;
+
 use crate::docblock;
 use crate::types::{
     ClassInfo, ConstantInfo, MAX_INHERITANCE_DEPTH, MAX_MIXIN_DEPTH, MethodInfo, PropertyInfo,
     Visibility,
 };
+
+/// Tracks member names already seen during mixin collection.
+///
+/// Passed through [`collect_mixin_members`] (including recursive calls)
+/// so that every addition is checked in O(1) instead of scanning the
+/// accumulated vectors and base class members.
+struct MixinDedup {
+    /// Method names from the base class + accumulated virtual methods.
+    methods: HashSet<String>,
+    /// Property names from the base class + accumulated virtual properties.
+    properties: HashSet<String>,
+    /// Constant names from the base class + accumulated virtual constants.
+    constants: HashSet<String>,
+}
 
 use super::{VirtualMemberProvider, VirtualMembers};
 
@@ -124,16 +140,28 @@ impl VirtualMemberProvider for PHPDocProvider {
         let mut properties = Vec::new();
         let mut constants = Vec::new();
 
+        // Dedup sets for O(1) membership checks.  Seeded from the
+        // base-resolved class members (real + inherited) and updated
+        // as virtual members are collected.
+        let mut seen_methods: HashSet<String> =
+            class.methods.iter().map(|m| m.name.clone()).collect();
+        let mut seen_props: HashSet<String> =
+            class.properties.iter().map(|p| p.name.clone()).collect();
+        let seen_consts: HashSet<String> = class.constants.iter().map(|c| c.name.clone()).collect();
+
         // ── Phase 1: @method and @property tags (higher precedence) ─────
 
         if let Some(doc_text) = class.class_docblock.as_deref()
             && !doc_text.is_empty()
         {
-            methods = docblock::extract_method_tags(doc_text);
+            for m in docblock::extract_method_tags(doc_text) {
+                seen_methods.insert(m.name.clone());
+                methods.push(m);
+            }
 
-            properties = docblock::extract_property_tags(doc_text)
-                .into_iter()
-                .map(|(name, type_str)| PropertyInfo {
+            for (name, type_str) in docblock::extract_property_tags(doc_text) {
+                seen_props.insert(name.clone());
+                properties.push(PropertyInfo {
                     name,
                     name_offset: 0,
                     type_hint: if type_str.is_empty() {
@@ -147,8 +175,8 @@ impl VirtualMemberProvider for PHPDocProvider {
                     visibility: Visibility::Public,
                     deprecation_message: None,
                     is_virtual: true,
-                })
-                .collect();
+                });
+            }
         }
 
         // ── Phase 1b: @method and @property tags from used traits ───────
@@ -169,20 +197,13 @@ impl VirtualMemberProvider for PHPDocProvider {
                 && !doc_text.is_empty()
             {
                 for m in docblock::extract_method_tags(doc_text) {
-                    if !methods.iter().any(|existing| existing.name == m.name)
-                        && !class.methods.iter().any(|existing| existing.name == m.name)
-                    {
+                    if seen_methods.insert(m.name.clone()) {
                         methods.push(m);
                     }
                 }
 
                 for (name, type_str) in docblock::extract_property_tags(doc_text) {
-                    if !properties.iter().any(|existing| existing.name == name)
-                        && !class
-                            .properties
-                            .iter()
-                            .any(|existing| existing.name == name)
-                    {
+                    if seen_props.insert(name.clone()) {
                         properties.push(PropertyInfo {
                             name,
                             name_offset: 0,
@@ -229,20 +250,13 @@ impl VirtualMemberProvider for PHPDocProvider {
                     && !doc_text.is_empty()
                 {
                     for m in docblock::extract_method_tags(doc_text) {
-                        if !methods.iter().any(|existing| existing.name == m.name)
-                            && !class.methods.iter().any(|existing| existing.name == m.name)
-                        {
+                        if seen_methods.insert(m.name.clone()) {
                             methods.push(m);
                         }
                     }
 
                     for (name, type_str) in docblock::extract_property_tags(doc_text) {
-                        if !properties.iter().any(|existing| existing.name == name)
-                            && !class
-                                .properties
-                                .iter()
-                                .any(|existing| existing.name == name)
-                        {
+                        if seen_props.insert(name.clone()) {
                             properties.push(PropertyInfo {
                                 name,
                                 name_offset: 0,
@@ -268,15 +282,21 @@ impl VirtualMemberProvider for PHPDocProvider {
 
         // ── Phase 2: @mixin members (lower precedence) ─────────────────
 
+        let mut mixin_dedup = MixinDedup {
+            methods: seen_methods,
+            properties: seen_props,
+            constants: seen_consts,
+        };
+
         // Collect from the class's own mixins.
         collect_mixin_members(
-            class,
             &class.mixins,
             class_loader,
             &mut methods,
             &mut properties,
             &mut constants,
             0,
+            &mut mixin_dedup,
         );
 
         // Collect from ancestor mixins.
@@ -294,13 +314,13 @@ impl VirtualMemberProvider for PHPDocProvider {
             };
             if !parent.mixins.is_empty() {
                 collect_mixin_members(
-                    class,
                     &parent.mixins,
                     class_loader,
                     &mut methods,
                     &mut properties,
                     &mut constants,
                     0,
+                    &mut mixin_dedup,
                 );
             }
             current = parent;
@@ -327,13 +347,13 @@ impl VirtualMemberProvider for PHPDocProvider {
 /// Recurses into mixins declared on the mixin classes themselves, up to
 /// [`MAX_MIXIN_DEPTH`] levels.
 fn collect_mixin_members(
-    class: &ClassInfo,
     mixin_names: &[String],
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
     methods: &mut Vec<MethodInfo>,
     properties: &mut Vec<PropertyInfo>,
     constants: &mut Vec<ConstantInfo>,
     depth: u32,
+    dedup: &mut MixinDedup,
 ) {
     if depth > MAX_MIXIN_DEPTH {
         return;
@@ -360,10 +380,7 @@ fn collect_mixin_members(
             }
             // Skip if the base-resolved class already has this method,
             // or if a previous @method tag or mixin already contributed it.
-            if class.methods.iter().any(|m| m.name == method.name) {
-                continue;
-            }
-            if methods.iter().any(|m| m.name == method.name) {
+            if !dedup.methods.insert(method.name.clone()) {
                 continue;
             }
             let method = method.clone();
@@ -383,10 +400,7 @@ fn collect_mixin_members(
             if property.visibility != Visibility::Public {
                 continue;
             }
-            if class.properties.iter().any(|p| p.name == property.name) {
-                continue;
-            }
-            if properties.iter().any(|p| p.name == property.name) {
+            if !dedup.properties.insert(property.name.clone()) {
                 continue;
             }
             properties.push(property.clone());
@@ -396,10 +410,7 @@ fn collect_mixin_members(
             if constant.visibility != Visibility::Public {
                 continue;
             }
-            if class.constants.iter().any(|c| c.name == constant.name) {
-                continue;
-            }
-            if constants.iter().any(|c| c.name == constant.name) {
+            if !dedup.constants.insert(constant.name.clone()) {
                 continue;
             }
             constants.push(constant.clone());
@@ -408,13 +419,13 @@ fn collect_mixin_members(
         // Recurse into mixins declared by the mixin class itself.
         if !mixin_class.mixins.is_empty() {
             collect_mixin_members(
-                class,
                 &mixin_class.mixins,
                 class_loader,
                 methods,
                 properties,
                 constants,
                 depth + 1,
+                dedup,
             );
         }
     }
