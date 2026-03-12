@@ -663,6 +663,35 @@ fn extract_from_class_member<'a>(member: &'a ClassLikeMember<'a>, ctx: &mut Extr
                     &raw,
                 ));
             }
+
+            // Extract symbols from trait use adaptations (`{ ... }` block)
+            // so that go-to-definition works on method names and trait
+            // references inside `as` alias and `insteadof` declarations.
+            if let TraitUseSpecification::Concrete(spec) = &trait_use.specification {
+                // Collect trait names from the `use` list so we can use the
+                // first one as a fallback subject for unqualified method
+                // references (e.g. `method as alias` without `Trait::method`).
+                let first_trait_name: Option<String> = trait_use
+                    .trait_names
+                    .iter()
+                    .next()
+                    .map(|id| id.value().to_string());
+
+                for adaptation in spec.adaptations.iter() {
+                    match adaptation {
+                        TraitUseAdaptation::Alias(alias_adapt) => {
+                            extract_from_trait_alias_adaptation(
+                                alias_adapt,
+                                first_trait_name.as_deref(),
+                                ctx,
+                            );
+                        }
+                        TraitUseAdaptation::Precedence(prec) => {
+                            extract_from_trait_precedence_adaptation(prec, ctx);
+                        }
+                    }
+                }
+            }
         }
         ClassLikeMember::EnumCase(enum_case) => {
             // Enum case values (backed enums).
@@ -670,6 +699,123 @@ fn extract_from_class_member<'a>(member: &'a ClassLikeMember<'a>, ctx: &mut Extr
                 extract_from_expression(backed.value, ctx, 0);
             }
         }
+    }
+}
+
+/// Extract symbol spans from a trait `as` alias adaptation.
+///
+/// For `TraitA::method as alias`:
+///   - `TraitA` gets a `ClassReference` span
+///   - `method` gets a `MemberAccess` span (subject = `TraitA`, static call)
+///   - `alias` gets a `MemberAccess` span (subject = `self`) so that
+///     `resolve_trait_alias` maps it back to the original method
+///
+/// For unqualified `method as alias`:
+///   - `method` gets a `MemberAccess` span using the first trait in the
+///     `use` list as the subject (or `self` as fallback)
+///   - `alias` gets a `MemberAccess` span (subject = `self`)
+fn extract_from_trait_alias_adaptation<'a>(
+    alias_adapt: &'a TraitUseAliasAdaptation<'a>,
+    first_trait_name: Option<&str>,
+    ctx: &mut ExtractionCtx<'a>,
+) {
+    match &alias_adapt.method_reference {
+        TraitUseMethodReference::Absolute(abs) => {
+            // Emit ClassReference for the trait name.
+            let trait_raw = abs.trait_name.value().to_string();
+            ctx.spans.push(class_ref_span(
+                abs.trait_name.span().start.offset,
+                abs.trait_name.span().end.offset,
+                &trait_raw,
+            ));
+            // Emit MemberAccess for the original method name.
+            let method_name = abs.method_name.value.to_string();
+            ctx.spans.push(SymbolSpan {
+                start: abs.method_name.span.start.offset,
+                end: abs.method_name.span.end.offset,
+                kind: SymbolKind::MemberAccess {
+                    subject_text: trait_raw,
+                    member_name: method_name,
+                    is_static: true,
+                    is_method_call: true,
+                },
+            });
+        }
+        TraitUseMethodReference::Identifier(ident) => {
+            // Unqualified reference: use the first trait name from the
+            // `use` list, or fall back to `self`.
+            let subject = first_trait_name.unwrap_or("self").to_string();
+            let method_name = ident.value.to_string();
+            ctx.spans.push(SymbolSpan {
+                start: ident.span.start.offset,
+                end: ident.span.end.offset,
+                kind: SymbolKind::MemberAccess {
+                    subject_text: subject,
+                    member_name: method_name,
+                    is_static: true,
+                    is_method_call: true,
+                },
+            });
+        }
+    }
+
+    // Emit MemberAccess for the alias name (the `as` target).
+    // Using `self` as the subject so that `resolve_trait_alias` on
+    // the owning class maps the alias back to the original method.
+    if let Some(ref alias_ident) = alias_adapt.alias {
+        let alias_name = alias_ident.value.to_string();
+        ctx.spans.push(SymbolSpan {
+            start: alias_ident.span.start.offset,
+            end: alias_ident.span.end.offset,
+            kind: SymbolKind::MemberAccess {
+                subject_text: "self".to_string(),
+                member_name: alias_name,
+                is_static: true,
+                is_method_call: true,
+            },
+        });
+    }
+}
+
+/// Extract symbol spans from a trait `insteadof` precedence adaptation.
+///
+/// For `TraitA::method insteadof TraitB, TraitC`:
+///   - `TraitA` gets a `ClassReference` span
+///   - `method` gets a `MemberAccess` span (subject = `TraitA`, static call)
+///   - `TraitB` and `TraitC` each get a `ClassReference` span
+fn extract_from_trait_precedence_adaptation<'a>(
+    prec: &'a TraitUsePrecedenceAdaptation<'a>,
+    ctx: &mut ExtractionCtx<'a>,
+) {
+    // Emit ClassReference for the trait name in the method reference.
+    let trait_raw = prec.method_reference.trait_name.value().to_string();
+    ctx.spans.push(class_ref_span(
+        prec.method_reference.trait_name.span().start.offset,
+        prec.method_reference.trait_name.span().end.offset,
+        &trait_raw,
+    ));
+
+    // Emit MemberAccess for the method name.
+    let method_name = prec.method_reference.method_name.value.to_string();
+    ctx.spans.push(SymbolSpan {
+        start: prec.method_reference.method_name.span.start.offset,
+        end: prec.method_reference.method_name.span.end.offset,
+        kind: SymbolKind::MemberAccess {
+            subject_text: trait_raw,
+            member_name: method_name,
+            is_static: true,
+            is_method_call: true,
+        },
+    });
+
+    // Emit ClassReference for each `insteadof` trait name.
+    for ident in prec.trait_names.iter() {
+        let raw = ident.value().to_string();
+        ctx.spans.push(class_ref_span(
+            ident.span().start.offset,
+            ident.span().end.offset,
+            &raw,
+        ));
     }
 }
 

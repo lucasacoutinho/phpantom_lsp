@@ -3129,3 +3129,501 @@ async fn test_goto_definition_method_on_generator_yield_cross_file() {
         other => panic!("Expected Scalar location, got: {:?}", other),
     }
 }
+
+// ─── Trait Use Alias / Insteadof Go-To-Definition ───────────────────────────
+
+/// Clicking on the alias name in `method as alias` should jump to the
+/// original method definition in the trait.
+#[tokio::test]
+async fn test_goto_definition_trait_alias_name_jumps_to_original_method() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_alias.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait Notifiable {\n",
+        "    public function routeNotificationFor(): mixed { return null; }\n",
+        "}\n",
+        "class User {\n",
+        "    use Notifiable {\n",
+        "        routeNotificationFor as _routeNotificationFor;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on `_routeNotificationFor` (the alias name) on line 6
+    let alias_col = text
+        .lines()
+        .nth(6)
+        .unwrap()
+        .find("_routeNotificationFor")
+        .unwrap();
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 6,
+                character: alias_col as u32 + 1,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve trait alias _routeNotificationFor to the original method"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            // routeNotificationFor is declared on line 2 of the trait
+            assert_eq!(
+                location.range.start.line, 2,
+                "Should point to routeNotificationFor in Notifiable trait (line 2)"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+/// Clicking on the original method name in `method as alias` should jump to
+/// the method definition in the trait.
+#[tokio::test]
+async fn test_goto_definition_trait_alias_original_method_reference() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_alias_orig.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait Notifiable {\n",
+        "    public function routeNotificationFor(): mixed { return null; }\n",
+        "}\n",
+        "class User {\n",
+        "    use Notifiable {\n",
+        "        routeNotificationFor as _routeNotificationFor;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on `routeNotificationFor` (the original method name) on line 6
+    let method_col = text
+        .lines()
+        .nth(6)
+        .unwrap()
+        .find("routeNotificationFor")
+        .unwrap();
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 6,
+                character: method_col as u32 + 1,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve original method name routeNotificationFor in alias declaration"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(
+                location.range.start.line, 2,
+                "Should point to routeNotificationFor in Notifiable trait (line 2)"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+/// Clicking on the qualified method name in `Trait::method as alias` should
+/// jump to the method definition in the specified trait.
+#[tokio::test]
+async fn test_goto_definition_trait_alias_qualified_method_reference() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_alias_qual.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait TraitA {\n",
+        "    public function shared(): void {}\n",
+        "}\n",
+        "trait TraitB {\n",
+        "    public function shared(): void {}\n",
+        "}\n",
+        "class Widget {\n",
+        "    use TraitA, TraitB {\n",
+        "        TraitA::shared insteadof TraitB;\n",
+        "        TraitB::shared as sharedFromB;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on `shared` in `TraitB::shared as sharedFromB` on line 10
+    let line10 = text.lines().nth(10).unwrap();
+    let shared_col = line10.find("shared").unwrap();
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 10,
+                character: shared_col as u32 + 1,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve TraitB::shared in alias declaration"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            // TraitB::shared is declared on line 5
+            assert_eq!(
+                location.range.start.line, 5,
+                "Should point to shared() in TraitB (line 5)"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+/// Clicking on a trait name in `Trait::method insteadof OtherTrait` should
+/// navigate to the trait definition.
+#[tokio::test]
+async fn test_goto_definition_trait_name_in_insteadof() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_insteadof.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait TraitA {\n",
+        "    public function shared(): void {}\n",
+        "}\n",
+        "trait TraitB {\n",
+        "    public function shared(): void {}\n",
+        "}\n",
+        "class Widget {\n",
+        "    use TraitA, TraitB {\n",
+        "        TraitA::shared insteadof TraitB;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on `TraitB` in `insteadof TraitB` on line 9
+    let line9 = text.lines().nth(9).unwrap();
+    let insteadof_trait_col = line9.rfind("TraitB").unwrap();
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 9,
+                character: insteadof_trait_col as u32 + 1,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve TraitB in insteadof to the trait definition"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            // TraitB is declared on line 4
+            assert_eq!(
+                location.range.start.line, 4,
+                "Should point to TraitB declaration (line 4)"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+/// Clicking on a method name in `Trait::method insteadof OtherTrait` should
+/// jump to the method definition in the specified trait.
+#[tokio::test]
+async fn test_goto_definition_method_in_insteadof() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_insteadof_method.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait TraitA {\n",
+        "    public function shared(): void {}\n",
+        "}\n",
+        "trait TraitB {\n",
+        "    public function shared(): void {}\n",
+        "}\n",
+        "class Widget {\n",
+        "    use TraitA, TraitB {\n",
+        "        TraitA::shared insteadof TraitB;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on `shared` in `TraitA::shared insteadof` on line 9
+    let line9 = text.lines().nth(9).unwrap();
+    let shared_col = line9.find("shared").unwrap();
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 9,
+                character: shared_col as u32 + 1,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve method name in insteadof declaration"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            // TraitA::shared is declared on line 2
+            assert_eq!(
+                location.range.start.line, 2,
+                "Should point to shared() in TraitA (line 2)"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+/// Clicking on a trait name in `Trait::method as alias` should navigate
+/// to the trait definition.
+#[tokio::test]
+async fn test_goto_definition_trait_name_in_alias_adaptation() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///trait_alias_traitname.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "trait TraitA {\n",
+        "    public function shared(): void {}\n",
+        "}\n",
+        "trait TraitB {\n",
+        "    public function shared(): void {}\n",
+        "}\n",
+        "class Widget {\n",
+        "    use TraitA, TraitB {\n",
+        "        TraitA::shared insteadof TraitB;\n",
+        "        TraitB::shared as sharedFromB;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on `TraitB` in `TraitB::shared as sharedFromB` on line 10
+    let line10 = text.lines().nth(10).unwrap();
+    let trait_col = line10.find("TraitB").unwrap();
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 10,
+                character: trait_col as u32 + 1,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve TraitB name in alias adaptation to its definition"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            // TraitB is declared on line 4
+            assert_eq!(
+                location.range.start.line, 4,
+                "Should point to TraitB declaration (line 4)"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+/// Cross-file: clicking on a trait alias name should jump to the method
+/// definition in the trait source file.
+#[tokio::test]
+async fn test_goto_definition_trait_alias_cross_file() {
+    let trait_php = concat!(
+        "<?php\n",
+        "namespace App;\n",
+        "trait HasNotifications {\n",
+        "    public function routeNotificationFor(): mixed { return null; }\n",
+        "}\n",
+    );
+    let class_php = concat!(
+        "<?php\n",
+        "namespace App;\n",
+        "class User {\n",
+        "    use HasNotifications {\n",
+        "        routeNotificationFor as _routeNotificationFor;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{
+            "autoload": {
+                "psr-4": {
+                    "App\\": "src/"
+                }
+            }
+        }"#,
+        &[
+            ("src/HasNotifications.php", trait_php),
+            ("src/User.php", class_php),
+        ],
+    );
+
+    let class_uri = Url::from_file_path(_dir.path().join("src/User.php")).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: class_uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: class_php.to_string(),
+            },
+        })
+        .await;
+
+    let trait_uri = Url::from_file_path(_dir.path().join("src/HasNotifications.php")).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: trait_uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: trait_php.to_string(),
+            },
+        })
+        .await;
+
+    // Click on `_routeNotificationFor` (alias) on line 4 of User.php
+    let alias_col = class_php
+        .lines()
+        .nth(4)
+        .unwrap()
+        .find("_routeNotificationFor")
+        .unwrap();
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: class_uri.clone(),
+            },
+            position: Position {
+                line: 4,
+                character: alias_col as u32 + 1,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve cross-file trait alias _routeNotificationFor"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            let path = location.uri.to_file_path().unwrap();
+            assert!(
+                path.ends_with("HasNotifications.php"),
+                "Should point to HasNotifications.php, got: {:?}",
+                path
+            );
+            assert_eq!(
+                location.range.start.line, 3,
+                "routeNotificationFor is declared on line 3 of HasNotifications.php"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
