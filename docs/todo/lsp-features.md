@@ -662,3 +662,87 @@ now, only single-class file renames are in scope.
   from the `changes` map to `documentChanges` array when file
   operations are included, since `changes` does not support renames.
   Check the client capability first.
+
+---
+
+## 21. Semantic Tokens (`textDocument/semanticTokens/full`)
+**Impact: High · Effort: Medium**
+
+Semantic tokens give editors rich, type-aware syntax highlighting that
+goes beyond what a TextMate grammar can achieve. Classes, interfaces,
+enums, properties, methods, parameters, and type hints all get distinct
+token types. This is one of the most visible LSP features: users
+immediately notice when class names are coloured differently from
+function calls.
+
+### Token types
+
+PHPantom should register at least these standard token types from the
+LSP `SemanticTokenTypes` enum:
+
+| Token type | Applied to |
+|---|---|
+| `namespace` | Namespace segments in `use` statements, FQN references, `namespace` declarations |
+| `class` | Class names in declarations, type hints, `new`, `instanceof`, `::class`, catch clauses |
+| `interface` | Interface names (when the symbol resolves to an interface) |
+| `enum` | Enum names (when the symbol resolves to an enum) |
+| `type` | Type aliases, `@template` parameter names in docblocks |
+| `parameter` | Function/method parameters (`$param`) |
+| `variable` | Local variables (`$var`), `$this` |
+| `property` | Property access (`->prop`, `::$prop`) |
+| `function` | Function names in calls and declarations |
+| `method` | Method names in calls and declarations |
+| `decorator` | PHP attributes (`#[Route(...)]`) |
+| `comment` | PHPDoc tags (`@param`, `@return`, `@var`, `@template`, etc.) |
+| `string` | String literals (editors handle this, but useful for embedded class-strings) |
+| `keyword` | Language keywords (`if`, `class`, `function`, etc.) are handled by the editor grammar; skip these |
+
+### Token modifiers
+
+| Modifier | Applied when |
+|---|---|
+| `declaration` | The token is a declaration (class definition, function definition, variable assignment) |
+| `static` | Static method calls, static property access |
+| `readonly` | `readonly` properties |
+| `deprecated` | Symbol has a `@deprecated` tag or `#[Deprecated]` attribute |
+| `abstract` | Abstract classes or methods |
+
+### Implementation plan
+
+1. **Register capability.** In `initialize`, advertise
+   `semanticTokensProvider` with `full: true` (no delta or range
+   support initially). Include the `legend` listing all token types
+   and modifiers.
+
+2. **Handler.** On `textDocument/semanticTokens/full`, walk the file's
+   symbol map (`SymbolMap`) and AST to produce a flat list of
+   `SemanticToken` entries. Each entry is `(line, startChar, length,
+   tokenType, tokenModifiers)`.
+
+3. **Encoding.** LSP requires tokens as a flat `Vec<u32>` with
+   relative line/column encoding. Convert absolute positions to the
+   delta format before responding.
+
+4. **Resolution.** For `ClassReference` spans, resolve the symbol to
+   determine whether it is a class, interface, enum, or trait, and
+   emit the appropriate token type. Fall back to `class` if resolution
+   fails.
+
+5. **Docblock tokens.** Emit `comment` tokens for PHPDoc tags and
+   `type`/`class`/`interface`/`enum` tokens for type references inside
+   docblocks (the symbol map already tracks these spans).
+
+### Scope
+
+- **Full document only.** Start with `full` requests. Delta
+  (`textDocument/semanticTokens/full/delta`) and range
+  (`textDocument/semanticTokens/range`) can be added later as
+  performance optimizations.
+- **No multiline tokens.** All PHP tokens that PHPantom cares about
+  are single-line. Multiline string highlighting is left to the
+  editor's grammar.
+- **Leverage existing infrastructure.** The `SymbolMap` already
+  contains classified spans (`ClassReference`, `FunctionCall`,
+  `MethodCall`, `PropertyAccess`, `VariableReference`, etc.) with
+  byte offsets. The main work is mapping these to LSP semantic token
+  types and computing the delta encoding.

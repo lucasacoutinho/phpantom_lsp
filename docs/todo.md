@@ -34,12 +34,13 @@ with each step.
 
 ## Sprint 3 — Quick wins: close the visible gaps
 
-Every item here is Low or Low-Medium effort and directly removes
-something a Neovim/Zed/VS Code user would notice as missing on day
-one. Document Symbols alone eliminates the single most visible gap
-(empty outline, no breadcrumbs). Workspace Symbols gives
-keyboard-driven navigation back to Neovim users. The remaining
-items round out the feature matrix with minimal risk.
+Every item here directly removes something a Neovim/Zed/VS Code user
+would notice as missing on day one. Document Symbols eliminates the
+single most visible gap (empty outline, no breadcrumbs). Workspace
+Symbols gives keyboard-driven navigation back to Neovim users.
+Semantic Tokens provides type-aware syntax highlighting that goes
+beyond what a TextMate grammar can achieve. The remaining items
+round out the feature matrix with minimal risk.
 
 The deferred performance items from Sprint 2.5 are included here
 because they are prerequisites for keeping everything fast as the
@@ -50,6 +51,7 @@ feature surface grows.
 | — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
 | 19 | Document Symbols (`textDocument/documentSymbol`) | Low | LSP Features | [lsp-features.md §4](todo/lsp-features.md#4-document-symbols-textdocumentdocumentsymbol) |
 | 20 | Workspace Symbols (`workspace/symbol`) | Low-Medium | LSP Features | [lsp-features.md §5](todo/lsp-features.md#5-workspace-symbols-workspacesymbol) |
+| 113 | Semantic Tokens (`textDocument/semanticTokens/full`) | Medium | LSP Features | [lsp-features.md §21](todo/lsp-features.md#21-semantic-tokens-textdocumentsemantictokensfull) |
 | 21 | Folding Ranges (`textDocument/foldingRange`) | Low | LSP Features | [lsp-features.md §12](todo/lsp-features.md#12-folding-ranges-textdocumentfoldingrange) |
 | 22 | Selection Ranges (`textDocument/selectionRange`) | Low | LSP Features | [lsp-features.md §13](todo/lsp-features.md#13-selection-ranges-textdocumentselectionrange) |
 | 100 | Formatting proxy (`textDocument/formatting`) | Medium | LSP Features | [lsp-features.md §19](todo/lsp-features.md#19-formatting-proxy-textdocumentformatting-textdocumentrangeformatting) |
@@ -59,10 +61,10 @@ feature surface grows.
 | 87 | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo) |
 
 **After Sprint 3:** PHPantom feels like a complete LSP to everyday
-users. Outline, breadcrumbs, workspace search, folding, formatting,
-and smart select all work. Argument count errors catch real bugs and
-serve as a canary for type engine correctness. No one says "it's
-missing X" for basic editing workflows.
+users. Outline, breadcrumbs, workspace search, semantic highlighting,
+folding, formatting, and smart select all work. Argument count errors
+catch real bugs and serve as a canary for type engine correctness.
+No one says "it's missing X" for basic editing workflows.
 
 ---
 
