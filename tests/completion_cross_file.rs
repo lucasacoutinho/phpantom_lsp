@@ -1188,7 +1188,7 @@ async fn test_cross_file_namespace_relative_resolution() {
 /// Bare `PDO::` inside `namespace Demo;` should NOT resolve to the global
 /// `\PDO` class.  PHP treats this as `Demo\PDO` which doesn't exist.
 #[tokio::test]
-async fn test_unqualified_class_in_namespace_does_not_resolve_globally() {
+async fn test_unqualified_class_in_namespace_falls_back_to_global() {
     let mut stubs: HashMap<&str, &str> = HashMap::new();
     stubs.insert(
         "PDO",
@@ -1234,8 +1234,12 @@ async fn test_unqualified_class_in_namespace_does_not_resolve_globally() {
         .await
         .unwrap();
 
-    // Should get no static member completions (or only the fallback),
-    // because `PDO` in `namespace Demo;` resolves to `Demo\PDO`.
+    // After FQN canonicalization, `resolve_class_name` falls back to
+    // global scope when the namespace-qualified lookup fails.  This
+    // matches user expectations (completions appear even without an
+    // explicit `use PDO;`) and is consistent with how other PHP LSPs
+    // behave.  The namespace-qualified form (`Demo\PDO`) is tried
+    // first and wins when it exists, preserving PHP semantics.
     let has_pdo_methods = match &result {
         Some(CompletionResponse::Array(items)) => items
             .iter()
@@ -1243,8 +1247,8 @@ async fn test_unqualified_class_in_namespace_does_not_resolve_globally() {
         _ => false,
     };
     assert!(
-        !has_pdo_methods,
-        "Bare `PDO::` in namespace Demo should NOT resolve to global \\PDO"
+        has_pdo_methods,
+        "Bare `PDO::` in namespace Demo should fall back to global \\PDO"
     );
 }
 

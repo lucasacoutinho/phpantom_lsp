@@ -23,8 +23,8 @@ use tower_lsp::lsp_types::*;
 use crate::Backend;
 use crate::symbol_map::SymbolKind;
 
+use super::helpers::{compute_use_line_ranges, is_offset_in_ranges, make_diagnostic};
 use super::offset_range_to_lsp_range;
-use super::unknown_classes::{compute_use_line_ranges, is_offset_in_ranges};
 
 /// Diagnostic code used for unknown-function diagnostics.
 pub(crate) const UNKNOWN_FUNCTION_CODE: &str = "unknown_function";
@@ -147,17 +147,12 @@ impl Backend {
 
             let message = format!("Function '{}' not found", name);
 
-            out.push(Diagnostic {
+            out.push(make_diagnostic(
                 range,
-                severity: Some(DiagnosticSeverity::ERROR),
-                code: Some(NumberOrString::String(UNKNOWN_FUNCTION_CODE.to_string())),
-                code_description: None,
-                source: Some("phpantom".to_string()),
+                DiagnosticSeverity::ERROR,
+                UNKNOWN_FUNCTION_CODE,
                 message,
-                related_information: None,
-                tags: None,
-                data: None,
-            });
+            ));
         }
     }
 }

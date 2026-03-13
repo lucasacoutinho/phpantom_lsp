@@ -467,13 +467,10 @@ fn shorten_single_type(
         return format!("?{}", shorten_single_type(inner, use_map, file_namespace));
     }
 
-    // Strip leading backslash for comparison.
-    let clean = type_str.strip_prefix('\\').unwrap_or(type_str);
-
     // Check the use map: if any imported short name maps to this FQN,
     // use the short name.
     for (short, fqn) in use_map {
-        if fqn.trim_start_matches('\\') == clean {
+        if fqn.trim_start_matches('\\') == type_str {
             return short.clone();
         }
     }
@@ -481,16 +478,15 @@ fn shorten_single_type(
     // If the type is in the same namespace, strip the namespace prefix.
     if let Some(ns) = file_namespace {
         let prefix = format!("{}\\", ns);
-        if let Some(rest) = clean.strip_prefix(&prefix)
+        if let Some(rest) = type_str.strip_prefix(&prefix)
             && !rest.contains('\\')
         {
             return rest.to_string();
         }
     }
 
-    // Return as-is (but without leading backslash, which is unusual in
-    // method stubs).
-    clean.to_string()
+    // Return as-is.
+    type_str.to_string()
 }
 
 /// Detect the indentation level used inside a class body.
@@ -533,7 +529,6 @@ mod tests {
         let ns = Some("App\\Http\\Controllers".to_string());
 
         assert_eq!(shorten_type("App\\Models\\User", &use_map, &ns), "User");
-        assert_eq!(shorten_type("\\App\\Models\\User", &use_map, &ns), "User");
     }
 
     #[test]

@@ -49,7 +49,7 @@ fn synthesizes_has_many_property() {
         .unwrap();
     assert_eq!(
         rel_prop.type_hint.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Collection<Post>")
+        Some("Illuminate\\Database\\Eloquent\\Collection<Post>")
     );
     assert_eq!(rel_prop.visibility, Visibility::Public);
     assert!(!rel_prop.is_static);
@@ -108,7 +108,7 @@ fn synthesizes_morph_to_property() {
         .unwrap();
     assert_eq!(
         rel_prop.type_hint.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Model")
+        Some("Illuminate\\Database\\Eloquent\\Model")
     );
     // MorphTo also gets a _count property
     assert!(
@@ -135,7 +135,7 @@ fn synthesizes_belongs_to_many_property() {
         .unwrap();
     assert_eq!(
         rel_prop.type_hint.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Collection<Role>")
+        Some("Illuminate\\Database\\Eloquent\\Collection<Role>")
     );
 }
 
@@ -196,7 +196,7 @@ fn handles_fqn_relationship_return_types() {
     user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
     user.methods.push(make_method(
         "posts",
-        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this>"),
+        Some("Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this>"),
     ));
 
     let result = provider.provide(&user, &no_loader, None);
@@ -207,7 +207,7 @@ fn handles_fqn_relationship_return_types() {
         .unwrap();
     assert_eq!(
         rel_prop.type_hint.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Collection<Post>")
+        Some("Illuminate\\Database\\Eloquent\\Collection<Post>")
     );
     assert!(result.properties.iter().any(|p| p.name == "posts_count"));
 }
@@ -253,9 +253,7 @@ fn collection_relationship_without_generics_uses_model_fallback() {
         .unwrap();
     assert_eq!(
         rel_prop.type_hint.as_deref(),
-        Some(
-            "\\Illuminate\\Database\\Eloquent\\Collection<\\Illuminate\\Database\\Eloquent\\Model>"
-        )
+        Some("Illuminate\\Database\\Eloquent\\Collection<Illuminate\\Database\\Eloquent\\Model>")
     );
     assert!(result.properties.iter().any(|p| p.name == "posts_count"));
 }
@@ -294,7 +292,7 @@ fn provides_fqn_related_type_in_collection() {
         .unwrap();
     assert_eq!(
         rel_prop.type_hint.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Collection<\\App\\Models\\Post>")
+        Some("Illuminate\\Database\\Eloquent\\Collection<\\App\\Models\\Post>")
     );
     assert!(result.properties.iter().any(|p| p.name == "posts_count"));
 }
@@ -346,7 +344,7 @@ fn synthesizes_scope_as_both_static_and_instance() {
     assert!(instance.parameters.is_empty());
     assert_eq!(
         instance.return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
 
     let static_m = result.methods.iter().find(|m| m.is_static).unwrap();
@@ -354,7 +352,7 @@ fn synthesizes_scope_as_both_static_and_instance() {
     assert!(static_m.parameters.is_empty());
     assert_eq!(
         static_m.return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
 }
 
@@ -754,7 +752,7 @@ fn provide_scope_beats_builder_method_with_same_name() {
     // The scope version has the default builder return type.
     assert_eq!(
         static_wheres[0].return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>"),
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>"),
         "First static 'where' should be from the scope (added first)"
     );
 }
@@ -1103,7 +1101,7 @@ fn synthesizes_cast_properties() {
     assert!(created_at.is_some(), "should produce created_at property");
     assert_eq!(
         created_at.unwrap().type_hint.as_deref(),
-        Some("\\Carbon\\Carbon")
+        Some("Carbon\\Carbon")
     );
 
     let options = result.properties.iter().find(|p| p.name == "options");

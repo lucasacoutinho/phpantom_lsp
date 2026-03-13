@@ -25,12 +25,10 @@ const FACTORY_FQN: &str = "Illuminate\\Database\\Eloquent\\Factories\\Factory";
 /// the root with `Database\Factories\`, and append `Factory` to the
 /// class short name.
 pub(crate) fn model_to_factory_fqn(model_fqn: &str) -> String {
-    let clean = model_fqn.strip_prefix('\\').unwrap_or(model_fqn);
-
     // Split into namespace + short name.
-    let (ns, short) = match clean.rsplit_once('\\') {
+    let (ns, short) = match model_fqn.rsplit_once('\\') {
         Some((ns, short)) => (ns, short),
-        None => return format!("Database\\Factories\\{clean}Factory"),
+        None => return format!("Database\\Factories\\{model_fqn}Factory"),
     };
 
     // Check for `X\Models\Sub` pattern → `Database\Factories\Sub`
@@ -53,17 +51,18 @@ pub(crate) fn model_to_factory_fqn(model_fqn: &str) -> String {
 /// - `Database\Factories\UserFactory` → `App\Models\User`
 /// - `Database\Factories\Admin\SuperUserFactory` → `App\Models\Admin\SuperUser`
 pub(crate) fn factory_to_model_fqn(factory_fqn: &str) -> Option<String> {
-    let clean = factory_fqn.strip_prefix('\\').unwrap_or(factory_fqn);
-
     // The short name must end with `Factory`.
-    let short = clean.rsplit('\\').next().unwrap_or(clean);
+    let short = factory_fqn.rsplit('\\').next().unwrap_or(factory_fqn);
     let model_short = short.strip_suffix("Factory")?;
     if model_short.is_empty() {
         return None;
     }
 
     // Extract the namespace after `Database\Factories\`.
-    let ns = clean.rsplit_once('\\').map(|(ns, _)| ns).unwrap_or("");
+    let ns = factory_fqn
+        .rsplit_once('\\')
+        .map(|(ns, _)| ns)
+        .unwrap_or("");
 
     let sub_ns = if let Some(after) = ns.strip_prefix("Database\\Factories\\") {
         Some(after)
@@ -83,8 +82,7 @@ pub(crate) fn factory_to_model_fqn(factory_fqn: &str) -> Option<String> {
 
 /// Determine whether `class_name` is the Eloquent Factory base class.
 fn is_eloquent_factory(class_name: &str) -> bool {
-    let stripped = class_name.strip_prefix('\\').unwrap_or(class_name);
-    stripped == FACTORY_FQN
+    class_name == FACTORY_FQN
 }
 
 /// Walk the parent chain of `class` looking for
@@ -126,7 +124,7 @@ fn build_factory_model_methods(
         return Vec::new();
     }
 
-    let model_type = format!("\\{model_fqn}");
+    let model_type = model_fqn.to_string();
 
     vec![
         MethodInfo::virtual_method("create", Some(&model_type)),

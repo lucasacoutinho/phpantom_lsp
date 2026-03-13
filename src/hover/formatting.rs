@@ -550,11 +550,10 @@ pub(crate) fn types_equivalent(a: &str, b: &str) -> bool {
 }
 
 /// Return the short (unqualified) class name from a potentially
-/// namespace-qualified type string.  Strips a leading `\` and returns
-/// only the part after the last `\`.  Non-class types (scalars,
-/// `array`, etc.) pass through unchanged.
+/// namespace-qualified type string.  Returns only the part after the
+/// last `\`.  Non-class types (scalars, `array`, etc.) pass through
+/// unchanged.
 pub(super) fn short_name(ty: &str) -> &str {
     let t = ty.trim();
-    let t = t.strip_prefix('\\').unwrap_or(t);
     t.rsplit('\\').next().unwrap_or(t)
 }

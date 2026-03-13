@@ -78,7 +78,7 @@ fn classify_has_many_through() {
 #[test]
 fn classify_fqn_relationship() {
     assert_eq!(
-        classify_relationship("\\Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this>"),
+        classify_relationship("Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this>"),
         Some(RelationshipKind::Collection)
     );
 }
@@ -94,10 +94,6 @@ fn classify_custom_fqn_has_many_is_not_relationship() {
     // A user class whose short name collides with an Eloquent relationship
     // should NOT be classified as a relationship.
     assert_eq!(classify_relationship("App\\Relations\\HasMany<Post>"), None);
-    assert_eq!(
-        classify_relationship("\\App\\Relations\\HasMany<Post>"),
-        None
-    );
 }
 
 #[test]
@@ -119,7 +115,7 @@ fn classify_eloquent_fqn_without_leading_backslash() {
 #[test]
 fn classify_eloquent_fqn_morph_to() {
     assert_eq!(
-        classify_relationship("\\Illuminate\\Database\\Eloquent\\Relations\\MorphTo"),
+        classify_relationship("Illuminate\\Database\\Eloquent\\Relations\\MorphTo"),
         Some(RelationshipKind::MorphTo)
     );
 }
@@ -181,7 +177,7 @@ fn collection_with_related() {
             Some("App\\Models\\Post"),
             None
         ),
-        Some("\\Illuminate\\Database\\Eloquent\\Collection<App\\Models\\Post>".to_string())
+        Some("Illuminate\\Database\\Eloquent\\Collection<App\\Models\\Post>".to_string())
     );
 }
 
@@ -190,7 +186,7 @@ fn collection_without_related_uses_model() {
     assert_eq!(
         build_property_type(RelationshipKind::Collection, None, None),
         Some(
-            "\\Illuminate\\Database\\Eloquent\\Collection<\\Illuminate\\Database\\Eloquent\\Model>"
+            "Illuminate\\Database\\Eloquent\\Collection<Illuminate\\Database\\Eloquent\\Model>"
                 .to_string()
         )
     );
@@ -200,7 +196,7 @@ fn collection_without_related_uses_model() {
 fn morph_to_always_returns_model() {
     assert_eq!(
         build_property_type(RelationshipKind::MorphTo, Some("App\\Models\\Foo"), None),
-        Some("\\Illuminate\\Database\\Eloquent\\Model".to_string())
+        Some("Illuminate\\Database\\Eloquent\\Model".to_string())
     );
 }
 
@@ -212,19 +208,19 @@ fn collection_with_custom_collection() {
             Some("App\\Models\\Post"),
             Some("App\\Collections\\PostCollection")
         ),
-        Some("\\App\\Collections\\PostCollection<App\\Models\\Post>".to_string())
+        Some("App\\Collections\\PostCollection<App\\Models\\Post>".to_string())
     );
 }
 
 #[test]
-fn collection_custom_collection_with_leading_backslash() {
+fn collection_custom_collection_canonical() {
     assert_eq!(
         build_property_type(
             RelationshipKind::Collection,
             Some("App\\Models\\Post"),
-            Some("\\App\\Collections\\PostCollection")
+            Some("App\\Collections\\PostCollection")
         ),
-        Some("\\App\\Collections\\PostCollection<App\\Models\\Post>".to_string())
+        Some("App\\Collections\\PostCollection<App\\Models\\Post>".to_string())
     );
 }
 
@@ -248,7 +244,7 @@ fn morph_to_ignores_custom_collection() {
             Some("App\\Models\\Foo"),
             Some("App\\Collections\\FooCollection")
         ),
-        Some("\\Illuminate\\Database\\Eloquent\\Model".to_string())
+        Some("Illuminate\\Database\\Eloquent\\Model".to_string())
     );
 }
 
@@ -332,7 +328,7 @@ fn infer_has_many_through_from_body() {
     let body = "{ return $this->hasManyThrough(Post::class, Country::class); }";
     assert_eq!(
         infer_relationship_from_body(body),
-        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasManyThrough<Post>".to_string())
+        Some("\\Illuminate\\Database\\Eloquent\\Relations\\HasManyThrough<Post>".to_string()),
     );
 }
 

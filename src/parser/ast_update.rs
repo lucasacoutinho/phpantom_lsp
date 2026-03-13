@@ -535,8 +535,11 @@ impl Backend {
                             // `App\Models\App\Casts\HtmlCast`.
                             let first_segment = cast_type.split(':').next().unwrap_or(&cast_type);
                             if first_segment.contains('\\') || first_segment.starts_with('\\') {
-                                // Already qualified — keep as-is.
-                                (col, cast_type)
+                                // Already qualified — strip leading `\` if present to produce canonical FQN.
+                                let canonical = cast_type
+                                    .strip_prefix('\\')
+                                    .map_or(cast_type.clone(), |s| s.to_string());
+                                (col, canonical)
                             } else if first_segment.chars().any(|c| c.is_ascii_uppercase()) {
                                 let resolved_class =
                                     Self::resolve_name(first_segment, use_map, namespace);
@@ -911,12 +914,14 @@ impl Backend {
                 if is_scalar(word)
                     || TYPE_KEYWORDS.contains(&lower.as_str())
                     || skip_names.iter().any(|s| s == word)
-                    || word.starts_with('\\')
                 {
                     // Leave as-is: scalar, keyword, template param,
-                    // type alias name, or already fully-qualified.
+                    // or type alias name.
                     result.push_str(word);
                 } else {
+                    // Route through resolve_name, which strips `\`
+                    // from already-qualified names and resolves
+                    // unqualified names via the use-map / namespace.
                     result.push_str(&Self::resolve_name(word, use_map, namespace));
                 }
             } else if c == '$' {
@@ -959,19 +964,19 @@ impl Backend {
 
     /// Resolve a class name to its fully-qualified form given a use_map and
     /// namespace context.
+    ///
+    /// The returned name is **always without a leading `\`**.  This is the
+    /// canonical FQN representation used throughout the codebase.  For
+    /// example, `\RuntimeException` is returned as `RuntimeException`, and
+    /// `\App\Models\User` as `App\Models\User`.
     fn resolve_name(
         name: &str,
         use_map: &HashMap<String, String>,
         namespace: &Option<String>,
     ) -> String {
-        // 1. Already fully-qualified — keep the leading `\` so that
-        // downstream `resolve_class_name` recognises the name as a
-        // root-namespace FQN and does NOT prepend the current file's
-        // namespace.  For example `\RuntimeException` stays as
-        // `\RuntimeException`; `resolve_class_name` will strip the
-        // prefix itself and look up `RuntimeException` globally.
-        if name.starts_with('\\') {
-            return name.to_string();
+        // 1. Already fully-qualified — strip the leading `\`.
+        if let Some(stripped) = name.strip_prefix('\\') {
+            return stripped.to_string();
         }
 
         // 2/3. Check if the (first segment of the) name is in the use_map
@@ -980,44 +985,20 @@ impl Backend {
             let first = &name[..pos];
             let rest = &name[pos..]; // includes leading '\'
             if let Some(fqn) = use_map.get(first) {
-                // Global-scope prefix: when the mapped FQN has no `\`
-                // (e.g. `use Exception;` mapping `Exception` → `"Exception"`),
-                // prefix with `\` so that the combined result is recognised
-                // as a root-namespace name downstream.
-                if !fqn.contains('\\') {
-                    return format!("\\{}{}", fqn, rest);
-                }
                 return format!("{}{}", fqn, rest);
             }
         } else {
             // Unqualified name — check directly
             if let Some(fqn) = use_map.get(name) {
-                // When the FQN has no namespace separator it refers to a
-                // global-scope class (e.g. `use Exception;` → FQN
-                // `"Exception"`).  Prefix it with `\` so that downstream
-                // `resolve_class_name` recognises it as a root-namespace
-                // name and does NOT prepend the caller's file namespace.
-                // Without this, a cross-file class whose parent is
-                // `Exception` (resolved here to the bare string
-                // `"Exception"`) would later be looked up as e.g.
-                // `"App\Console\Commands\Exception"` — which doesn't exist.
-                if !fqn.contains('\\') {
-                    return format!("\\{}", fqn);
-                }
                 return fqn.clone();
             }
         }
 
         // 4. Prepend current namespace if available.
-        //    When there is NO namespace the name lives in the global scope,
-        //    so prefix it with `\` so that downstream `resolve_class_name`
-        //    recognises it as a root-namespace FQN and does NOT try to
-        //    prepend the caller's file namespace (e.g. avoids resolving
-        //    `Exception` as `Demo\Exception` when loading a stub parent).
         if let Some(ns) = namespace {
             format!("{}\\{}", ns, name)
         } else {
-            format!("\\{}", name)
+            name.to_string()
         }
     }
 }

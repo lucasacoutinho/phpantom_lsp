@@ -56,9 +56,8 @@ pub(super) fn legacy_accessor_property_name(method_name: &str) -> String {
 pub(super) fn is_modern_accessor(method: &MethodInfo) -> bool {
     match method.return_type.as_deref() {
         Some(rt) => {
-            let clean = rt.strip_prefix('\\').unwrap_or(rt);
             // Strip generic parameters (e.g. Attribute<string, never>)
-            let base = clean.split('<').next().unwrap_or(clean).trim();
+            let base = rt.split('<').next().unwrap_or(rt).trim();
             base == ATTRIBUTE_CAST_FQN || base == "Attribute"
         }
         None => false,
@@ -73,8 +72,7 @@ pub(super) fn is_modern_accessor(method: &MethodInfo) -> bool {
 /// generic parameter is present.
 pub(super) fn extract_modern_accessor_type(method: &MethodInfo) -> String {
     if let Some(rt) = method.return_type.as_deref() {
-        let clean = rt.strip_prefix('\\').unwrap_or(rt);
-        let (_, args) = parse_generic_args(clean);
+        let (_, args) = parse_generic_args(rt);
         if let Some(first) = args.first() {
             let trimmed = first.trim();
             if !trimmed.is_empty() {

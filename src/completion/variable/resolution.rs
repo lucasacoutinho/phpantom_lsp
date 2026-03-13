@@ -95,9 +95,6 @@ fn enrich_builder_type_in_scope(
         return None;
     }
 
-    // Strip leading backslash for comparison.
-    let bare = type_str.strip_prefix('\\').unwrap_or(type_str);
-
     // Check if the type is the Eloquent Builder (without generic args).
     // Accept both the FQN and the short name `Builder` (common in use
     // imports).  If the type already has generic args (e.g.
@@ -106,7 +103,7 @@ fn enrich_builder_type_in_scope(
     if type_str.contains('<') {
         return None;
     }
-    let is_eloquent_builder = bare == ELOQUENT_BUILDER_FQN || bare == "Builder";
+    let is_eloquent_builder = type_str == ELOQUENT_BUILDER_FQN || type_str == "Builder";
     if !is_eloquent_builder {
         return None;
     }

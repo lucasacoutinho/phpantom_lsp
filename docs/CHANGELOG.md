@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Cross-file resolution.** Fully-qualified class names are now stored in a single canonical form throughout the system, eliminating a class of bugs where name comparisons failed because one side had a leading backslash and the other did not. This improves reliability of completion, hover, go-to-definition, and cache invalidation across files.
+
 ## [0.5.0] - 2026-03-12
 
 ### Added

@@ -1537,7 +1537,7 @@ async fn test_parse_php_namespaced_enum_implicit_interface_is_not_namespace_pref
     assert_eq!(classes.len(), 1);
     assert_eq!(classes[0].name, "Mode");
     // parse_php returns the raw `\UnitEnum` (leading backslash marks it as
-    // fully-qualified).
+    // fully-qualified in the PHP source).
     assert!(
         classes[0].used_traits.iter().any(|t| t == "\\UnitEnum"),
         "Namespaced unit enum should have \\UnitEnum before resolution, got: {:?}",
@@ -1549,12 +1549,13 @@ async fn test_parse_php_namespaced_enum_implicit_interface_is_not_namespace_pref
     let namespace = Some("App\\Enums".to_string());
     phpantom_lsp::Backend::resolve_parent_class_names(&mut classes, &use_map, &namespace);
 
-    // After resolution the leading backslash is preserved so that
-    // `resolve_class_name` recognises it as a root-namespace FQN and
-    // does NOT prepend the current file's namespace.
+    // After resolution the leading backslash is stripped — the canonical
+    // FQN representation never has a leading `\`.  The name must NOT be
+    // namespace-prefixed (i.e. must remain `UnitEnum`, not
+    // `App\Enums\UnitEnum`).
     assert!(
-        classes[0].used_traits.iter().any(|t| t == "\\UnitEnum"),
-        "After resolution, should be \\UnitEnum (root namespace FQN), got: {:?}",
+        classes[0].used_traits.iter().any(|t| t == "UnitEnum"),
+        "After resolution, should be bare UnitEnum (canonical FQN), got: {:?}",
         classes[0].used_traits
     );
     assert!(

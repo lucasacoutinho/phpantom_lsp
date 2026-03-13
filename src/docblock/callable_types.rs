@@ -124,8 +124,7 @@ pub fn extract_callable_param_types(type_str: &str) -> Option<Vec<String>> {
 /// Inner implementation: try to parse a single callable/Closure type
 /// string (not a union) and extract its parameter types.
 fn extract_callable_param_types_inner(type_str: &str) -> Option<Vec<String>> {
-    let s = type_str.strip_prefix('\\').unwrap_or(type_str);
-    let s = s.strip_prefix('?').unwrap_or(s);
+    let s = type_str.strip_prefix('?').unwrap_or(type_str);
 
     // Must start with `Closure` or `callable`.
     let rest = if let Some(r) = s.strip_prefix("Closure") {

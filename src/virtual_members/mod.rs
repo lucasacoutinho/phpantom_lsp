@@ -178,8 +178,7 @@ fn depends_on_any(cls: &ClassInfo, fqns: &[String]) -> bool {
         if let Some(laravel) = cls.laravel()
             && laravel.casts_definitions.iter().any(|(_, cast_type)| {
                 let class_part = cast_type.split(':').next().unwrap_or(cast_type);
-                let clean = class_part.strip_prefix('\\').unwrap_or(class_part);
-                clean == fqn || clean == short
+                class_part == fqn || class_part == short
             })
         {
             return true;

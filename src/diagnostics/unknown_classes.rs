@@ -25,6 +25,9 @@ use crate::Backend;
 use crate::symbol_map::SymbolKind;
 use crate::types::ClassInfo;
 
+use super::helpers::{
+    ByteRange, compute_use_line_ranges, is_offset_in_ranges, make_diagnostic, resolve_to_fqn,
+};
 use super::offset_range_to_lsp_range;
 
 /// Diagnostic code used for unknown-class diagnostics so that code
@@ -101,7 +104,7 @@ impl Backend {
             // Resolve the name to a fully-qualified form, then check
             // whether PHPantom can find the class.
             let fqn = if is_fqn {
-                ref_name.strip_prefix('\\').unwrap_or(ref_name).to_string()
+                ref_name.to_string()
             } else {
                 resolve_to_fqn(ref_name, &file_use_map, &file_namespace)
             };
@@ -183,54 +186,17 @@ impl Backend {
                 format!("Class '{}' not found", ref_name)
             };
 
-            out.push(Diagnostic {
+            out.push(make_diagnostic(
                 range,
-                severity: Some(DiagnosticSeverity::WARNING),
-                code: Some(NumberOrString::String(UNKNOWN_CLASS_CODE.to_string())),
-                code_description: None,
-                source: Some("phpantom".to_string()),
+                DiagnosticSeverity::WARNING,
+                UNKNOWN_CLASS_CODE,
                 message,
-                related_information: None,
-                tags: None,
-                data: None,
-            });
+            ));
         }
     }
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
-
-/// A byte range `[start, end)` representing a line in the source.
-pub(crate) type ByteRange = (usize, usize);
-
-/// Compute the byte ranges of all top-level `use` statement lines.
-///
-/// Returns a sorted list of `(line_start, line_end)` byte offset pairs.
-/// Only matches lines whose trimmed content starts with `use ` and contains
-/// a `;` — this excludes trait `use` statements inside class bodies because
-/// those are indented and always occur after a `{`.
-pub(crate) fn compute_use_line_ranges(content: &str) -> Vec<ByteRange> {
-    let mut ranges = Vec::new();
-    let mut offset: usize = 0;
-
-    for line in content.split('\n') {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("use ") && trimmed.contains(';') {
-            ranges.push((offset, offset + line.len()));
-        }
-        offset += line.len() + 1; // +1 for '\n'
-    }
-
-    ranges
-}
-
-/// Check whether a byte offset falls within any of the given ranges.
-pub(crate) fn is_offset_in_ranges(offset: u32, ranges: &[ByteRange]) -> bool {
-    let offset = offset as usize;
-    ranges
-        .iter()
-        .any(|&(start, end)| offset >= start && offset < end)
-}
 
 /// Compute the byte ranges of `#[...]` attribute blocks in the source.
 ///
@@ -274,41 +240,6 @@ fn compute_attribute_ranges(content: &str) -> Vec<ByteRange> {
     }
 
     ranges
-}
-
-/// Resolve an unqualified/qualified class name to a fully-qualified name
-/// using the use map and namespace context.
-fn resolve_to_fqn(
-    name: &str,
-    use_map: &HashMap<String, String>,
-    namespace: &Option<String>,
-) -> String {
-    // Fully qualified (leading backslash)
-    if let Some(stripped) = name.strip_prefix('\\') {
-        return stripped.to_string();
-    }
-
-    // Unqualified (no backslash) — check use map first
-    if !name.contains('\\') {
-        if let Some(fqn) = use_map.get(name) {
-            return fqn.clone();
-        }
-        if let Some(ns) = namespace {
-            return format!("{}\\{}", ns, name);
-        }
-        return name.to_string();
-    }
-
-    // Qualified (contains backslash, no leading backslash)
-    let first_segment = name.split('\\').next().unwrap_or(name);
-    if let Some(fqn_prefix) = use_map.get(first_segment) {
-        let rest = &name[first_segment.len()..];
-        return format!("{}{}", fqn_prefix, rest);
-    }
-    if let Some(ns) = namespace {
-        return format!("{}\\{}", ns, name);
-    }
-    name.to_string()
 }
 
 /// Returns `true` for context-dependent keywords that resolve to the

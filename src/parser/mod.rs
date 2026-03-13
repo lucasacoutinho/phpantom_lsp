@@ -396,6 +396,7 @@ pub(crate) fn extract_deprecated_attribute(
 fn is_known_deprecated_attr(name: &Identifier<'_>, ctx: &DocblockCtx<'_>) -> bool {
     match name {
         Identifier::FullyQualified(fq) => {
+            // Input boundary: AST fully-qualified names include the leading `\`.
             let stripped = fq.value.strip_prefix('\\').unwrap_or(fq.value);
             DEPRECATED_FQNS.contains(&stripped)
         }

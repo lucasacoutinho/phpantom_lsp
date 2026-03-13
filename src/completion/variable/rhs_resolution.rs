@@ -720,9 +720,8 @@ fn extract_array_type_at_position(raw_type: &str, position: usize) -> Option<Str
 /// This covers `array`, `iterable`, `list`, and common Laravel/PHPStan
 /// collection interfaces whose generic args follow `<TKey, TValue>`.
 fn is_array_like_wrapper(name: &str) -> bool {
-    // Strip leading backslash and compare the short name
-    // (last segment after `\`) case-insensitively.
-    let short = crate::util::short_name(name.strip_prefix('\\').unwrap_or(name));
+    // Compare the short name (last segment after `\`) case-insensitively.
+    let short = crate::util::short_name(name);
     matches!(
         short.to_ascii_lowercase().as_str(),
         "array" | "iterable" | "list" | "non-empty-array" | "non-empty-list" | "arrayable"

@@ -558,15 +558,14 @@ fn merge_traits_into(
 /// Matches the FQN `Illuminate\Database\Eloquent\Factories\HasFactory`
 /// as well as the short name `HasFactory` (common in same-file tests).
 fn is_has_factory_trait(trait_name: &str) -> bool {
-    let stripped = trait_name.strip_prefix('\\').unwrap_or(trait_name);
-    stripped == "Illuminate\\Database\\Eloquent\\Factories\\HasFactory" || stripped == "HasFactory"
+    trait_name == "Illuminate\\Database\\Eloquent\\Factories\\HasFactory"
+        || trait_name == "HasFactory"
 }
 
 /// Check whether a parent class name is the Laravel
 /// `Illuminate\Database\Eloquent\Factories\Factory` base class.
 fn is_factory_class(class_name: &str) -> bool {
-    let stripped = class_name.strip_prefix('\\').unwrap_or(class_name);
-    stripped == "Illuminate\\Database\\Eloquent\\Factories\\Factory" || stripped == "Factory"
+    class_name == "Illuminate\\Database\\Eloquent\\Factories\\Factory" || class_name == "Factory"
 }
 
 /// Build a substitution map for a trait based on `@use` generics and the
@@ -821,8 +820,6 @@ pub(crate) fn apply_substitution(type_str: &str, subs: &HashMap<String, String>)
             Some("callable")
         } else if s.starts_with("Closure(") {
             Some("Closure")
-        } else if s.starts_with("\\Closure(") {
-            Some("\\Closure")
         } else {
             None
         };
@@ -892,15 +889,6 @@ pub(crate) fn apply_substitution(type_str: &str, subs: &HashMap<String, String>)
 
     // Base case: direct lookup.
     if let Some(replacement) = subs.get(s) {
-        return replacement.clone();
-    }
-
-    // Template parameter names resolved in a no-namespace context get a
-    // leading `\` prefix (e.g. `T` → `\T`), but the substitution map
-    // keys are bare names.  Try again without the prefix.
-    if let Some(stripped) = s.strip_prefix('\\')
-        && let Some(replacement) = subs.get(stripped)
-    {
         return replacement.clone();
     }
 

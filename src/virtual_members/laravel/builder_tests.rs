@@ -16,33 +16,33 @@ fn make_builder(methods: Vec<MethodInfo>) -> ClassInfo {
 #[test]
 fn replace_eloquent_collection_in_return_type() {
     let result = replace_eloquent_collection(
-        "\\Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>",
+        "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>",
         "App\\Collections\\UserCollection",
     );
     assert_eq!(
         result,
-        "\\App\\Collections\\UserCollection<int, App\\Models\\User>"
+        "App\\Collections\\UserCollection<int, App\\Models\\User>"
     );
 }
 
 #[test]
 fn replace_eloquent_collection_preserves_other_types() {
     let result = replace_eloquent_collection(
-        "\\Illuminate\\Support\\Collection<int, string>",
+        "Illuminate\\Support\\Collection<int, string>",
         "App\\Collections\\UserCollection",
     );
-    assert_eq!(result, "\\Illuminate\\Support\\Collection<int, string>");
+    assert_eq!(result, "Illuminate\\Support\\Collection<int, string>");
 }
 
 #[test]
 fn replace_eloquent_collection_in_union() {
     let result = replace_eloquent_collection(
-        "\\Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>|null",
+        "Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>|null",
         "App\\Collections\\UserCollection",
     );
     assert_eq!(
         result,
-        "\\App\\Collections\\UserCollection<int, App\\Models\\User>|null"
+        "App\\Collections\\UserCollection<int, App\\Models\\User>|null"
     );
 }
 
@@ -93,7 +93,7 @@ fn builder_forwarding_maps_static_to_builder_self_type() {
     assert_eq!(result.len(), 1);
     assert_eq!(
         result[0].return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
+        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
         "static should map to Builder<ConcreteModel>"
     );
 }
@@ -115,7 +115,7 @@ fn builder_forwarding_maps_this_to_builder_self_type() {
     assert_eq!(result.len(), 1);
     assert_eq!(
         result[0].return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
+        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
         "$this should map to Builder<ConcreteModel>"
     );
 }
@@ -137,7 +137,7 @@ fn builder_forwarding_maps_self_to_builder_self_type() {
     assert_eq!(result.len(), 1);
     assert_eq!(
         result[0].return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
+        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>"),
         "self should map to Builder<ConcreteModel>"
     );
 }
@@ -168,7 +168,7 @@ fn builder_forwarding_maps_tmodel_to_concrete_class() {
 fn builder_forwarding_maps_generic_collection_return() {
     let builder = make_builder(vec![make_method(
         "get",
-        Some("\\Illuminate\\Database\\Eloquent\\Collection<int, TModel>"),
+        Some("Illuminate\\Database\\Eloquent\\Collection<int, TModel>"),
     )]);
     let user = make_class("App\\Models\\User");
 
@@ -184,7 +184,7 @@ fn builder_forwarding_maps_generic_collection_return() {
     assert_eq!(result.len(), 1);
     assert_eq!(
         result[0].return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>"),
+        Some("Illuminate\\Database\\Eloquent\\Collection<int, App\\Models\\User>"),
         "Collection<int, TModel> should become Collection<int, User>"
     );
 }
@@ -206,7 +206,7 @@ fn builder_forwarding_maps_static_in_union() {
     assert_eq!(result.len(), 1);
     assert_eq!(
         result[0].return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>|null"),
+        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>|null"),
         "static|null should become Builder<User>|null"
     );
 }
@@ -382,7 +382,7 @@ fn builder_forwarding_multiple_methods() {
         make_method("orderBy", Some("static")),
         make_method(
             "get",
-            Some("\\Illuminate\\Database\\Eloquent\\Collection<int, TModel>"),
+            Some("Illuminate\\Database\\Eloquent\\Collection<int, TModel>"),
         ),
         make_method("first", Some("TModel|null")),
     ]);

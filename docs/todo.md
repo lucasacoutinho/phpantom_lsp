@@ -47,6 +47,7 @@ feature surface grows.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
+| — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
 | 19 | Document Symbols (`textDocument/documentSymbol`) | Low | LSP Features | [lsp-features.md §4](todo/lsp-features.md#4-document-symbols-textdocumentdocumentsymbol) |
 | 20 | Workspace Symbols (`workspace/symbol`) | Low-Medium | LSP Features | [lsp-features.md §5](todo/lsp-features.md#5-workspace-symbols-workspacesymbol) |
 | 21 | Folding Ranges (`textDocument/foldingRange`) | Low | LSP Features | [lsp-features.md §12](todo/lsp-features.md#12-folding-ranges-textdocumentfoldingrange) |
@@ -74,17 +75,14 @@ requested by the Neovim tester. These share scope analysis
 infrastructure with Extract Function, so building them together is
 the most efficient path.
 
-The deferred FQN canonicalization refactor is included here as a
-gate check before Sprint 5 widens the feature surface further.
-
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
+| — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
 | 17 | Extract Function refactoring | Very High | Code Actions | [actions.md §3](todo/actions.md#3-extract-function-refactoring) |
 | 76 | Inline Variable | Medium | Code Actions | [actions.md §7](todo/actions.md#7-inline-variable) |
 | 77 | Extract Variable | Medium | Code Actions | [actions.md §8](todo/actions.md#8-extract-variable) |
 | 78 | Inline Function/Method | High | Code Actions | [actions.md §9](todo/actions.md#9-inline-functionmethod) |
 | 109 | Extract Constant | Medium | Code Actions | [actions.md §10](todo/actions.md#10-extract-constant) |
-| 95 | Canonicalize FQN representation | High | Refactoring | [refactor.md §1](todo/refactor.md#1-canonicalize-fqn-representation) |
 
 **After Sprint 4:** The core refactoring toolkit is complete. The
 two most active testers have the features they specifically asked
@@ -105,6 +103,7 @@ expect.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
+| — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
 | 24 | PHPDoc block generation on `/**` | Medium | LSP Features | [lsp-features.md §3](todo/lsp-features.md#3-phpdoc-block-generation-on-) |
 | 40 | Inlay hints (`textDocument/inlayHint`) | Medium | LSP Features | [lsp-features.md §9](todo/lsp-features.md#9-inlay-hints-textdocumentinlayhint) |
 | 102 | Implementation error diagnostic | Medium | Diagnostics | [diagnostics.md §9](todo/diagnostics.md#9-implementation-error-diagnostic) |
@@ -127,6 +126,7 @@ and Laravel developer alike. File system watching eliminates the
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
+| — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
 | 26 | Inherited docblock type propagation | Medium | Type Inference | [type-inference.md §4](todo/type-inference.md#4-inherited-docblock-type-propagation) |
 | 27 | `BackedEnum::from()` / `::tryFrom()` return type refinement | Low | Completion | [completion.md §1](todo/completion.md#1-backedenumfrom--tryfrom-return-type-refinement) |
 | 28 | Pipe operator (PHP 8.5) type resolution | Low | Type Inference | [type-inference.md §1](todo/type-inference.md#1-pipe-operator-php-85) |
@@ -151,6 +151,7 @@ code action polish.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
+| — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
 | 32 | Code Lens: jump to prototype method | Low | LSP Features | [lsp-features.md §8](todo/lsp-features.md#8-code-lens-jump-to-prototype-method) |
 | 34 | Document Links (`textDocument/documentLink`) | Low | LSP Features | [lsp-features.md §15](todo/lsp-features.md#15-document-links-textdocumentdocumentlink) |
 | 39 | Simplify with null coalescing / null-safe operator (code action) | Medium | Code Actions | [actions.md §2](todo/actions.md#2-simplify-with-null-coalescing--null-safe-operator) |
@@ -167,6 +168,7 @@ projects that care about types.
 
 | # | Item | Effort | Domain | Doc Link |
 |---|---|---|---|---|
+| — | Clear refactoring gate | — | Refactoring | [refactor.md](todo/refactor.md) |
 | 44 | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`) | Medium | Laravel | [laravel.md §3](todo/laravel.md#3-custom-eloquent-builders-hasbuilder--useeloquentbuilder) |
 | 45 | `abort_if`/`abort_unless` type narrowing | Medium | Laravel | [laravel.md §4](todo/laravel.md#4-abort_ifabort_unless-type-narrowing) |
 | 46 | Narrow types of `&$var` parameters after function calls | Medium | Type Inference | [type-inference.md §7](todo/type-inference.md#7-narrow-types-of-var-parameters-after-function-calls) |

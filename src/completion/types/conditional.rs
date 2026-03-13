@@ -304,7 +304,7 @@ fn extract_class_name_from_text(text: &str) -> Option<String> {
         .chars()
         .all(|c| c.is_alphanumeric() || c == '_' || c == '\\')
     {
-        Some(name.strip_prefix('\\').unwrap_or(name).to_string())
+        Some(name.to_string())
     } else {
         None
     }

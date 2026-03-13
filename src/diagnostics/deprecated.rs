@@ -24,6 +24,7 @@ use crate::symbol_map::SymbolKind;
 use crate::types::ClassInfo;
 use crate::virtual_members::resolve_class_fully_cached;
 
+use super::helpers::resolve_to_fqn;
 use super::offset_range_to_lsp_range;
 
 impl Backend {
@@ -72,7 +73,7 @@ impl Backend {
                 // ── Class references (type hints, new Foo, extends, etc.) ─
                 SymbolKind::ClassReference { name, is_fqn } => {
                     let resolved_name = if *is_fqn {
-                        name.strip_prefix('\\').unwrap_or(name).to_string()
+                        name.to_string()
                     } else {
                         // Resolve through use map / namespace like resolve_class_name
                         resolve_to_fqn(name, &file_use_map, &file_namespace)
@@ -278,44 +279,6 @@ fn deprecated_diagnostic(
         tags: Some(vec![DiagnosticTag::DEPRECATED]),
         data: None,
     }
-}
-
-/// Resolve an unqualified/qualified class name to a fully-qualified name
-/// using the use map and namespace context.
-///
-/// This mirrors the logic in `Backend::resolve_class_name` but only
-/// produces the FQN string without loading the class.
-fn resolve_to_fqn(
-    name: &str,
-    use_map: &HashMap<String, String>,
-    namespace: &Option<String>,
-) -> String {
-    // Fully qualified
-    if let Some(stripped) = name.strip_prefix('\\') {
-        return stripped.to_string();
-    }
-
-    // Unqualified (no backslash)
-    if !name.contains('\\') {
-        if let Some(fqn) = use_map.get(name) {
-            return fqn.clone();
-        }
-        if let Some(ns) = namespace {
-            return format!("{}\\{}", ns, name);
-        }
-        return name.to_string();
-    }
-
-    // Qualified (contains backslash, no leading backslash)
-    let first_segment = name.split('\\').next().unwrap_or(name);
-    if let Some(fqn_prefix) = use_map.get(first_segment) {
-        let rest = &name[first_segment.len()..];
-        return format!("{}{}", fqn_prefix, rest);
-    }
-    if let Some(ns) = namespace {
-        return format!("{}\\{}", ns, name);
-    }
-    name.to_string()
 }
 
 /// Resolve a member access subject text to a class FQN.

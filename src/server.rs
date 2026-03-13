@@ -270,22 +270,10 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content {
-            let result = crate::util::catch_panic_unwind_safe(
-                "goto_definition",
-                &uri,
-                Some(position),
-                || self.resolve_definition(&uri, &content, position),
-            );
-
-            if let Some(Some(location)) = result {
-                return Ok(Some(GotoDefinitionResponse::Scalar(location)));
-            }
-        }
-
-        Ok(None)
+        self.handle_with_position("goto_definition", &uri, position, |content| {
+            self.resolve_definition(&uri, content, position)
+                .map(GotoDefinitionResponse::Scalar)
+        })
     }
 
     async fn goto_implementation(
@@ -299,29 +287,10 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content {
-            let result = crate::util::catch_panic_unwind_safe(
-                "goto_implementation",
-                &uri,
-                Some(position),
-                || self.resolve_implementation(&uri, &content, position),
-            );
-
-            if let Some(Some(locations)) = result {
-                if locations.len() == 1 {
-                    return Ok(Some(GotoImplementationResponse::Scalar(
-                        locations.into_iter().next().unwrap(),
-                    )));
-                }
-                if !locations.is_empty() {
-                    return Ok(Some(GotoImplementationResponse::Array(locations)));
-                }
-            }
-        }
-
-        Ok(None)
+        self.handle_with_position("goto_implementation", &uri, position, |content| {
+            self.resolve_implementation(&uri, content, position)
+                .and_then(wrap_locations)
+        })
     }
 
     async fn goto_type_definition(
@@ -335,29 +304,10 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content {
-            let result = crate::util::catch_panic_unwind_safe(
-                "goto_type_definition",
-                &uri,
-                Some(position),
-                || self.resolve_type_definition(&uri, &content, position),
-            );
-
-            if let Some(Some(locations)) = result {
-                if locations.len() == 1 {
-                    return Ok(Some(GotoTypeDefinitionResponse::Scalar(
-                        locations.into_iter().next().unwrap(),
-                    )));
-                }
-                if !locations.is_empty() {
-                    return Ok(Some(GotoTypeDefinitionResponse::Array(locations)));
-                }
-            }
-        }
-
-        Ok(None)
+        self.handle_with_position("goto_type_definition", &uri, position, |content| {
+            self.resolve_type_definition(&uri, content, position)
+                .and_then(wrap_locations)
+        })
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
@@ -368,18 +318,9 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content
-            && let Some(hover) =
-                crate::util::catch_panic_unwind_safe("hover", &uri, Some(position), || {
-                    self.handle_hover(&uri, &content, position)
-                })
-        {
-            return Ok(hover);
-        }
-
-        Ok(None)
+        self.handle_with_position("hover", &uri, position, |content| {
+            self.handle_hover(&uri, content, position)
+        })
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -391,40 +332,22 @@ impl LanguageServer for Backend {
         let position = params.text_document_position.position;
         let include_declaration = params.context.include_declaration;
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content {
-            let result =
-                crate::util::catch_panic_unwind_safe("references", &uri, Some(position), || {
-                    self.find_references(&uri, &content, position, include_declaration)
-                });
-
-            if let Some(locations) = result {
-                return Ok(locations);
-            }
-        }
-
-        Ok(None)
+        self.handle_with_position("references", &uri, position, |content| {
+            self.find_references(&uri, content, position, include_declaration)
+        })
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri.to_string();
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content {
-            let actions = crate::util::catch_panic_unwind_safe("code_action", &uri, None, || {
-                self.handle_code_action(&uri, &content, &params)
-            });
-
-            if let Some(actions) = actions
-                && !actions.is_empty()
-            {
-                return Ok(Some(actions));
+        self.handle_with_uri("code_action", &uri, |content| {
+            let actions = self.handle_code_action(&uri, content, &params);
+            if actions.is_empty() {
+                None
+            } else {
+                Some(actions)
             }
-        }
-
-        Ok(None)
+        })
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
@@ -435,18 +358,9 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content
-            && let Some(sig_help) =
-                crate::util::catch_panic_unwind_safe("signature_help", &uri, Some(position), || {
-                    self.handle_signature_help(&uri, &content, position)
-                })
-        {
-            return Ok(sig_help);
-        }
-
-        Ok(None)
+        self.handle_with_position("signature_help", &uri, position, |content| {
+            self.handle_signature_help(&uri, content, position)
+        })
     }
 
     async fn document_highlight(
@@ -460,22 +374,9 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content {
-            let result = crate::util::catch_panic_unwind_safe(
-                "document_highlight",
-                &uri,
-                Some(position),
-                || self.handle_document_highlight(&uri, &content, position),
-            );
-
-            if let Some(highlights) = result {
-                return Ok(highlights);
-            }
-        }
-
-        Ok(None)
+        self.handle_with_position("document_highlight", &uri, position, |content| {
+            self.handle_document_highlight(&uri, content, position)
+        })
     }
 
     async fn prepare_rename(
@@ -485,50 +386,87 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.to_string();
         let position = params.position;
 
-        let content = self.get_file_content(&uri);
-
-        if let Some(content) = content {
-            let result = crate::util::catch_panic_unwind_safe(
-                "prepare_rename",
-                &uri,
-                Some(position),
-                || self.handle_prepare_rename(&uri, &content, position),
-            );
-
-            if let Some(response) = result {
-                return Ok(response);
-            }
-        }
-
-        Ok(None)
+        self.handle_with_position("prepare_rename", &uri, position, |content| {
+            self.handle_prepare_rename(&uri, content, position)
+        })
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = params.text_document_position.text_document.uri.to_string();
         let position = params.text_document_position.position;
-        let new_name = &params.new_name;
+        let new_name = params.new_name.clone();
 
-        let content = self.get_file_content(&uri);
+        self.handle_with_position("rename", &uri, position, |content| {
+            self.handle_rename(&uri, content, position, &new_name)
+        })
+    }
+}
 
-        if let Some(content) = content {
-            let new_name = new_name.to_string();
-            let result =
-                crate::util::catch_panic_unwind_safe("rename", &uri, Some(position), || {
-                    self.handle_rename(&uri, &content, position, &new_name)
-                });
-
-            if let Some(edit) = result {
-                return Ok(edit);
-            }
-        }
-
-        Ok(None)
+/// Convert a `Vec<Location>` into a `GotoDefinitionResponse`.
+///
+/// Returns `Scalar` for a single location, `Array` for multiple, and
+/// `None` for an empty vec.  This is used by `goto_implementation` and
+/// `goto_type_definition` which both share this pattern.
+fn wrap_locations(locations: Vec<Location>) -> Option<GotoDefinitionResponse> {
+    match locations.len() {
+        0 => None,
+        1 => Some(GotoDefinitionResponse::Scalar(
+            locations.into_iter().next().unwrap(),
+        )),
+        _ => Some(GotoDefinitionResponse::Array(locations)),
     }
 }
 
 // ─── Self-scan helpers ──────────────────────────────────────────────────────
 
 impl Backend {
+    /// Fetch the open-file content for `uri`, run `f` inside a panic
+    /// guard, and return the result.
+    ///
+    /// Returns `None` when the file is not open or when `f` panics.
+    /// Most LSP handlers follow the pattern "get content, run handler
+    /// with panic protection, return result" — this helper captures
+    /// that boilerplate in one place.
+    fn with_file_content<T>(
+        &self,
+        handler_name: &str,
+        uri: &str,
+        position: Option<Position>,
+        f: impl FnOnce(&str) -> T,
+    ) -> Option<T> {
+        let content = self.get_file_content(uri)?;
+        crate::util::catch_panic_unwind_safe(handler_name, uri, position, || f(&content))
+    }
+
+    /// Position-based handler helper. Extracts the URI and position from
+    /// the params, fetches file content, runs the closure inside a panic
+    /// guard, and flattens the nested `Option`.
+    ///
+    /// Covers the majority of LSP handlers that take a
+    /// `TextDocumentPositionParams` and return `Option<T>`.
+    fn handle_with_position<T>(
+        &self,
+        handler_name: &str,
+        uri: &str,
+        position: Position,
+        f: impl FnOnce(&str) -> Option<T>,
+    ) -> Result<Option<T>> {
+        Ok(self
+            .with_file_content(handler_name, uri, Some(position), f)
+            .flatten())
+    }
+
+    /// URI-only handler helper. Like [`handle_with_position`] but for
+    /// handlers that only need the document URI (no cursor position).
+    fn handle_with_uri<T>(
+        &self,
+        handler_name: &str,
+        uri: &str,
+        f: impl FnOnce(&str) -> Option<T>,
+    ) -> Result<Option<T>> {
+        Ok(self.with_file_content(handler_name, uri, None, f).flatten())
+    }
+
     // ── Initialization helpers ───────────────────────────────────────────
 
     /// Initialize a single-project workspace (root `composer.json` exists).

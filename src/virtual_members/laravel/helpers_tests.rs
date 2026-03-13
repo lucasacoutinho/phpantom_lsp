@@ -10,11 +10,6 @@ fn recognises_fqn() {
 }
 
 #[test]
-fn recognises_fqn_with_leading_backslash() {
-    assert!(is_eloquent_model("\\Illuminate\\Database\\Eloquent\\Model"));
-}
-
-#[test]
 fn rejects_unrelated_class() {
     assert!(!is_eloquent_model("App\\Models\\User"));
 }

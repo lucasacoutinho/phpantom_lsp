@@ -298,8 +298,7 @@ pub fn resolve_class_path(
     workspace_root: &Path,
     class_name: &str,
 ) -> Option<PathBuf> {
-    // Strip leading `\` (PHP fully-qualified name syntax)
-    let name = class_name.strip_prefix('\\').unwrap_or(class_name);
+    let name = class_name;
 
     // Skip built-in type keywords that are never real classes
     if is_builtin_type(name) {

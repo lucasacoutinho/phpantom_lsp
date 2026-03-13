@@ -68,10 +68,10 @@ fn modern_accessor_fqn() {
 }
 
 #[test]
-fn modern_accessor_fqn_with_backslash() {
+fn modern_accessor_fqn_canonical() {
     let method = make_method(
         "fullName",
-        Some("\\Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
+        Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
     );
     assert!(is_modern_accessor(&method));
 }
@@ -124,10 +124,10 @@ fn accessor_type_with_two_generic_args() {
 }
 
 #[test]
-fn accessor_type_with_leading_backslash() {
+fn accessor_type_canonical_fqn() {
     let method = make_method(
         "firstName",
-        Some("\\Illuminate\\Database\\Eloquent\\Casts\\Attribute<int>"),
+        Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute<int>"),
     );
     assert_eq!(extract_modern_accessor_type(&method), "int");
 }

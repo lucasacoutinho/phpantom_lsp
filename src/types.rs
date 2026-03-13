@@ -126,26 +126,25 @@ impl fmt::Display for PhpVersion {
     }
 }
 
-/// The return type of `Backend::extract_class_like_members`.
-///
-/// Contains `(methods, properties, constants, used_traits, trait_precedences, trait_aliases)`
-/// extracted from the members of a class-like declaration.
-/// Extracted class-like members from a class body.
-///
-/// Fields: methods, properties, constants, used_traits, trait_precedences,
-/// trait_aliases, inline_use_generics.
-///
-/// The last element holds `@use` generics extracted from docblocks on trait
-/// `use` statements inside the class body (e.g. `/** @use BuildsQueries<TModel> */`).
-pub type ExtractedMembers = (
-    Vec<MethodInfo>,
-    Vec<PropertyInfo>,
-    Vec<ConstantInfo>,
-    Vec<String>,
-    Vec<TraitPrecedence>,
-    Vec<TraitAlias>,
-    Vec<(String, Vec<String>)>,
-);
+/// Members extracted from a class-like body by `Backend::extract_class_like_members`.
+pub struct ExtractedMembers {
+    /// Methods declared directly in the class body.
+    pub methods: Vec<MethodInfo>,
+    /// Properties declared directly in the class body.
+    pub properties: Vec<PropertyInfo>,
+    /// Class constants declared directly in the class body.
+    pub constants: Vec<ConstantInfo>,
+    /// Trait names referenced by `use` statements inside the class body.
+    pub used_traits: Vec<String>,
+    /// `insteadof` precedence rules from trait `use` blocks.
+    pub trait_precedences: Vec<TraitPrecedence>,
+    /// `as` alias rules from trait `use` blocks.
+    pub trait_aliases: Vec<TraitAlias>,
+    /// `@use` generics extracted from docblocks on trait `use` statements
+    /// inside the class body (e.g. `/** @use BuildsQueries<TModel> */`).
+    /// Each entry is `(trait_name, vec_of_type_args)`.
+    pub inline_use_generics: Vec<(String, Vec<String>)>,
+}
 
 // ─── Array Shape Types ──────────────────────────────────────────────────────
 

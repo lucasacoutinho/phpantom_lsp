@@ -491,6 +491,7 @@ fn resolve_name_to_fqn(
     use_map: &HashMap<String, String>,
     namespace: &Option<String>,
 ) -> String {
+    // Input boundary: name from AST may be fully-qualified with leading `\`.
     if let Some(stripped) = name.strip_prefix('\\') {
         return stripped.to_string();
     }

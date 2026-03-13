@@ -24,11 +24,11 @@ const CASTS_ATTRIBUTES_FQN: &str = "Illuminate\\Contracts\\Database\\Eloquent\\C
 /// column is treated as `\Carbon\Carbon` in completions.  This table
 /// covers all built-in Laravel cast types.
 const CAST_TYPE_MAP: &[(&str, &str)] = &[
-    ("datetime", "\\Carbon\\Carbon"),
-    ("date", "\\Carbon\\Carbon"),
+    ("datetime", "Carbon\\Carbon"),
+    ("date", "Carbon\\Carbon"),
     ("timestamp", "int"),
-    ("immutable_datetime", "\\Carbon\\CarbonImmutable"),
-    ("immutable_date", "\\Carbon\\CarbonImmutable"),
+    ("immutable_datetime", "Carbon\\CarbonImmutable"),
+    ("immutable_date", "Carbon\\CarbonImmutable"),
     ("boolean", "bool"),
     ("bool", "bool"),
     ("integer", "int"),
@@ -40,10 +40,10 @@ const CAST_TYPE_MAP: &[(&str, &str)] = &[
     ("array", "array"),
     ("json", "array"),
     ("object", "object"),
-    ("collection", "\\Illuminate\\Support\\Collection"),
+    ("collection", "Illuminate\\Support\\Collection"),
     ("encrypted", "string"),
     ("encrypted:array", "array"),
-    ("encrypted:collection", "\\Illuminate\\Support\\Collection"),
+    ("encrypted:collection", "Illuminate\\Support\\Collection"),
     ("encrypted:object", "object"),
     ("hashed", "string"),
 ];
@@ -86,33 +86,32 @@ pub(super) fn cast_type_to_php_type(
 
     // 3. Handle `datetime:format` variants (e.g. `datetime:Y-m-d`).
     if lower.starts_with("datetime:") {
-        return "\\Carbon\\Carbon".to_string();
+        return "Carbon\\Carbon".to_string();
     }
 
     // 4. Handle `date:format` variants.
     if lower.starts_with("date:") {
-        return "\\Carbon\\Carbon".to_string();
+        return "Carbon\\Carbon".to_string();
     }
 
     // 5. Handle `immutable_datetime:format` variants.
     if lower.starts_with("immutable_datetime:") {
-        return "\\Carbon\\CarbonImmutable".to_string();
+        return "Carbon\\CarbonImmutable".to_string();
     }
 
     // 6. Handle `immutable_date:format` variants.
     if lower.starts_with("immutable_date:") {
-        return "\\Carbon\\CarbonImmutable".to_string();
+        return "Carbon\\CarbonImmutable".to_string();
     }
 
     // 7. Assume it's a class-based cast.  Strip any `:argument` suffix
     //    (e.g. `App\Casts\Address:nullable` → `App\Casts\Address`).
     let class_name = cast_type.split(':').next().unwrap_or(cast_type);
-    let clean = class_name.strip_prefix('\\').unwrap_or(class_name);
 
-    if let Some(cast_class) = class_loader(clean) {
+    if let Some(cast_class) = class_loader(class_name) {
         // 7a. Enums — the property type is the enum itself.
         if cast_class.kind == ClassLikeKind::Enum {
-            return format!("\\{clean}");
+            return class_name.to_string();
         }
 
         // 7b. Castable implementations — the property type is the
@@ -120,7 +119,7 @@ pub(super) fn cast_type_to_php_type(
         //     which returns a CastsAttributes instance, but the
         //     developer-facing type is the Castable class.
         if is_castable(&cast_class) {
-            return format!("\\{clean}");
+            return class_name.to_string();
         }
 
         // 7c. `@implements CastsAttributes<TGet, TSet>` — the canonical
@@ -157,10 +156,9 @@ pub(super) fn cast_type_to_php_type(
 /// name or FQN, with or without leading backslash).
 fn extract_tget_from_implements_generics(class: &ClassInfo) -> Option<String> {
     for (name, args) in &class.implements_generics {
-        let stripped = name.strip_prefix('\\').unwrap_or(name);
-        if (stripped == CASTS_ATTRIBUTES_FQN
-            || stripped == CASTS_ATTRIBUTES_SHORT
-            || short_name(stripped) == CASTS_ATTRIBUTES_SHORT)
+        if (name == CASTS_ATTRIBUTES_FQN
+            || name == CASTS_ATTRIBUTES_SHORT
+            || short_name(name) == CASTS_ATTRIBUTES_SHORT)
             && let Some(tget) = args.first()
             && !tget.is_empty()
         {
@@ -176,10 +174,10 @@ fn extract_tget_from_implements_generics(class: &ClassInfo) -> Option<String> {
 /// class's `interfaces` list (with or without leading backslash, and
 /// also matches the short name `Castable`).
 fn is_castable(class: &ClassInfo) -> bool {
-    class.interfaces.iter().any(|iface| {
-        let stripped = iface.strip_prefix('\\').unwrap_or(iface);
-        stripped == CASTABLE_FQN || stripped == "Castable"
-    })
+    class
+        .interfaces
+        .iter()
+        .any(|iface| iface == CASTABLE_FQN || iface == "Castable")
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────

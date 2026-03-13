@@ -245,16 +245,8 @@ impl Backend {
                 continue;
             }
 
-            // Strip leading `\` for lookups (resolve_class_reference
-            // handles both forms, but we pass the bare name for
-            // consistency).
-            let lookup_name = name.strip_prefix('\\').unwrap_or(name);
-
-            // Determine if the name is already fully-qualified.
-            let is_fqn = name.starts_with('\\');
-
             if let Some(loc) =
-                self.resolve_class_reference(uri, content, lookup_name, is_fqn, cursor_offset)
+                self.resolve_class_reference(uri, content, name, false, cursor_offset)
             {
                 // Avoid duplicate locations.
                 if !locations

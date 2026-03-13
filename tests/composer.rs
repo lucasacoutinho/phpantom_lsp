@@ -176,7 +176,7 @@ fn test_resolve_nested_namespace() {
 }
 
 #[test]
-fn test_resolve_strips_leading_backslash() {
+fn test_resolve_canonical_fqn() {
     let ws = TestWorkspace::new(
         r#"{
             "autoload": {
@@ -192,7 +192,7 @@ fn test_resolve_strips_leading_backslash() {
     );
 
     let (mappings, _vendor_dir) = parse_composer_json(ws.root());
-    let result = resolve_class_path(&mappings, ws.root(), "\\Klarna\\Customer");
+    let result = resolve_class_path(&mappings, ws.root(), "Klarna\\Customer");
 
     assert!(result.is_some());
 }

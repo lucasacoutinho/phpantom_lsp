@@ -191,8 +191,8 @@ fn test_apply_substitution_fqn_closure() {
     subs.insert("TValue".to_string(), "Item".to_string());
 
     assert_eq!(
-        apply_substitution("\\Closure(TValue): void", &subs),
-        "\\Closure(Item): void"
+        apply_substitution("Closure(TValue): void", &subs),
+        "Closure(Item): void"
     );
 }
 

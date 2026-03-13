@@ -24,18 +24,7 @@ use super::ELOQUENT_BUILDER_FQN;
 /// Replace `\Illuminate\Database\Eloquent\Collection` with a custom
 /// collection class in a type string, preserving generic parameters.
 pub(super) fn replace_eloquent_collection(type_str: &str, custom_collection: &str) -> String {
-    let fqn_prefixed = format!("\\{ELOQUENT_COLLECTION_FQN}");
-    let bare_fqn = ELOQUENT_COLLECTION_FQN;
-    let replacement = if custom_collection.starts_with('\\') {
-        custom_collection.to_string()
-    } else {
-        format!("\\{custom_collection}")
-    };
-
-    // Replace both `\Illuminate\...\Collection` and `Illuminate\...\Collection`
-    // (with and without leading backslash).
-    let result = type_str.replace(&fqn_prefixed, &replacement);
-    result.replace(bare_fqn, replacement.trim_start_matches('\\'))
+    type_str.replace(ELOQUENT_COLLECTION_FQN, custom_collection)
 }
 
 /// Build static virtual methods by forwarding Eloquent Builder's public
@@ -87,7 +76,7 @@ pub(super) fn build_builder_forwarded_methods(
 
     // Build a substitution map: TModel → concrete model class name,
     // and static/$this/self → Builder<ConcreteModel>.
-    let builder_self_type = format!("\\{ELOQUENT_BUILDER_FQN}<{}>", class.name);
+    let builder_self_type = format!("{ELOQUENT_BUILDER_FQN}<{}>", class.name);
     let mut subs = HashMap::new();
     for param in &builder_class.template_params {
         subs.insert(param.clone(), class.name.clone());

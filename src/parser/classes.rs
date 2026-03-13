@@ -654,7 +654,7 @@ impl Backend {
 
                     let doc_info = extract_class_docblock(class, doc_ctx);
 
-                    let (
+                    let ExtractedMembers {
                         methods,
                         properties,
                         constants,
@@ -662,7 +662,7 @@ impl Backend {
                         trait_precedences,
                         trait_aliases,
                         inline_use_generics,
-                    ) = Self::extract_class_like_members(
+                    } = Self::extract_class_like_members(
                         class.members.iter(),
                         doc_ctx,
                         &doc_info.template_params,
@@ -759,7 +759,7 @@ impl Backend {
 
                     let doc_info = extract_class_docblock(iface, doc_ctx);
 
-                    let (
+                    let ExtractedMembers {
                         methods,
                         properties,
                         constants,
@@ -767,7 +767,7 @@ impl Backend {
                         trait_precedences,
                         trait_aliases,
                         inline_use_generics,
-                    ) = Self::extract_class_like_members(
+                    } = Self::extract_class_like_members(
                         iface.members.iter(),
                         doc_ctx,
                         &doc_info.template_params,
@@ -826,7 +826,7 @@ impl Backend {
 
                     let doc_info = extract_class_docblock(trait_def, doc_ctx);
 
-                    let (
+                    let ExtractedMembers {
                         methods,
                         properties,
                         constants,
@@ -834,7 +834,7 @@ impl Backend {
                         trait_precedences,
                         trait_aliases,
                         inline_use_generics,
-                    ) = Self::extract_class_like_members(
+                    } = Self::extract_class_like_members(
                         trait_def.members.iter(),
                         doc_ctx,
                         &doc_info.template_params,
@@ -895,15 +895,22 @@ impl Backend {
                 Statement::Enum(enum_def) => {
                     let enum_name = enum_def.name.value.to_string();
 
-                    let (methods, properties, constants, mut used_traits, _, _, _) =
-                        Self::extract_class_like_members(enum_def.members.iter(), doc_ctx, &[]);
+                    let ExtractedMembers {
+                        methods,
+                        properties,
+                        constants,
+                        mut used_traits,
+                        ..
+                    } = Self::extract_class_like_members(enum_def.members.iter(), doc_ctx, &[]);
 
                     // Enums implicitly implement UnitEnum or BackedEnum.
-                    // We add the interface as a fully-qualified name (leading
-                    // backslash) so that `resolve_name` does not prepend the
-                    // current namespace.  The class_loader / merge_traits_into
-                    // path will pick up the interface from the SPL stubs and
-                    // merge its methods (cases, from, tryFrom, …) automatically.
+                    // We add the interface with a leading backslash so that
+                    // `resolve_name` treats it as fully-qualified and does not
+                    // prepend the current namespace.  `resolve_name` then
+                    // strips the `\` to produce the canonical form (`BackedEnum`
+                    // / `UnitEnum`).  The class_loader / merge_traits_into path
+                    // will pick up the interface from the SPL stubs and merge
+                    // its methods (cases, from, tryFrom, …) automatically.
                     let implicit_interface = if enum_def.backing_type_hint.is_some() {
                         "\\BackedEnum"
                     } else {
@@ -1017,8 +1024,15 @@ impl Backend {
             })
             .unwrap_or_default();
 
-        let (methods, properties, constants, used_traits, trait_precedences, trait_aliases, _) =
-            Self::extract_class_like_members(anon.members.iter(), doc_ctx, &[]);
+        let ExtractedMembers {
+            methods,
+            properties,
+            constants,
+            used_traits,
+            trait_precedences,
+            trait_aliases,
+            ..
+        } = Self::extract_class_like_members(anon.members.iter(), doc_ctx, &[]);
 
         let start_offset = anon.left_brace.start.offset;
         let end_offset = anon.right_brace.end.offset;
@@ -2040,7 +2054,7 @@ impl Backend {
             }
         }
 
-        (
+        ExtractedMembers {
             methods,
             properties,
             constants,
@@ -2048,6 +2062,6 @@ impl Backend {
             trait_precedences,
             trait_aliases,
             inline_use_generics,
-        )
+        }
     }
 }

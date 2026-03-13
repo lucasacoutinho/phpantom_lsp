@@ -476,11 +476,10 @@ pub(crate) fn find_class_by_name<'a>(
     all_classes: &'a [ClassInfo],
     name: &str,
 ) -> Option<&'a ClassInfo> {
-    let clean = name.strip_prefix('\\').unwrap_or(name);
-    let short = short_name(clean);
+    let short = short_name(name);
 
-    if clean.contains('\\') {
-        let expected_ns = clean.rsplit_once('\\').map(|(ns, _)| ns);
+    if name.contains('\\') {
+        let expected_ns = name.rsplit_once('\\').map(|(ns, _)| ns);
         all_classes
             .iter()
             .find(|c| c.name == short && c.file_namespace.as_deref() == expected_ns)
@@ -645,13 +644,11 @@ impl Backend {
     ///
     /// Returns a cloned `ClassInfo` if found, or `None`.
     pub(crate) fn find_class_in_ast_map(&self, class_name: &str) -> Option<ClassInfo> {
-        let normalized = class_name.strip_prefix('\\').unwrap_or(class_name);
-
         // ── Fast path: O(1) lookup via fqn_index ──
         // For namespace-qualified names the FQN is the normalized name
         // itself.  For bare names (no backslash) the FQN equals the
         // short name, which is also stored in the index.
-        if let Some(cls) = self.fqn_index.read().get(normalized) {
+        if let Some(cls) = self.fqn_index.read().get(class_name) {
             return Some(cls.clone());
         }
 
@@ -659,9 +656,9 @@ impl Backend {
         // Covers edge cases where the fqn_index has not been populated
         // yet (e.g. anonymous classes, or race conditions during initial
         // indexing).
-        let last_segment = short_name(normalized);
-        let expected_ns: Option<&str> = if normalized.contains('\\') {
-            Some(&normalized[..normalized.len() - last_segment.len() - 1])
+        let last_segment = short_name(class_name);
+        let expected_ns: Option<&str> = if class_name.contains('\\') {
+            Some(&class_name[..class_name.len() - last_segment.len() - 1])
         } else {
             None
         };

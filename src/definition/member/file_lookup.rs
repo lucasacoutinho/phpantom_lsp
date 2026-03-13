@@ -57,10 +57,9 @@ impl Backend {
         current_uri: &str,
         current_content: &str,
     ) -> Option<(String, String)> {
-        let normalized = class_name.strip_prefix('\\').unwrap_or(class_name);
-        let last_segment = short_name(normalized);
-        let expected_ns: Option<&str> = if normalized.contains('\\') {
-            Some(&normalized[..normalized.len() - last_segment.len() - 1])
+        let last_segment = short_name(class_name);
+        let expected_ns: Option<&str> = if class_name.contains('\\') {
+            Some(&class_name[..class_name.len() - last_segment.len() - 1])
         } else {
             None
         };

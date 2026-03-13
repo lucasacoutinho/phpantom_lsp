@@ -39,6 +39,7 @@ use crate::symbol_map::SymbolKind;
 use crate::types::{AccessKind, ClassInfo};
 use crate::virtual_members::{resolve_class_fully_cached, resolve_class_fully_maybe_cached};
 
+use super::helpers::{find_innermost_enclosing_class, make_diagnostic};
 use super::offset_range_to_lsp_range;
 
 /// Diagnostic code used for unknown-member diagnostics so that code
@@ -170,19 +171,12 @@ impl Backend {
                         "Cannot access {} '{}' on type '{}'",
                         kind_label, member_name, scalar,
                     );
-                    out.push(Diagnostic {
+                    out.push(make_diagnostic(
                         range,
-                        severity: Some(DiagnosticSeverity::ERROR),
-                        code: Some(NumberOrString::String(
-                            SCALAR_MEMBER_ACCESS_CODE.to_string(),
-                        )),
-                        code_description: None,
-                        source: Some("phpantom".to_string()),
+                        DiagnosticSeverity::ERROR,
+                        SCALAR_MEMBER_ACCESS_CODE,
                         message,
-                        related_information: None,
-                        tags: None,
-                        data: None,
-                    });
+                    ));
                     continue;
                 }
 
@@ -210,17 +204,12 @@ impl Backend {
                         "Cannot verify {} '{}' — subject type '{}' could not be resolved",
                         kind_label, member_name, unresolved_class,
                     );
-                    out.push(Diagnostic {
+                    out.push(make_diagnostic(
                         range,
-                        severity: Some(DiagnosticSeverity::WARNING),
-                        code: Some(NumberOrString::String(UNKNOWN_MEMBER_CODE.to_string())),
-                        code_description: None,
-                        source: Some("phpantom".to_string()),
+                        DiagnosticSeverity::WARNING,
+                        UNKNOWN_MEMBER_CODE,
                         message,
-                        related_information: None,
-                        tags: None,
-                        data: None,
-                    });
+                    ));
                     continue;
                 }
 
@@ -245,17 +234,12 @@ impl Backend {
                         "Cannot verify {} '{}' — subject type could not be resolved",
                         kind_label, member_name,
                     );
-                    out.push(Diagnostic {
+                    out.push(make_diagnostic(
                         range,
-                        severity: Some(DiagnosticSeverity::WARNING),
-                        code: Some(NumberOrString::String(UNKNOWN_MEMBER_CODE.to_string())),
-                        code_description: None,
-                        source: Some("phpantom".to_string()),
+                        DiagnosticSeverity::WARNING,
+                        UNKNOWN_MEMBER_CODE,
                         message,
-                        related_information: None,
-                        tags: None,
-                        data: None,
-                    });
+                    ));
                 }
                 continue;
             }
@@ -364,17 +348,12 @@ impl Backend {
                 )
             };
 
-            out.push(Diagnostic {
+            out.push(make_diagnostic(
                 range,
-                severity: Some(DiagnosticSeverity::WARNING),
-                code: Some(NumberOrString::String(UNKNOWN_MEMBER_CODE.to_string())),
-                code_description: None,
-                source: Some("phpantom".to_string()),
+                DiagnosticSeverity::WARNING,
+                UNKNOWN_MEMBER_CODE,
                 message,
-                related_information: None,
-                tags: None,
-                data: None,
-            });
+            ));
         }
     }
 }
@@ -576,18 +555,6 @@ fn resolve_scalar_subject_type(
         }
         _ => None,
     }
-}
-
-/// Find the innermost class whose body span contains `offset`.
-///
-/// Returns a reference to the `ClassInfo` with the smallest span that
-/// encloses `offset`, including anonymous classes.  Used for
-/// `$this`/`self`/`static` resolution inside the completion resolver.
-fn find_innermost_enclosing_class(local_classes: &[ClassInfo], offset: u32) -> Option<&ClassInfo> {
-    local_classes
-        .iter()
-        .filter(|c| offset >= c.start_offset && offset <= c.end_offset)
-        .min_by_key(|c| c.end_offset.saturating_sub(c.start_offset))
 }
 
 /// Return a user-friendly display name for a class.

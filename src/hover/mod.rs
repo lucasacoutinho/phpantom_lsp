@@ -391,15 +391,7 @@ impl Backend {
                         .get(trimmed.len().wrapping_sub(4))
                         .is_none_or(|&b| !b.is_ascii_alphanumeric() && b != b'_');
 
-                let resolved_name;
-                let lookup_name = if *is_fqn {
-                    resolved_name = format!("\\{}", name);
-                    &resolved_name
-                } else {
-                    name.as_str()
-                };
-
-                if is_new_context && let Some(cls) = class_loader(lookup_name) {
+                if is_new_context && let Some(cls) = class_loader(name) {
                     let merged = crate::virtual_members::resolve_class_fully_cached(
                         &cls,
                         &class_loader,
@@ -414,14 +406,7 @@ impl Backend {
                     }
                 }
 
-                self.hover_class_reference(
-                    lookup_name,
-                    *is_fqn,
-                    uri,
-                    &ctx,
-                    &class_loader,
-                    cursor_offset,
-                )
+                self.hover_class_reference(name, *is_fqn, uri, &ctx, &class_loader, cursor_offset)
             }
 
             SymbolKind::ClassDeclaration { .. } | SymbolKind::MemberDeclaration { .. } => {
@@ -649,16 +634,13 @@ impl Backend {
         class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
         cursor_offset: u32,
     ) -> Option<Hover> {
-        // The caller already prepends `\` for FQN names, so we can
-        // call class_loader directly.
         let class_info = class_loader(name);
 
         if let Some(cls) = class_info {
             Some(self.hover_for_class_info(&cls))
         } else {
             // Check whether this is a template parameter in scope.
-            let bare_name = name.strip_prefix('\\').unwrap_or(name);
-            if let Some(tpl) = self.find_template_def_for_hover(uri, bare_name, cursor_offset) {
+            if let Some(tpl) = self.find_template_def_for_hover(uri, name, cursor_offset) {
                 return Some(tpl);
             }
             None
@@ -1181,25 +1163,18 @@ fn resolve_type_namespace(
     type_str: &str,
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
 ) -> Option<String> {
-    // Find the base type name: strip leading `\`, take everything
-    // before `<`, `|`, `&`, `?`, or `[`.
-    let stripped = type_str.strip_prefix('\\').unwrap_or(type_str);
-    let base_end = stripped
+    // Find the base type name: take everything before `<`, `|`, `&`,
+    // `?`, or `[`.
+    let base_end = type_str
         .find(['<', '|', '&', '?', '['])
-        .unwrap_or(stripped.len());
-    let base = stripped[..base_end].trim();
+        .unwrap_or(type_str.len());
+    let base = type_str[..base_end].trim();
 
     if base.is_empty() {
         return None;
     }
 
-    // Try both the original (possibly FQN) form and the stripped form.
-    let original_base_end = type_str
-        .find(['<', '|', '&', '?', '['])
-        .unwrap_or(type_str.len());
-    let original_base = type_str[..original_base_end].trim();
-
-    if let Some(cls) = class_loader(original_base).or_else(|| class_loader(base)) {
+    if let Some(cls) = class_loader(base) {
         return cls
             .file_namespace
             .as_ref()
@@ -1209,8 +1184,11 @@ fn resolve_type_namespace(
 
     // Fallback: parse the namespace from the FQN string itself.
     // E.g. `App\Models\User` → `App\Models`.
-    if let Some(pos) = base.rfind('\\') {
-        let ns = &base[..pos];
+    // Strip leading `\` — input may be a raw docblock type like
+    // `\App\Models\User` that hasn't been through resolve_type_string.
+    let canonical = base.strip_prefix('\\').unwrap_or(base);
+    if let Some(pos) = canonical.rfind('\\') {
+        let ns = &canonical[..pos];
         if !ns.is_empty() {
             return Some(ns.to_string());
         }

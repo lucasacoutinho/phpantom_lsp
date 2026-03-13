@@ -15,7 +15,7 @@ use super::helpers::extends_eloquent_model;
 
 /// The default return type for scope methods that don't declare a return
 /// type or return `void`.
-const DEFAULT_SCOPE_RETURN_TYPE: &str = "\\Illuminate\\Database\\Eloquent\\Builder<static>";
+const DEFAULT_SCOPE_RETURN_TYPE: &str = "Illuminate\\Database\\Eloquent\\Builder<static>";
 
 /// Determine whether a method is an Eloquent scope.
 ///

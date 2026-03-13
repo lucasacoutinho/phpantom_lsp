@@ -837,7 +837,7 @@ impl Backend {
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '\\')
         {
-            return Some(name.strip_prefix('\\').unwrap_or(name).to_string());
+            return Some(name.to_string());
         }
 
         // new ClassName(…) → ClassName

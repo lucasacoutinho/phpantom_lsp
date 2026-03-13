@@ -231,7 +231,7 @@ fn type_hint_to_classes_depth(
 
     // For class lookup, strip any remaining generics from the base
     // (should already be clean, but defensive) and use the short name.
-    let base_clean = strip_generics(base_hint.strip_prefix('\\').unwrap_or(base_hint));
+    let base_clean = strip_generics(base_hint);
     let short = short_name(&base_clean);
 
     // Try local (current-file) lookup by last segment.

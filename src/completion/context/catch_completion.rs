@@ -380,8 +380,7 @@ impl Backend {
             return false; // prevent infinite loops
         }
 
-        let normalized = class_name.strip_prefix('\\').unwrap_or(class_name);
-        let short = short_name(normalized);
+        let short = short_name(class_name);
 
         // These three types form the root of PHP's exception hierarchy.
         if matches!(short, "Throwable" | "Exception" | "Error") {

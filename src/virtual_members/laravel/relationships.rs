@@ -3,7 +3,7 @@
 //!
 //! This module handles the mapping from Eloquent relationship method
 //! return types (e.g. `HasMany<Post, $this>`) to virtual property types
-//! (e.g. `\Illuminate\Database\Eloquent\Collection<Post>`), as well as
+//! (e.g. `Illuminate\Database\Eloquent\Collection<Post>`), as well as
 //! inferring relationship types from method body text when no `@return`
 //! annotation is present.
 
@@ -14,49 +14,47 @@ use crate::util::short_name;
 use super::helpers::{camel_to_snake, snake_to_camel};
 
 /// Fully-qualified relationship class names used by
-/// [`infer_relationship_from_body`].  The leading `\` ensures that
-/// `resolve_type_string` leaves these names untouched (it skips names
-/// that are already fully-qualified).
+/// [`infer_relationship_from_body`].
 const RELATIONSHIP_METHOD_FQN_MAP: &[(&str, &str)] = &[
     (
         "hasOne",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\HasOne",
+        "Illuminate\\Database\\Eloquent\\Relations\\HasOne",
     ),
     (
         "hasMany",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\HasMany",
+        "Illuminate\\Database\\Eloquent\\Relations\\HasMany",
     ),
     (
         "belongsTo",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\BelongsTo",
+        "Illuminate\\Database\\Eloquent\\Relations\\BelongsTo",
     ),
     (
         "belongsToMany",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\BelongsToMany",
+        "Illuminate\\Database\\Eloquent\\Relations\\BelongsToMany",
     ),
     (
         "morphOne",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\MorphOne",
+        "Illuminate\\Database\\Eloquent\\Relations\\MorphOne",
     ),
     (
         "morphMany",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\MorphMany",
+        "Illuminate\\Database\\Eloquent\\Relations\\MorphMany",
     ),
     (
         "morphTo",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\MorphTo",
+        "Illuminate\\Database\\Eloquent\\Relations\\MorphTo",
     ),
     (
         "morphToMany",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\MorphToMany",
+        "Illuminate\\Database\\Eloquent\\Relations\\MorphToMany",
     ),
     (
         "hasManyThrough",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\HasManyThrough",
+        "Illuminate\\Database\\Eloquent\\Relations\\HasManyThrough",
     ),
     (
         "hasOneThrough",
-        "\\Illuminate\\Database\\Eloquent\\Relations\\HasOneThrough",
+        "Illuminate\\Database\\Eloquent\\Relations\\HasOneThrough",
     ),
 ];
 
@@ -118,10 +116,8 @@ pub(super) fn classify_relationship(return_type: &str) -> Option<RelationshipKin
     let sname = short_name(base);
 
     // When the base type is qualified (contains `\`), verify it belongs
-    // to the Eloquent Relations namespace.  Strip the optional leading
-    // `\` before comparing.
-    let base_stripped = base.strip_prefix('\\').unwrap_or(base);
-    if base_stripped.contains('\\') && !base_stripped.starts_with(ELOQUENT_RELATIONS_NS) {
+    // to the Eloquent Relations namespace.
+    if base.contains('\\') && !base.starts_with(ELOQUENT_RELATIONS_NS) {
         return None;
     }
 
@@ -160,8 +156,8 @@ pub(super) fn extract_related_type(return_type: &str) -> Option<String> {
 ///
 /// - Singular relationships → the related type as-is (nullable).
 /// - Collection relationships → the custom collection class (if set) or
-///   `\Illuminate\Database\Eloquent\Collection`, parameterised with `<TRelated>`.
-/// - MorphTo → `\Illuminate\Database\Eloquent\Model`.
+///   `Illuminate\Database\Eloquent\Collection`, parameterised with `<TRelated>`.
+/// - MorphTo → `Illuminate\Database\Eloquent\Model`.
 pub(super) fn build_property_type(
     kind: RelationshipKind,
     related_type: Option<&str>,
@@ -170,13 +166,13 @@ pub(super) fn build_property_type(
     match kind {
         RelationshipKind::Singular => related_type.map(|t| t.to_string()),
         RelationshipKind::Collection => {
-            let inner = related_type.unwrap_or("\\Illuminate\\Database\\Eloquent\\Model");
+            let inner = related_type.unwrap_or("Illuminate\\Database\\Eloquent\\Model");
             let collection_class = custom_collection
-                .map(|c| format!("\\{}", c.strip_prefix('\\').unwrap_or(c)))
-                .unwrap_or_else(|| format!("\\{ELOQUENT_COLLECTION_FQN}"));
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| ELOQUENT_COLLECTION_FQN.to_string());
             Some(format!("{collection_class}<{inner}>"))
         }
-        RelationshipKind::MorphTo => Some("\\Illuminate\\Database\\Eloquent\\Model".to_string()),
+        RelationshipKind::MorphTo => Some("Illuminate\\Database\\Eloquent\\Model".to_string()),
     }
 }
 
@@ -211,12 +207,7 @@ pub(crate) fn count_property_to_relationship_method(
 /// When a relationship method has no `@return` annotation, this function
 /// scans the body for patterns like `$this->hasMany(Post::class)` and
 /// synthesizes a fully-qualified return type string (e.g.
-/// `\Illuminate\Database\Eloquent\Relations\HasMany<Post>`).
-///
-/// The returned type uses a leading `\` so that `resolve_type_string`
-/// in the parser leaves it untouched.  Without this, the parser would
-/// namespace-qualify the short name (e.g. `HasMany` → `App\Models\HasMany`)
-/// and `classify_relationship` would reject it.
+/// `Illuminate\Database\Eloquent\Relations\HasMany<Post>`).
 ///
 /// Supports all standard Eloquent relationship builder methods:
 /// `hasOne`, `hasMany`, `belongsTo`, `belongsToMany`, `morphOne`,
@@ -234,8 +225,14 @@ pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {
 
         // `morphTo` never carries a related-model generic parameter;
         // the concrete type is determined at runtime.
+        //
+        // The FQN is prefixed with `\` so that `resolve_type_string`
+        // in `ast_update.rs` recognises it as already-qualified and
+        // does not prepend the declaring file's namespace.
+        // `resolve_name` will strip the leading `\` back to canonical
+        // form during the resolution pass.
         if method_name == "morphTo" {
-            return Some(fqn.to_string());
+            return Some(format!("\\{fqn}"));
         }
 
         // Extract the first argument from the call.  We look for
@@ -244,13 +241,13 @@ pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {
         let after_paren = &body_text[args_start..];
 
         if let Some(class_arg) = extract_class_argument(after_paren) {
-            return Some(format!("{fqn}<{class_arg}>"));
+            return Some(format!("\\{fqn}<{class_arg}>"));
         }
 
         // No `::class` argument found — return the bare relationship
         // name without generics.  The provider will handle it the same
         // way it handles annotated relationships without generics.
-        return Some(fqn.to_string());
+        return Some(format!("\\{fqn}"));
     }
 
     None

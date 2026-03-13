@@ -37,6 +37,7 @@ use crate::completion::resolver::{ResolutionCtx, resolve_target_classes};
 use crate::symbol_map::SymbolKind;
 use crate::types::{AccessKind, ClassInfo};
 
+use super::helpers::{find_innermost_enclosing_class, make_diagnostic};
 use super::offset_range_to_lsp_range;
 
 /// Diagnostic code used for unresolved-member-access diagnostics.
@@ -151,31 +152,14 @@ impl Backend {
                 subject_display,
             );
 
-            out.push(Diagnostic {
+            out.push(make_diagnostic(
                 range,
-                severity: Some(DiagnosticSeverity::HINT),
-                code: Some(NumberOrString::String(
-                    UNRESOLVED_MEMBER_ACCESS_CODE.to_string(),
-                )),
-                code_description: None,
-                source: Some("phpantom".to_string()),
+                DiagnosticSeverity::HINT,
+                UNRESOLVED_MEMBER_ACCESS_CODE,
                 message,
-                related_information: None,
-                tags: None,
-                data: None,
-            });
+            ));
         }
     }
-}
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
-
-/// Find the innermost class whose body span contains `offset`.
-fn find_innermost_enclosing_class(local_classes: &[ClassInfo], offset: u32) -> Option<&ClassInfo> {
-    local_classes
-        .iter()
-        .filter(|c| offset >= c.start_offset && offset <= c.end_offset)
-        .min_by_key(|c| c.end_offset.saturating_sub(c.start_offset))
 }
 
 #[cfg(test)]

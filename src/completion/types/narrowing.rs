@@ -290,12 +290,11 @@ pub(crate) fn is_subtype_of(
 
     // Check interfaces on the class itself.
     for iface in &class.interfaces {
-        let iface_norm = iface.strip_prefix('\\').unwrap_or(iface);
-        if iface_norm == ancestor_name {
+        if iface == ancestor_name {
             return true;
         }
         if !fqn_mode {
-            let iface_short = iface_norm.rsplit('\\').next().unwrap_or(iface_norm);
+            let iface_short = iface.rsplit('\\').next().unwrap_or(iface);
             if iface_short == ancestor_short {
                 return true;
             }
@@ -310,12 +309,11 @@ pub(crate) fn is_subtype_of(
         if depth > 20 {
             break;
         }
-        let normalized = name.strip_prefix('\\').unwrap_or(name);
-        if normalized == ancestor_name {
+        if name == ancestor_name {
             return true;
         }
         if !fqn_mode {
-            let short = normalized.rsplit('\\').next().unwrap_or(normalized);
+            let short = name.rsplit('\\').next().unwrap_or(name);
             if short == ancestor_short {
                 return true;
             }
@@ -323,12 +321,11 @@ pub(crate) fn is_subtype_of(
         // Load the parent to check its interfaces and continue the chain.
         if let Some(parent_info) = class_loader(name) {
             for iface in &parent_info.interfaces {
-                let iface_norm = iface.strip_prefix('\\').unwrap_or(iface);
-                if iface_norm == ancestor_name {
+                if iface == ancestor_name {
                     return true;
                 }
                 if !fqn_mode {
-                    let iface_short = iface_norm.rsplit('\\').next().unwrap_or(iface_norm);
+                    let iface_short = iface.rsplit('\\').next().unwrap_or(iface);
                     if iface_short == ancestor_short {
                         return true;
                     }

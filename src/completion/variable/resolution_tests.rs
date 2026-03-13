@@ -90,10 +90,10 @@ fn enrich_scope_multi_word_method_name() {
 }
 
 #[test]
-fn enrich_scope_with_leading_backslash_builder() {
+fn enrich_scope_with_fqn_builder() {
     let model = make_model("App\\Models\\User");
     let result = enrich_builder_type_in_scope(
-        "\\Illuminate\\Database\\Eloquent\\Builder",
+        "Illuminate\\Database\\Eloquent\\Builder",
         "scopeActive",
         false,
         &model,
@@ -101,7 +101,7 @@ fn enrich_scope_with_leading_backslash_builder() {
     );
     assert_eq!(
         result,
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>".to_string())
+        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\User>".to_string())
     );
 }
 

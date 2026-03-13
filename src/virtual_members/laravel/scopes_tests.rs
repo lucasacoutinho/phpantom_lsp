@@ -87,7 +87,7 @@ fn scope_return_type_void_defaults() {
     let method = make_method("scopeActive", Some("void"));
     assert_eq!(
         scope_return_type(&method),
-        "\\Illuminate\\Database\\Eloquent\\Builder<static>"
+        "Illuminate\\Database\\Eloquent\\Builder<static>"
     );
 }
 
@@ -96,7 +96,7 @@ fn scope_return_type_none_defaults() {
     let method = make_method("scopeActive", None);
     assert_eq!(
         scope_return_type(&method),
-        "\\Illuminate\\Database\\Eloquent\\Builder<static>"
+        "Illuminate\\Database\\Eloquent\\Builder<static>"
     );
 }
 
@@ -104,11 +104,11 @@ fn scope_return_type_none_defaults() {
 fn scope_return_type_explicit() {
     let method = make_method(
         "scopeActive",
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>"),
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>"),
     );
     assert_eq!(
         scope_return_type(&method),
-        "\\Illuminate\\Database\\Eloquent\\Builder<static>"
+        "Illuminate\\Database\\Eloquent\\Builder<static>"
     );
 }
 
@@ -186,11 +186,11 @@ fn build_scope_methods_default_return_type() {
 
     assert_eq!(
         instance.return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
     assert_eq!(
         static_m.return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
 }
 
@@ -201,7 +201,7 @@ fn build_scope_methods_void_return_type() {
 
     assert_eq!(
         instance.return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
 }
 
@@ -345,11 +345,11 @@ fn build_scope_methods_attribute_default_return_type() {
 
     assert_eq!(
         instance.return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
     assert_eq!(
         static_m.return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
 }
 
@@ -359,7 +359,7 @@ fn build_scope_methods_attribute_void_defaults() {
     let [instance, _] = build_scope_methods(&method);
     assert_eq!(
         instance.return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<static>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<static>")
     );
 }
 
@@ -458,7 +458,7 @@ fn builder_scope_substitutes_static_in_return_type() {
     // void defaults to Builder<static>, then static → App\Models\Brand
     assert_eq!(
         methods[0].return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Brand>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Brand>")
     );
 }
 
@@ -630,6 +630,6 @@ fn builder_scope_attribute_substitutes_static_in_return_type() {
     // void defaults to Builder<static>, then static → App\Models\Brand
     assert_eq!(
         methods[0].return_type.as_deref(),
-        Some("\\Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Brand>")
+        Some("Illuminate\\Database\\Eloquent\\Builder<App\\Models\\Brand>")
     );
 }

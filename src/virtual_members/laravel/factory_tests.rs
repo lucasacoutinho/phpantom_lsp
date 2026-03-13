@@ -36,14 +36,6 @@ fn model_to_factory_bare_name() {
 }
 
 #[test]
-fn model_to_factory_leading_backslash() {
-    assert_eq!(
-        model_to_factory_fqn("\\App\\Models\\User"),
-        "Database\\Factories\\UserFactory"
-    );
-}
-
-#[test]
 fn model_to_factory_models_only_namespace() {
     assert_eq!(
         model_to_factory_fqn("Models\\Post"),
@@ -70,14 +62,6 @@ fn factory_to_model_subdirectory() {
 }
 
 #[test]
-fn factory_to_model_leading_backslash() {
-    assert_eq!(
-        factory_to_model_fqn("\\Database\\Factories\\UserFactory"),
-        Some("App\\Models\\User".to_string())
-    );
-}
-
-#[test]
 fn factory_to_model_no_factory_suffix() {
     assert_eq!(
         factory_to_model_fqn("Database\\Factories\\UserBuilder"),
@@ -96,11 +80,6 @@ fn factory_to_model_bare_factory() {
 #[test]
 fn is_eloquent_factory_fqn() {
     assert!(is_eloquent_factory(FACTORY_FQN));
-}
-
-#[test]
-fn is_eloquent_factory_with_backslash() {
-    assert!(is_eloquent_factory(&format!("\\{FACTORY_FQN}")));
 }
 
 #[test]
@@ -189,11 +168,11 @@ fn build_factory_model_methods_synthesizes_create_and_make() {
 
     let create = methods.iter().find(|m| m.name == "create").unwrap();
     assert!(!create.is_static);
-    assert_eq!(create.return_type.as_deref(), Some("\\App\\Models\\User"));
+    assert_eq!(create.return_type.as_deref(), Some("App\\Models\\User"));
 
     let make = methods.iter().find(|m| m.name == "make").unwrap();
     assert!(!make.is_static);
-    assert_eq!(make.return_type.as_deref(), Some("\\App\\Models\\User"));
+    assert_eq!(make.return_type.as_deref(), Some("App\\Models\\User"));
 }
 
 #[test]
@@ -275,11 +254,11 @@ fn factory_provider_synthesizes_create_and_make() {
     assert_eq!(result.methods.len(), 2);
 
     let create = result.methods.iter().find(|m| m.name == "create").unwrap();
-    assert_eq!(create.return_type.as_deref(), Some("\\App\\Models\\User"));
+    assert_eq!(create.return_type.as_deref(), Some("App\\Models\\User"));
     assert!(!create.is_static);
 
     let make = result.methods.iter().find(|m| m.name == "make").unwrap();
-    assert_eq!(make.return_type.as_deref(), Some("\\App\\Models\\User"));
+    assert_eq!(make.return_type.as_deref(), Some("App\\Models\\User"));
     assert!(!make.is_static);
 }
 
@@ -314,6 +293,6 @@ fn factory_provider_subdirectory_convention() {
     let create = result.methods.iter().find(|m| m.name == "create").unwrap();
     assert_eq!(
         create.return_type.as_deref(),
-        Some("\\App\\Models\\Admin\\SuperUser")
+        Some("App\\Models\\Admin\\SuperUser")
     );
 }

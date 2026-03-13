@@ -7,16 +7,13 @@ use crate::test_fixtures::{make_class, make_method, no_loader};
 fn cast_datetime_maps_to_carbon() {
     assert_eq!(
         cast_type_to_php_type("datetime", &no_loader),
-        "\\Carbon\\Carbon"
+        "Carbon\\Carbon"
     );
 }
 
 #[test]
 fn cast_date_maps_to_carbon() {
-    assert_eq!(
-        cast_type_to_php_type("date", &no_loader),
-        "\\Carbon\\Carbon"
-    );
+    assert_eq!(cast_type_to_php_type("date", &no_loader), "Carbon\\Carbon");
 }
 
 #[test]
@@ -28,7 +25,7 @@ fn cast_timestamp_maps_to_int() {
 fn cast_immutable_datetime_maps_to_carbon_immutable() {
     assert_eq!(
         cast_type_to_php_type("immutable_datetime", &no_loader),
-        "\\Carbon\\CarbonImmutable"
+        "Carbon\\CarbonImmutable"
     );
 }
 
@@ -36,7 +33,7 @@ fn cast_immutable_datetime_maps_to_carbon_immutable() {
 fn cast_immutable_date_maps_to_carbon_immutable() {
     assert_eq!(
         cast_type_to_php_type("immutable_date", &no_loader),
-        "\\Carbon\\CarbonImmutable"
+        "Carbon\\CarbonImmutable"
     );
 }
 
@@ -99,7 +96,7 @@ fn cast_object_maps_to_object() {
 fn cast_collection_maps_to_illuminate_collection() {
     assert_eq!(
         cast_type_to_php_type("collection", &no_loader),
-        "\\Illuminate\\Support\\Collection"
+        "Illuminate\\Support\\Collection"
     );
 }
 
@@ -120,7 +117,7 @@ fn cast_encrypted_array_maps_to_array() {
 fn cast_encrypted_collection_maps_to_collection() {
     assert_eq!(
         cast_type_to_php_type("encrypted:collection", &no_loader),
-        "\\Illuminate\\Support\\Collection"
+        "Illuminate\\Support\\Collection"
     );
 }
 
@@ -155,7 +152,7 @@ fn cast_decimal_bare_maps_to_float() {
 fn cast_datetime_with_format_maps_to_carbon() {
     assert_eq!(
         cast_type_to_php_type("datetime:Y-m-d", &no_loader),
-        "\\Carbon\\Carbon"
+        "Carbon\\Carbon"
     );
 }
 
@@ -163,7 +160,7 @@ fn cast_datetime_with_format_maps_to_carbon() {
 fn cast_date_with_format_maps_to_carbon() {
     assert_eq!(
         cast_type_to_php_type("date:Y-m-d", &no_loader),
-        "\\Carbon\\Carbon"
+        "Carbon\\Carbon"
     );
 }
 
@@ -171,7 +168,7 @@ fn cast_date_with_format_maps_to_carbon() {
 fn cast_immutable_datetime_with_format() {
     assert_eq!(
         cast_type_to_php_type("immutable_datetime:Y-m-d H:i:s", &no_loader),
-        "\\Carbon\\CarbonImmutable"
+        "Carbon\\CarbonImmutable"
     );
 }
 
@@ -179,7 +176,7 @@ fn cast_immutable_datetime_with_format() {
 fn cast_immutable_date_with_format() {
     assert_eq!(
         cast_type_to_php_type("immutable_date:Y-m-d", &no_loader),
-        "\\Carbon\\CarbonImmutable"
+        "Carbon\\CarbonImmutable"
     );
 }
 
@@ -190,7 +187,7 @@ fn cast_case_insensitive() {
     assert_eq!(cast_type_to_php_type("Boolean", &no_loader), "bool");
     assert_eq!(
         cast_type_to_php_type("DATETIME", &no_loader),
-        "\\Carbon\\Carbon"
+        "Carbon\\Carbon"
     );
     assert_eq!(cast_type_to_php_type("Integer", &no_loader), "int");
 }
@@ -222,21 +219,23 @@ fn cast_custom_class_with_get_method() {
 }
 
 #[test]
-fn cast_custom_class_with_leading_backslash() {
+fn cast_custom_class_canonical_fqn() {
     let loader = |name: &str| -> Option<ClassInfo> {
         if name == "App\\Casts\\MoneyCast" {
             let mut cast_class = make_class("MoneyCast");
             cast_class
                 .methods
-                .push(make_method("get", Some("\\App\\Money")));
+                .push(make_method("get", Some("App\\Money")));
             Some(cast_class)
         } else {
             None
         }
     };
+    // Input is canonical (no leading `\`) — ingestion boundary in
+    // ast_update.rs strips the prefix before values reach this function.
     assert_eq!(
-        cast_type_to_php_type("\\App\\Casts\\MoneyCast", &loader),
-        "\\App\\Money"
+        cast_type_to_php_type("App\\Casts\\MoneyCast", &loader),
+        "App\\Money"
     );
 }
 
@@ -270,12 +269,12 @@ fn cast_enum_resolves_to_enum_class() {
     };
     assert_eq!(
         cast_type_to_php_type("App\\Enums\\Status", &loader),
-        "\\App\\Enums\\Status"
+        "App\\Enums\\Status"
     );
 }
 
 #[test]
-fn cast_enum_with_leading_backslash() {
+fn cast_enum_canonical_fqn() {
     let loader = |name: &str| -> Option<ClassInfo> {
         if name == "App\\Enums\\Status" {
             let mut e = make_class("Status");
@@ -285,9 +284,11 @@ fn cast_enum_with_leading_backslash() {
             None
         }
     };
+    // Input is canonical (no leading `\`) — ingestion boundary in
+    // ast_update.rs strips the prefix before values reach this function.
     assert_eq!(
-        cast_type_to_php_type("\\App\\Enums\\Status", &loader),
-        "\\App\\Enums\\Status"
+        cast_type_to_php_type("App\\Enums\\Status", &loader),
+        "App\\Enums\\Status"
     );
 }
 
@@ -306,16 +307,16 @@ fn cast_castable_resolves_to_class_itself() {
     };
     assert_eq!(
         cast_type_to_php_type("App\\Casts\\Address", &loader),
-        "\\App\\Casts\\Address"
+        "App\\Casts\\Address"
     );
 }
 
 #[test]
-fn cast_castable_with_leading_backslash_interface() {
+fn cast_castable_with_fqn_interface() {
     let loader = |name: &str| -> Option<ClassInfo> {
         if name == "App\\Casts\\Address" {
             let mut c = make_class("Address");
-            c.interfaces = vec![format!("\\{CASTABLE_FQN}")];
+            c.interfaces = vec![CASTABLE_FQN.to_string()];
             Some(c)
         } else {
             None
@@ -323,7 +324,7 @@ fn cast_castable_with_leading_backslash_interface() {
     };
     assert_eq!(
         cast_type_to_php_type("App\\Casts\\Address", &loader),
-        "\\App\\Casts\\Address"
+        "App\\Casts\\Address"
     );
 }
 
@@ -340,7 +341,7 @@ fn cast_castable_short_interface_name() {
     };
     assert_eq!(
         cast_type_to_php_type("App\\Casts\\Address", &loader),
-        "\\App\\Casts\\Address"
+        "App\\Casts\\Address"
     );
 }
 
@@ -359,7 +360,7 @@ fn cast_class_with_colon_argument_suffix() {
     };
     assert_eq!(
         cast_type_to_php_type("App\\Casts\\Address:nullable", &loader),
-        "\\App\\Casts\\Address"
+        "App\\Casts\\Address"
     );
 }
 
@@ -376,7 +377,7 @@ fn cast_enum_with_colon_argument_suffix() {
     };
     assert_eq!(
         cast_type_to_php_type("App\\Enums\\Status:force", &loader),
-        "\\App\\Enums\\Status"
+        "App\\Enums\\Status"
     );
 }
 
@@ -409,9 +410,10 @@ fn is_castable_with_fqn() {
 }
 
 #[test]
-fn is_castable_with_leading_backslash() {
+fn is_castable_with_fqn_interface() {
+    // Interfaces are canonical (no leading backslash) after resolution.
     let mut c = make_class("Address");
-    c.interfaces = vec![format!("\\{CASTABLE_FQN}")];
+    c.interfaces = vec![CASTABLE_FQN.to_string()];
     assert!(is_castable(&c));
 }
 
@@ -460,10 +462,12 @@ fn tget_from_casts_attributes_fqn() {
 }
 
 #[test]
-fn tget_from_casts_attributes_with_leading_backslash() {
+fn tget_from_casts_attributes_fqn_canonical() {
+    // implements_generics names are canonical (no leading backslash)
+    // after resolution.
     let mut c = make_class("App\\Casts\\HtmlCast");
     c.implements_generics = vec![(
-        format!("\\{CASTS_ATTRIBUTES_FQN}"),
+        CASTS_ATTRIBUTES_FQN.to_string(),
         vec!["HtmlString".to_string(), "HtmlString".to_string()],
     )];
     assert_eq!(

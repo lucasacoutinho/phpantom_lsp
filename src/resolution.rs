@@ -52,18 +52,15 @@ impl Backend {
     ///
     /// Returns a cloned `ClassInfo` if found, or `None`.
     pub(crate) fn find_or_load_class(&self, class_name: &str) -> Option<ClassInfo> {
-        // Normalise: strip leading `\`
-        let name = class_name.strip_prefix('\\').unwrap_or(class_name);
-
         // The class name stored in ClassInfo is just the short name (e.g. "Customer"),
         // so we match against the last segment of the namespace-qualified name.
-        let last_segment = short_name(name);
+        let last_segment = short_name(class_name);
 
         // Extract the expected namespace prefix (if any).
         // For "Demo\\PDO" → expected_ns = Some("Demo")
         // For "PDO"       → expected_ns = None (global scope)
-        let expected_ns: Option<&str> = if name.contains('\\') {
-            Some(&name[..name.len() - last_segment.len() - 1])
+        let expected_ns: Option<&str> = if class_name.contains('\\') {
+            Some(&class_name[..class_name.len() - last_segment.len() - 1])
         } else {
             None
         };
@@ -81,7 +78,7 @@ impl Backend {
         // (a single hash lookup) and covers classes that don't follow PSR-4
         // conventions.  When the user runs `composer install -o`, *all*
         // classes end up in the classmap, giving complete coverage.
-        if let Some(file_path) = self.classmap.read().get(name).cloned()
+        if let Some(file_path) = self.classmap.read().get(class_name).cloned()
             && let Some(classes) = self.parse_and_cache_file(&file_path)
         {
             let result = classes.iter().find(|c| c.name == last_segment).cloned();
@@ -99,7 +96,7 @@ impl Backend {
         if let Some(workspace_root) = self.workspace_root.read().clone() {
             let file_path = {
                 let mappings = self.psr4_mappings.read();
-                composer::resolve_class_path(&mappings, &workspace_root, name)
+                composer::resolve_class_path(&mappings, &workspace_root, class_name)
             };
             if let Some(file_path) = file_path
                 && let Some(classes) = self.parse_and_cache_file(&file_path)
@@ -296,8 +293,7 @@ impl Backend {
         {
             let idx = self.autoload_function_index.read();
             for &name in candidates {
-                let lookup = name.strip_prefix('\\').unwrap_or(name);
-                if let Some(path) = idx.get(lookup) {
+                if let Some(path) = idx.get(name) {
                     let path = path.clone();
                     drop(idx); // release read lock before parsing
 
@@ -355,10 +351,7 @@ impl Backend {
         // that defines them.  We parse the entire file, cache all discovered
         // functions in global_functions, and return the one we need.
         for &name in candidates {
-            // Normalise: strip leading `\`
-            let lookup = name.strip_prefix('\\').unwrap_or(name);
-
-            if let Some(&stub_content) = self.stub_function_index.get(lookup) {
+            if let Some(&stub_content) = self.stub_function_index.get(name) {
                 let ver = Some(self.php_version());
                 let functions = self.parse_functions_versioned(stub_content, ver);
 
@@ -366,7 +359,7 @@ impl Backend {
                     continue;
                 }
 
-                let stub_uri = format!("phpantom-stub-fn://{}", lookup);
+                let stub_uri = format!("phpantom-stub-fn://{}", name);
                 let mut result: Option<FunctionInfo> = None;
 
                 {
@@ -379,7 +372,7 @@ impl Backend {
                         };
 
                         // Check if this is the function we're looking for.
-                        if result.is_none() && (fqn == lookup || func.name == lookup) {
+                        if result.is_none() && (fqn == name || func.name == name) {
                             result = Some(func.clone());
                         }
 
@@ -399,7 +392,7 @@ impl Backend {
                     let empty_use_map = HashMap::new();
                     let stub_namespace = self.parse_namespace(stub_content);
                     Self::resolve_parent_class_names(&mut classes, &empty_use_map, &stub_namespace);
-                    let class_uri = format!("phpantom-stub-fn://{}", lookup);
+                    let class_uri = format!("phpantom-stub-fn://{}", name);
                     self.ast_map.write().insert(class_uri, classes);
                 }
 
@@ -448,15 +441,24 @@ impl Backend {
             if let Some(cls) = local_classes.iter().find(|c| c.name == lookup) {
                 return Some(cls.clone());
             }
-            // In a namespace, prepend the current namespace.
-            // Class names do NOT fall back to global scope —
-            // unlike functions/constants.  See:
-            // https://www.php.net/manual/en/language.namespaces.fallback.php
+            // In a namespace, try the namespace-qualified form first.
+            // Per PHP semantics, class names do NOT fall back to global
+            // scope (unlike functions/constants).  However, names that
+            // arrive here may be already-resolved FQNs from ClassInfo
+            // fields (e.g. `parent_class = "Exception"`) that happen to
+            // be single-segment global names.  For those, the namespace-
+            // qualified attempt will fail, so we fall back to a direct
+            // lookup.  To preserve PHP semantics for user-typed code,
+            // the namespace-qualified form is tried first and wins when
+            // a same-named class exists in the current namespace.
             if let Some(ns) = file_namespace {
                 let ns_qualified = format!("{}\\{}", ns, name);
-                return self.find_or_load_class(&ns_qualified);
+                if let Some(cls) = self.find_or_load_class(&ns_qualified) {
+                    return Some(cls);
+                }
             }
-            // No namespace — we're in global scope already.
+            // Global scope: either no namespace context, or the
+            // namespace-qualified lookup above did not find a match.
             return self.find_or_load_class(name);
         }
 

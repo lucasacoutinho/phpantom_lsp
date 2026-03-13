@@ -74,10 +74,11 @@ fn test_parse_object_shape_nullable() {
 }
 
 #[test]
-fn test_parse_object_shape_leading_backslash() {
+fn test_parse_object_shape_canonical_form() {
     use phpantom_lsp::docblock::parse_object_shape;
 
-    let entries = parse_object_shape("\\object{foo: int}").unwrap();
+    // After resolution, `object` never has a leading `\` — verify canonical input works.
+    let entries = parse_object_shape("object{foo: int}").unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].key, "foo");
 }
@@ -114,7 +115,7 @@ fn test_is_object_shape() {
 
     assert!(is_object_shape("object{foo: int}"));
     assert!(is_object_shape("?object{foo: int}"));
-    assert!(is_object_shape("\\object{foo: int}"));
+
     assert!(is_object_shape("object{}"));
     assert!(!is_object_shape("object"));
     assert!(!is_object_shape("array{foo: int}"));

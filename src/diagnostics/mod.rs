@@ -33,6 +33,7 @@
 //! completion, hover, or other latency-sensitive requests.
 
 mod deprecated;
+pub(crate) mod helpers;
 pub(crate) mod unknown_classes;
 pub(crate) mod unknown_functions;
 pub(crate) mod unknown_members;

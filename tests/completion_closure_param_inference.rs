@@ -585,8 +585,8 @@ fn test_extract_callable_param_types_fqn() {
     use phpantom_lsp::docblock::extract_callable_param_types;
 
     assert_eq!(
-        extract_callable_param_types("\\Closure(\\App\\Models\\User): void"),
-        Some(vec!["\\App\\Models\\User".to_string()]),
+        extract_callable_param_types("Closure(App\\Models\\User): void"),
+        Some(vec!["App\\Models\\User".to_string()]),
     );
     assert_eq!(
         extract_callable_param_types("?callable(User): void"),
@@ -659,10 +659,10 @@ fn test_extract_callable_param_types_parenthesized_group() {
         Some(vec!["Builder<Brand>".to_string()]),
     );
 
-    // `(\\Closure(\\App\\Models\\User): mixed)|string|null`
+    // `(Closure(App\\Models\\User): mixed)|string|null` — canonical (post-resolution) form
     assert_eq!(
-        extract_callable_param_types("(\\Closure(\\App\\Models\\User): mixed)|string|null"),
-        Some(vec!["\\App\\Models\\User".to_string()]),
+        extract_callable_param_types("(Closure(App\\Models\\User): mixed)|string|null"),
+        Some(vec!["App\\Models\\User".to_string()]),
     );
 }
 
@@ -714,13 +714,7 @@ fn test_extract_callable_param_types_static_void_vs_mixed() {
 fn test_extract_callable_param_types_parenthesized_closure_static_union() {
     use phpantom_lsp::docblock::extract_callable_param_types;
 
-    // `(\Closure(static): mixed)|string|array` — the exact Laravel `where()` pattern
-    assert_eq!(
-        extract_callable_param_types("(\\Closure(static): mixed)|string|array"),
-        Some(vec!["static".to_string()]),
-    );
-
-    // Without leading backslash
+    // `(Closure(static): mixed)|string|array` — canonical (post-resolution) form
     assert_eq!(
         extract_callable_param_types("(Closure(static): mixed)|string|array"),
         Some(vec!["static".to_string()]),
@@ -758,8 +752,9 @@ fn test_extract_param_raw_type_laravel_where_docblock() {
 fn test_extract_callable_param_types_laravel_where_exact() {
     use phpantom_lsp::docblock::extract_callable_param_types;
 
-    // Exact type string from Laravel's Query\Builder::where() @param tag
-    let laravel_type = "(\\Closure(static): mixed)|string|array|\\Illuminate\\Contracts\\Database\\Query\\Expression";
+    // Canonical (post-resolution) form of Laravel's Query\Builder::where() @param type
+    let laravel_type =
+        "(Closure(static): mixed)|string|array|Illuminate\\Contracts\\Database\\Query\\Expression";
     assert_eq!(
         extract_callable_param_types(laravel_type),
         Some(vec!["static".to_string()]),
@@ -767,13 +762,6 @@ fn test_extract_callable_param_types_laravel_where_exact() {
     );
 
     // Simpler variant without the Expression union member
-    assert_eq!(
-        extract_callable_param_types("(\\Closure(static): mixed)|string|array"),
-        Some(vec!["static".to_string()]),
-        "(\\Closure(static): mixed)|string|array should extract [\"static\"]",
-    );
-
-    // Without leading backslash on Closure
     assert_eq!(
         extract_callable_param_types("(Closure(static): mixed)|string|array"),
         Some(vec!["static".to_string()]),

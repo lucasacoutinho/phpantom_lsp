@@ -136,25 +136,22 @@ pub(crate) fn try_swap_custom_collection(
     all_classes: &[ClassInfo],
     class_loader: &dyn Fn(&str) -> Option<ClassInfo>,
 ) -> ClassInfo {
-    let bc = base_fqn.strip_prefix('\\').unwrap_or(base_fqn);
-    if bc != crate::types::ELOQUENT_COLLECTION_FQN || generic_args.is_empty() {
+    if base_fqn != crate::types::ELOQUENT_COLLECTION_FQN || generic_args.is_empty() {
         return cls;
     }
 
     // The last generic arg is typically the model type.
     let model_arg = generic_args.last().unwrap();
-    let model_clean = model_arg.strip_prefix('\\').unwrap_or(model_arg);
-    let model_class = find_class_in(all_classes, model_clean)
+    let model_class = find_class_in(all_classes, model_arg)
         .cloned()
-        .or_else(|| class_loader(model_clean));
+        .or_else(|| class_loader(model_arg));
 
     if let Some(ref mc) = model_class
         && let Some(coll_name) = mc.laravel().and_then(|l| l.custom_collection.as_ref())
     {
-        let coll_clean = coll_name.strip_prefix('\\').unwrap_or(coll_name);
-        find_class_in(all_classes, coll_clean)
+        find_class_in(all_classes, coll_name)
             .cloned()
-            .or_else(|| class_loader(coll_clean))
+            .or_else(|| class_loader(coll_name))
             .unwrap_or(cls)
     } else {
         cls
@@ -193,10 +190,9 @@ pub(crate) fn try_inject_builder_scopes(
 
     // The first (or only) generic arg is the model type.
     let model_arg = generic_args.first().unwrap();
-    let model_clean = model_arg.strip_prefix('\\').unwrap_or(model_arg);
 
     // 1. Inject scope methods.
-    let scope_methods = build_scope_methods_for_builder(model_clean, class_loader);
+    let scope_methods = build_scope_methods_for_builder(model_arg, class_loader);
     for method in scope_methods {
         if !result
             .methods
@@ -208,7 +204,7 @@ pub(crate) fn try_inject_builder_scopes(
     }
 
     // 2. Inject @method virtual methods from the model.
-    inject_model_virtual_methods(result, model_clean, class_loader);
+    inject_model_virtual_methods(result, model_arg, class_loader);
 }
 
 /// Inject `@method`-declared virtual methods from a model onto a Builder.
@@ -258,7 +254,7 @@ fn inject_model_virtual_methods(
     // `Builder<static>`), so substituting `static` → model name
     // produces `Builder<Customer>`.  Using `Builder<Model>` here
     // would double-wrap to `Builder<Builder<Customer>>`.
-    let model_fqn = format!("\\{model_name}");
+    let model_fqn = model_name.to_string();
     let mut subs = HashMap::new();
     subs.insert("static".to_string(), model_fqn.clone());
     subs.insert("$this".to_string(), model_fqn.clone());
@@ -302,18 +298,13 @@ fn inject_model_virtual_methods(
 /// 3. The FQN constructed from `file_namespace + name` (PSR-4 loaded classes
 ///    where `name` is the short name only).
 fn is_eloquent_builder_fqn(base_fqn: &str, cls: &ClassInfo) -> bool {
-    let bc = base_fqn.strip_prefix('\\').unwrap_or(base_fqn);
-    let cn = cls.name.strip_prefix('\\').unwrap_or(&cls.name);
     let fqn_from_ns = cls
         .file_namespace
         .as_ref()
         .map(|ns| format!("{ns}\\{}", cls.name));
-    let fqn_clean = fqn_from_ns
-        .as_deref()
-        .map(|f| f.strip_prefix('\\').unwrap_or(f));
-    bc == ELOQUENT_BUILDER_FQN
-        || cn == ELOQUENT_BUILDER_FQN
-        || fqn_clean == Some(ELOQUENT_BUILDER_FQN)
+    base_fqn == ELOQUENT_BUILDER_FQN
+        || cls.name == ELOQUENT_BUILDER_FQN
+        || fqn_from_ns.as_deref() == Some(ELOQUENT_BUILDER_FQN)
 }
 
 /// Find a class in a slice by name (short or FQN).
@@ -321,11 +312,10 @@ fn is_eloquent_builder_fqn(base_fqn: &str, cls: &ClassInfo) -> bool {
 /// Minimal local lookup used by the collection-swap helper.  Prefers
 /// namespace-aware matching when the name contains backslashes.
 fn find_class_in<'a>(all_classes: &'a [ClassInfo], name: &str) -> Option<&'a ClassInfo> {
-    let clean = name.strip_prefix('\\').unwrap_or(name);
-    let short = clean.rsplit('\\').next().unwrap_or(clean);
+    let short = name.rsplit('\\').next().unwrap_or(name);
 
-    if clean.contains('\\') {
-        let expected_ns = clean.rsplit_once('\\').map(|(ns, _)| ns);
+    if name.contains('\\') {
+        let expected_ns = name.rsplit_once('\\').map(|(ns, _)| ns);
         all_classes
             .iter()
             .find(|c| c.name == short && c.file_namespace.as_deref() == expected_ns)
@@ -454,10 +444,7 @@ impl VirtualMemberProvider for LaravelModelProvider {
             let custom_collection = if kind == RelationshipKind::Collection {
                 related_type
                     .as_deref()
-                    .and_then(|rt| {
-                        let clean = rt.strip_prefix('\\').unwrap_or(rt);
-                        class_loader(clean)
-                    })
+                    .and_then(class_loader)
                     .and_then(|related_class| {
                         related_class
                             .laravel

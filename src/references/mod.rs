@@ -451,6 +451,7 @@ impl Backend {
                         } else {
                             Self::resolve_to_fqn(name, &file_use_map, &file_namespace)
                         };
+                        // Input boundary: resolve_to_fqn may return a leading `\`.
                         let resolved_normalized = resolved.strip_prefix('\\').unwrap_or(&resolved);
                         if !class_names_match(resolved_normalized, target, target_short) {
                             continue;
@@ -496,16 +497,14 @@ impl Backend {
                             file_uri,
                             &file_namespace,
                             span.start,
-                        ) {
-                            let fqn_normalized = fqn.strip_prefix('\\').unwrap_or(&fqn);
-                            if class_names_match(fqn_normalized, target, target_short) {
-                                let start = offset_to_position(&content, span.start as usize);
-                                let end = offset_to_position(&content, span.end as usize);
-                                locations.push(Location {
-                                    uri: parsed_uri.clone(),
-                                    range: Range { start, end },
-                                });
-                            }
+                        ) && class_names_match(&fqn, target, target_short)
+                        {
+                            let start = offset_to_position(&content, span.start as usize);
+                            let end = offset_to_position(&content, span.end as usize);
+                            locations.push(Location {
+                                uri: parsed_uri.clone(),
+                                range: Range { start, end },
+                            });
                         }
                     }
                     _ => {}
@@ -679,6 +678,7 @@ impl Backend {
     ) -> Vec<Location> {
         let mut locations = Vec::new();
 
+        // Input boundary: callers may pass FQNs with a leading `\`.
         let target = target_fqn.strip_prefix('\\').unwrap_or(target_fqn);
 
         let snapshot = self.user_file_symbol_maps();
@@ -712,6 +712,7 @@ impl Backend {
                         continue;
                     }
                     let resolved = Self::resolve_to_fqn(name, &file_use_map, &file_namespace);
+                    // Input boundary: resolve_to_fqn may return a leading `\`.
                     let resolved_normalized = resolved.strip_prefix('\\').unwrap_or(&resolved);
                     if resolved_normalized != target
                         && crate::util::short_name(resolved_normalized)

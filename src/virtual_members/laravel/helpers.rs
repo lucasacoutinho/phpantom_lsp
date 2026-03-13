@@ -54,8 +54,7 @@ pub(in crate::virtual_members::laravel) fn walks_parent_chain(
 ///
 /// Checks against the FQN with and without a leading backslash.
 pub(in crate::virtual_members::laravel) fn is_eloquent_model(class_name: &str) -> bool {
-    let stripped = class_name.strip_prefix('\\').unwrap_or(class_name);
-    stripped == ELOQUENT_MODEL_FQN
+    class_name == ELOQUENT_MODEL_FQN
 }
 
 /// Walk the parent chain of `class` looking for

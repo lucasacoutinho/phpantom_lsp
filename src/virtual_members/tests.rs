@@ -973,7 +973,7 @@ fn evict_cast_class_matched_by_short_name() {
 }
 
 #[test]
-fn evict_cast_class_with_leading_backslash() {
+fn evict_cast_class_canonical() {
     let mut cache = make_cache();
 
     let cast_class = make_class("DecimalCast");
@@ -983,14 +983,15 @@ fn evict_cast_class_with_leading_backslash() {
     );
 
     let mut model = make_class("Setting");
+    // Cast values are canonical (no leading `\`) after ingestion normalization.
     model.laravel_mut().casts_definitions =
-        vec![("vat".to_string(), "\\App\\Casts\\DecimalCast".to_string())];
+        vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
     cache.insert(("App\\Models\\Setting".to_string(), Vec::new()), model);
 
     evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
     assert!(
         cache.is_empty(),
-        "cast type with leading backslash should still trigger transitive eviction"
+        "canonical cast type should trigger transitive eviction"
     );
 }
 

@@ -289,8 +289,7 @@ pub fn extract_array_shape_value_type(type_str: &str, key: &str) -> Option<Strin
 ///
 /// Returns `None` if the type is not an object shape.
 pub fn parse_object_shape(type_str: &str) -> Option<Vec<ArrayShapeEntry>> {
-    let s = type_str.strip_prefix('\\').unwrap_or(type_str);
-    let s = s.strip_prefix('?').unwrap_or(s);
+    let s = type_str.strip_prefix('?').unwrap_or(type_str);
 
     // Must start with `object{` (case-insensitive base).
     let brace_pos = s.find('{')?;
@@ -346,8 +345,7 @@ pub fn parse_object_shape(type_str: &str) -> Option<Vec<ArrayShapeEntry>> {
 
 /// Return `true` if `type_str` is an object shape type (e.g. `object{name: string}`).
 pub fn is_object_shape(type_str: &str) -> bool {
-    let s = type_str.strip_prefix('\\').unwrap_or(type_str);
-    let s = s.strip_prefix('?').unwrap_or(s);
+    let s = type_str.strip_prefix('?').unwrap_or(type_str);
     // Check for `object{` case-insensitively, but only when `{` immediately
     // follows the word `object` (no intervening whitespace).
     if let Some(brace_pos) = s.find('{') {

@@ -715,8 +715,7 @@ impl Backend {
             Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, raw_class.name),
             _ => raw_class.name.clone(),
         };
-        let raw_clean = raw_fqn.strip_prefix('\\').unwrap_or(&raw_fqn);
-        if raw_clean != ELOQUENT_BUILDER_FQN {
+        if raw_fqn != ELOQUENT_BUILDER_FQN {
             return None;
         }
 
@@ -730,23 +729,20 @@ impl Backend {
         // Extract the model name from a Builder-typed return type.
         //
         // The return type is typically
-        // `\Illuminate\Database\Eloquent\Builder<App\Models\User>`.
+        // `Illuminate\Database\Eloquent\Builder<App\Models\User>`.
         // We specifically look for return types whose base type is
-        // the Eloquent Builder (with or without leading backslash)
-        // and extract the first generic arg as the model name.
+        // the Eloquent Builder and extract the first generic arg as
+        // the model name.
         let extract_model_from_builder_ret = |ret: &str| -> Option<String> {
             let (base, args) = crate::docblock::types::parse_generic_args(ret);
             if args.is_empty() {
                 return None;
             }
             // Check that the base type is the Eloquent Builder.
-            let base_clean = base.strip_prefix('\\').unwrap_or(base);
-            if base_clean != ELOQUENT_BUILDER_FQN && base_clean != "Builder" {
+            if base != ELOQUENT_BUILDER_FQN && base != "Builder" {
                 return None;
             }
-            args.into_iter()
-                .next()
-                .map(|s| s.strip_prefix('\\').unwrap_or(s).to_string())
+            args.into_iter().next().map(|s| s.to_string())
         };
 
         // When a scope declares a bare `Builder` return type (without

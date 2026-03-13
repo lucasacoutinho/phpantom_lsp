@@ -384,13 +384,12 @@ pub(crate) fn is_ancestor_of(
         if depth > 20 {
             break;
         }
-        let normalized = name.strip_prefix('\\').unwrap_or(name);
         // ClassInfo.name stores the short name (e.g. "BaseService")
         // while parent_class stores the FQN (e.g. "App\\BaseService").
         // Compare against both the full name and the short (last segment)
         // so that cross-file inheritance is detected correctly.
-        let short = normalized.rsplit('\\').next().unwrap_or(normalized);
-        if normalized == target_class.name || short == target_class.name {
+        let short = name.rsplit('\\').next().unwrap_or(name);
+        if name == &target_class.name || short == target_class.name {
             return true;
         }
         ancestor_name = class_loader(name).and_then(|ci| ci.parent_class.clone());
