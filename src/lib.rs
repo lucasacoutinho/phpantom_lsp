@@ -98,6 +98,7 @@ mod highlight;
 mod hover;
 pub(crate) mod inheritance;
 mod parser;
+mod phpstan;
 mod references;
 mod rename;
 mod resolution;
@@ -353,6 +354,33 @@ pub struct Backend {
     /// so the editor never shows a flicker where slow diagnostics disappear
     /// and then reappear.
     pub(crate) diag_last_slow: Arc<Mutex<HashMap<String, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
+    /// Notification handle used to wake the PHPStan worker task.
+    ///
+    /// The PHPStan worker is a dedicated background task, separate from
+    /// the main diagnostic worker, because PHPStan is extremely slow
+    /// and resource-intensive.  Running it in its own task ensures that
+    /// native diagnostics (fast + slow phases) are never blocked by a
+    /// PHPStan invocation that may take tens of seconds.
+    ///
+    /// At most one PHPStan process runs at a time.  If the user edits
+    /// a file while PHPStan is running, the pending URI is updated and
+    /// the worker picks it up after the current run finishes.
+    pub(crate) phpstan_notify: Arc<tokio::sync::Notify>,
+    /// The single file URI that the PHPStan worker should analyse next.
+    ///
+    /// Only the most recent file is kept: if the user switches files or
+    /// edits rapidly, earlier requests are superseded.  This is
+    /// intentional — PHPStan is too slow to queue up multiple files.
+    pub(crate) phpstan_pending_uri: Arc<Mutex<Option<String>>>,
+    /// Last-published PHPStan diagnostics per file URI.
+    ///
+    /// The fast and slow diagnostic phases merge these cached results
+    /// into their publish calls so that PHPStan errors remain visible
+    /// while the user edits (without waiting for a fresh PHPStan run).
+    /// The PHPStan worker updates this cache after each successful run
+    /// and triggers a re-publish of the affected file.
+    pub(crate) phpstan_last_diags:
+        Arc<Mutex<HashMap<String, Vec<tower_lsp::lsp_types::Diagnostic>>>>,
     // NOTE: resolved_class_cache uses parking_lot::Mutex because it is
     // frequently written (cache stores) and RwLock read→write upgrades
     // are error-prone.
@@ -403,6 +431,9 @@ impl Backend {
             diag_notify: Arc::new(tokio::sync::Notify::new()),
             diag_pending_uris: Arc::new(Mutex::new(Vec::new())),
             diag_last_slow: Arc::new(Mutex::new(HashMap::new())),
+            phpstan_notify: Arc::new(tokio::sync::Notify::new()),
+            phpstan_pending_uri: Arc::new(Mutex::new(None)),
+            phpstan_last_diags: Arc::new(Mutex::new(HashMap::new())),
             config: Mutex::new(config::Config::default()),
         }
     }
@@ -583,6 +614,9 @@ impl Backend {
             diag_notify: Arc::clone(&self.diag_notify),
             diag_pending_uris: Arc::clone(&self.diag_pending_uris),
             diag_last_slow: Arc::clone(&self.diag_last_slow),
+            phpstan_notify: Arc::clone(&self.phpstan_notify),
+            phpstan_pending_uri: Arc::clone(&self.phpstan_pending_uri),
+            phpstan_last_diags: Arc::clone(&self.phpstan_last_diags),
             config: Mutex::new(self.config.lock().clone()),
         }
     }

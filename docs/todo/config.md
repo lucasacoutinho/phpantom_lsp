@@ -40,14 +40,15 @@ Per-project configuration file for user preferences and optional features like d
 # timeout = 10000
 
 [diagnostics]
-# Enable or disable proxied diagnostic providers.
-# Each defaults to true when the corresponding tool is detected
-# in the project (e.g. vendor/bin/phpstan exists).
+# Enable or disable native diagnostic providers.
+# unresolved-member-access = true
 
-# phpstan = true
-# phpmd = false
-# php-lint = true
-# mago = false
+[phpstan]
+# PHPStan proxy. Runs PHPStan in editor mode on each file save.
+# Auto-detected via vendor/bin/phpstan then $PATH. Set to "" to disable.
+# command = "vendor/bin/phpstan"
+# memory-limit = "1G"
+# timeout = 60000
 ```
 
 ## Sections
@@ -158,16 +159,32 @@ does not register the capability).
 
 ### `[diagnostics]`
 
-Controls which external tools PHPantom proxies for diagnostics.
+Controls native diagnostic providers.
 
-| Key        | Type | Default     | Description                          |
-|------------|------|-------------|--------------------------------------|
-| `phpstan`  | bool | auto-detect | Proxy PHPStan diagnostics            |
-| `phpmd`    | bool | auto-detect | Proxy PHP Mess Detector diagnostics  |
-| `php-lint` | bool | auto-detect | Proxy `php -l` syntax checking       |
-| `mago`     | bool | auto-detect | Proxy Mago diagnostics               |
+| Key                        | Type | Default | Description                                      |
+|----------------------------|------|---------|--------------------------------------------------|
+| `unresolved-member-access` | bool | `false` | Report member access on unresolvable subject types |
 
-"Auto-detect" means PHPantom enables the provider when it finds the tool (e.g. `vendor/bin/phpstan` or `phpstan` on `$PATH`). Setting a key to `false` disables it regardless. Setting it to `true` enables it even if auto-detection fails (the user is responsible for making the tool available).
+### `[phpstan]`
+
+Controls the PHPStan diagnostic proxy. PHPantom runs PHPStan in editor
+mode (`--tmp-file` / `--instead-of`) on each file save and surfaces its
+errors as LSP diagnostics. PHPStan runs in a dedicated background worker
+that never blocks native diagnostics, with at most one process at a time.
+
+| Key            | Type   | Default     | Description                                     |
+|----------------|--------|-------------|-------------------------------------------------|
+| `command`      | string | auto-detect | Path to `phpstan` binary. `""` disables.        |
+| `memory-limit` | string | `"1G"`      | Memory limit passed to `--memory-limit`         |
+| `timeout`      | int    | 60000       | Maximum runtime in milliseconds before killing  |
+
+"Auto-detect" means PHPantom checks for `vendor/bin/phpstan` (respecting
+Composer's `config.bin-dir`), then `phpstan` on `$PATH`. Setting
+`command = ""` disables PHPStan entirely.
+
+**Future external tools.** PHPMD, `php -l`, and Mago proxies are planned
+but not yet implemented. Each will get its own `[tool]` section
+following the same pattern as `[phpstan]`.
 
 ## Design decisions
 
@@ -175,11 +192,11 @@ Controls which external tools PHPantom proxies for diagnostics.
 
 2. **Prompt-and-remember pattern.** For one-time setup actions (generating `composer.json`, optimizing autoload, installing stubs), PHPantom asks once and records the answer. The user can change their mind by editing the file.
 
-3. **Flat diagnostics for now.** Each diagnostic tool is a simple bool. When we add proxying, individual tools can grow into sub-tables if needed (e.g. `[diagnostics.phpstan]` with `level`, `config`, `memory-limit`). Starting flat avoids premature structure.
+3. **Dedicated section per external tool.** Each proxied tool gets its own TOML section (e.g. `[phpstan]`) with tool-specific settings (`command`, `timeout`, `memory-limit`). A simple bool toggle was the original plan but proved insufficient once real-world configuration needs emerged.
 
 4. **No editor or completion knobs.** PHPantom has no user-facing settings for completion behaviour today. Add sections when there is a real need, not speculatively.
 
 ## Implementation order
 
 1. **Config writing.** When PHPantom prompts the user and gets an answer, write or update the relevant key. Preserve comments and formatting (use `toml_edit` crate).
-2. **Diagnostic proxying.** Wire `[diagnostics]` toggles into the proxy infrastructure as each provider is implemented. *Partially done — `unresolved-member-access` toggle is wired; external tool toggles (`phpstan`, `phpmd`, etc.) await proxy infrastructure.*
+2. **Diagnostic proxying.** Wire external tool proxies as each provider is implemented. *PHPStan proxy is done (`[phpstan]` section with `command`, `memory-limit`, `timeout`). PHPMD, `php -l`, and Mago proxies await implementation.*

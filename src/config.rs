@@ -24,6 +24,8 @@ pub struct Config {
     pub indexing: IndexingConfig,
     /// Formatting proxy settings.
     pub formatting: FormattingConfig,
+    /// PHPStan proxy settings.
+    pub phpstan: PhpStanConfig,
 }
 
 /// `[php]` section — PHP version override.
@@ -105,6 +107,49 @@ impl FormattingConfig {
     /// set to empty strings).
     pub fn is_disabled(&self) -> bool {
         self.php_cs_fixer.as_deref() == Some("") && self.phpcbf.as_deref() == Some("")
+    }
+}
+
+/// `[phpstan]` section — controls the external PHPStan proxy.
+///
+/// PHPantom can run PHPStan in "editor mode" (`--tmp-file` /
+/// `--instead-of`) on each file save to surface static analysis
+/// errors as LSP diagnostics.
+///
+/// When `command` is unset (`None`), PHPantom auto-detects via
+/// `vendor/bin/phpstan` then `$PATH`.  Set to `""` (empty string)
+/// to explicitly disable PHPStan integration.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct PhpStanConfig {
+    /// Command (path or name) to run PHPStan.
+    ///
+    /// - `None` (default) — auto-detect `vendor/bin/phpstan`,
+    ///   then `phpstan` on `$PATH`.
+    /// - `""` — disable PHPStan.
+    /// - Any other value — use as the command (e.g.
+    ///   `"/usr/local/bin/phpstan"` or `"phpstan"`).
+    pub command: Option<String>,
+    /// Memory limit passed to PHPStan via `--memory-limit`.
+    /// Defaults to `"1G"` when unset.
+    #[serde(rename = "memory-limit")]
+    pub memory_limit: Option<String>,
+    /// Maximum runtime in milliseconds before PHPStan is killed.
+    /// Defaults to 60 000 ms (60 seconds).
+    pub timeout: Option<u64>,
+}
+
+impl PhpStanConfig {
+    /// Return the configured timeout in milliseconds, falling back to
+    /// 60 000 ms when unset.
+    pub fn timeout_ms(&self) -> u64 {
+        self.timeout.unwrap_or(60_000)
+    }
+
+    /// Whether PHPStan is explicitly disabled (command set to empty
+    /// string).
+    pub fn is_disabled(&self) -> bool {
+        self.command.as_deref() == Some("")
     }
 }
 
@@ -223,6 +268,17 @@ pub const DEFAULT_CONFIG_CONTENT: &str = r#"# PHPantom project configuration
 # phpcbf = ""
 # Maximum runtime in milliseconds per tool (default 10000).
 # timeout = 10000
+
+[phpstan]
+# PHPStan proxy. PHPantom can run PHPStan in editor mode on each file
+# save and surface its errors as LSP diagnostics. When unset, PHPStan
+# is auto-detected via vendor/bin/phpstan then $PATH. Set to "" to
+# disable.
+# command = "vendor/bin/phpstan"
+# Memory limit passed to PHPStan (default "1G").
+# memory-limit = "1G"
+# Maximum runtime in milliseconds (default 60000).
+# timeout = 60000
 "#;
 
 /// Create a default `.phpantom.toml` in the given workspace root.
@@ -346,6 +402,10 @@ mod tests {
         assert!(config.formatting.phpcbf.is_none());
         assert!(config.formatting.timeout.is_none());
         assert_eq!(config.formatting.timeout_ms(), 10_000);
+        assert!(config.phpstan.command.is_none());
+        assert!(config.phpstan.memory_limit.is_none());
+        assert!(config.phpstan.timeout.is_none());
+        assert_eq!(config.phpstan.timeout_ms(), 60_000);
     }
 
     #[test]
@@ -357,6 +417,7 @@ mod tests {
         assert_eq!(config.indexing.strategy, IndexingStrategy::Composer);
         assert!(config.formatting.php_cs_fixer.is_none());
         assert!(config.formatting.phpcbf.is_none());
+        assert!(config.phpstan.command.is_none());
     }
 
     #[test]
@@ -370,6 +431,7 @@ mod tests {
         assert_eq!(config.indexing.strategy, IndexingStrategy::Composer);
         assert!(config.formatting.php_cs_fixer.is_none());
         assert!(config.formatting.phpcbf.is_none());
+        assert!(config.phpstan.command.is_none());
     }
 
     #[test]
@@ -438,6 +500,53 @@ mod tests {
     }
 
     #[test]
+    fn parses_phpstan_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[phpstan]\ncommand = \"/usr/bin/phpstan\"\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.phpstan.command.as_deref(), Some("/usr/bin/phpstan"));
+    }
+
+    #[test]
+    fn parses_phpstan_memory_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[phpstan]\nmemory-limit = \"2G\"\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.phpstan.memory_limit.as_deref(), Some("2G"));
+    }
+
+    #[test]
+    fn parses_phpstan_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[phpstan]\ntimeout = 30000\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.phpstan.timeout_ms(), 30_000);
+    }
+
+    #[test]
+    fn phpstan_empty_string_disables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[phpstan]\ncommand = \"\"\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert_eq!(config.phpstan.command.as_deref(), Some(""));
+        assert!(config.phpstan.is_disabled());
+    }
+
+    #[test]
+    fn phpstan_defaults() {
+        let config = Config::default();
+        assert!(config.phpstan.command.is_none());
+        assert!(config.phpstan.memory_limit.is_none());
+        assert!(config.phpstan.timeout.is_none());
+        assert_eq!(config.phpstan.timeout_ms(), 60_000);
+        assert!(!config.phpstan.is_disabled());
+    }
+
+    #[test]
     fn full_example_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(CONFIG_FILE_NAME);
@@ -457,6 +566,11 @@ strategy = "self"
 php-cs-fixer = ""
 phpcbf = "/usr/local/bin/phpcbf"
 timeout = 5000
+
+[phpstan]
+command = "/usr/local/bin/phpstan"
+memory-limit = "2G"
+timeout = 30000
 "#,
         )
         .unwrap();
@@ -470,6 +584,12 @@ timeout = 5000
             Some("/usr/local/bin/phpcbf")
         );
         assert_eq!(config.formatting.timeout_ms(), 5000);
+        assert_eq!(
+            config.phpstan.command.as_deref(),
+            Some("/usr/local/bin/phpstan")
+        );
+        assert_eq!(config.phpstan.memory_limit.as_deref(), Some("2G"));
+        assert_eq!(config.phpstan.timeout_ms(), 30_000);
     }
 
     #[test]

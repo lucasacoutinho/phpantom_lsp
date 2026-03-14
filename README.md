@@ -21,6 +21,7 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | Smart select | ✅ | 💰 | ✅ | ✅ | ✅ |
 | Folding ranges | ✅ | 💰 | ✅ | ❌ | ✅ |
 | Formatting | 🧩 | ✅ | ✅ | 🧩 | ✅ |
+| PHPStan diagnostics | ✅ | ❌ | ❌ | ✅ | ✅ |
 | Code lens | ✅ | 💰 | ✅ | ❌ | ✅ |
 | Inlay hints | ❌ | 💰 | ✅ | ❌ | ✅ |
 | Type hierarchy | ❌ | 💰 | ❌ | ❌ | ✅ |

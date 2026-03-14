@@ -1,13 +1,20 @@
 //! Diagnostics — publish LSP diagnostics for PHP files.
 //!
 //! This module collects diagnostics from multiple providers and publishes
-//! them via `textDocument/publishDiagnostics`.  Currently implemented:
+//! them via `textDocument/publishDiagnostics`.  Providers are grouped
+//! into three phases so that cheap results appear immediately and
+//! expensive external tools never block native feedback:
+//!
+//! ## Phase 1 — fast (no type resolution)
 //!
 //! - **`@deprecated` usage diagnostics** — report references to symbols
 //!   marked `@deprecated` with `DiagnosticTag::Deprecated` (renders as
 //!   strikethrough in most editors).
 //! - **Unused `use` dimming** — dim `use` declarations that are not
 //!   referenced anywhere in the file with `DiagnosticTag::Unnecessary`.
+//!
+//! ## Phase 2 — slow (require type resolution)
+//!
 //! - **Unknown class diagnostics** — report `ClassReference` spans that
 //!   cannot be resolved through any resolution phase (use-map, local
 //!   classes, same-namespace, class_index, classmap, PSR-4, stubs).
@@ -15,12 +22,42 @@
 //!   the member does not exist on the resolved class after full
 //!   resolution (inheritance + virtual member providers).  Suppressed
 //!   when the class has `__call` / `__callStatic` / `__get` magic methods.
+//! - **Unknown function diagnostics** — report function calls that
+//!   cannot be resolved to any known function definition.
 //! - **Unresolved member access diagnostics** (opt-in) — report
 //!   `MemberAccess` spans where the **subject type** cannot be resolved
 //!   at all.  Off by default; enable via `[diagnostics]
 //!   unresolved-member-access = true` in `.phpantom.toml`.  Uses
 //!   `Severity::HINT` to surface type-coverage gaps without drowning
 //!   the editor in warnings.
+//! - **Argument count diagnostics** — report calls where the number of
+//!   arguments does not match the function/method signature.
+//!
+//! ## Phase 3 — heavy (external process, dedicated worker)
+//!
+//! - **PHPStan proxy diagnostics** — run PHPStan in editor mode
+//!   (`--tmp-file` / `--instead-of`) and surface its errors as LSP
+//!   diagnostics.  Auto-detected via `vendor/bin/phpstan` or `$PATH`;
+//!   configurable in `.phpantom.toml` under `[phpstan]`.
+//!
+//!   PHPStan runs in a **dedicated worker task**, separate from the
+//!   main diagnostic worker, because it is extremely slow and
+//!   resource-intensive.  At most one PHPStan process runs at a time.
+//!   If edits arrive while PHPStan is running, the pending URI is
+//!   updated and the worker picks it up after the current run finishes.
+//!   Native diagnostics (phases 1 and 2) are never blocked.
+//!
+//! ## Publishing strategy
+//!
+//! Each phase publishes immediately, merging its fresh results with
+//! **cached** results from the other phases:
+//!
+//! - Phase 1 publishes: fresh fast + cached slow + cached PHPStan
+//! - Phase 2 publishes: fresh fast + fresh slow + cached PHPStan
+//! - PHPStan worker publishes: cached fast+slow + fresh PHPStan
+//!
+//! This ensures diagnostics from all providers remain visible at all
+//! times, without flickering when any single phase updates.
 //!
 //! Diagnostics are published **asynchronously** via [`Backend::schedule_diagnostics`].
 //! On every `did_change` event a version counter is bumped and the
@@ -46,9 +83,16 @@ use std::sync::atomic::Ordering;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::phpstan;
 
 /// How long to wait after the last keystroke before publishing diagnostics.
 const DIAGNOSTIC_DEBOUNCE_MS: u64 = 500;
+
+/// How long to wait after the last keystroke before running PHPStan.
+///
+/// Longer than the normal debounce because PHPStan is extremely
+/// expensive.  We want the user to be truly idle before spawning it.
+const PHPSTAN_DEBOUNCE_MS: u64 = 2_000;
 
 impl Backend {
     /// Collect all diagnostics for a single file and publish them.
@@ -90,9 +134,10 @@ impl Backend {
 
         // ── Phase 1: fast diagnostics (cheap, no type resolution) ───────
         // Publish these immediately together with the *previous* slow
-        // diagnostics so the editor dims unused imports and strikes
-        // through deprecated symbols without waiting for the heavier
-        // collectors, and without flickering away existing warnings.
+        // and PHPStan diagnostics so the editor dims unused imports and
+        // strikes through deprecated symbols without waiting for the
+        // heavier collectors, and without flickering away existing
+        // warnings.
         let mut fast_diagnostics = Vec::new();
 
         // ── @deprecated usage diagnostics ───────────────────────────────
@@ -101,14 +146,20 @@ impl Backend {
         // ── Unused `use` dimming ────────────────────────────────────────
         self.collect_unused_import_diagnostics(uri_str, content, &mut fast_diagnostics);
 
-        // Merge fresh fast diagnostics with stale slow diagnostics so
-        // the editor never shows a gap where slow diagnostics vanish
-        // and then reappear.
+        // Merge fresh fast diagnostics with stale slow + PHPStan
+        // diagnostics so the editor never shows a gap where those
+        // diagnostics vanish and then reappear.
         let mut phase1 = fast_diagnostics.clone();
         {
             let cache = self.diag_last_slow.lock();
             if let Some(prev_slow) = cache.get(uri_str) {
                 phase1.extend(prev_slow.iter().cloned());
+            }
+        }
+        {
+            let cache = self.phpstan_last_diags.lock();
+            if let Some(prev_phpstan) = cache.get(uri_str) {
+                phase1.extend(prev_phpstan.iter().cloned());
             }
         }
         deduplicate_diagnostics(&mut phase1);
@@ -138,9 +189,15 @@ impl Backend {
             cache.insert(uri_str.to_string(), slow_diagnostics.clone());
         }
 
-        // ── Combine fast + slow and deduplicate ─────────────────────────
+        // ── Combine fast + slow + cached PHPStan and deduplicate ────────
         let mut diagnostics = fast_diagnostics;
         diagnostics.extend(slow_diagnostics);
+        {
+            let cache = self.phpstan_last_diags.lock();
+            if let Some(prev_phpstan) = cache.get(uri_str) {
+                diagnostics.extend(prev_phpstan.iter().cloned());
+            }
+        }
 
         // When multiple providers flag the same span, suppress the
         // lower-value diagnostic.  In particular, suppress
@@ -166,13 +223,16 @@ impl Backend {
         {
             let mut pending = self.diag_pending_uris.lock();
             if !pending.contains(&uri) {
-                pending.push(uri);
+                pending.push(uri.clone());
             }
         }
         // Bump version so the worker knows there is fresh work.
         self.diag_version.fetch_add(1, Ordering::Release);
         // Wake the worker (no-op if it is already awake).
         self.diag_notify.notify_one();
+
+        // Also schedule a PHPStan run for this file.
+        self.schedule_phpstan(uri);
     }
 
     /// Schedule a diagnostic pass for every currently open file.
@@ -266,10 +326,190 @@ impl Backend {
         }
     }
 
+    // ── PHPStan worker ──────────────────────────────────────────────
+
+    /// Schedule a PHPStan run for a single file.
+    ///
+    /// Only the most recent file is kept: if the user switches files or
+    /// types rapidly, earlier requests are superseded.  This is
+    /// intentional — PHPStan is too slow to queue up multiple files.
+    fn schedule_phpstan(&self, uri: String) {
+        *self.phpstan_pending_uri.lock() = Some(uri);
+        self.phpstan_notify.notify_one();
+    }
+
+    /// Long-lived background task that runs PHPStan on pending files.
+    ///
+    /// Spawned once during `initialized`, alongside the main diagnostic
+    /// worker.  This task is completely independent: native diagnostics
+    /// (phases 1 and 2) are never blocked by PHPStan.
+    ///
+    /// ## Serialization guarantee
+    ///
+    /// At most one PHPStan process runs at a time.  The worker loop:
+    ///
+    /// 1. Wait for a notification (new edit arrived).
+    /// 2. Debounce: sleep [`PHPSTAN_DEBOUNCE_MS`], checking whether new
+    ///    edits arrived.  If so, restart the debounce.
+    /// 3. Snapshot the pending URI and file content.
+    /// 4. Resolve the PHPStan binary (skip if not found / disabled).
+    /// 5. Run PHPStan (blocking — this is the slow part).
+    /// 6. Cache the results and re-publish diagnostics for the file.
+    /// 7. Loop back to step 1.
+    ///
+    /// If the user edits while step 5 is in progress, the pending URI
+    /// is updated.  When step 5 finishes, the worker sees the new
+    /// notification and loops back to step 1, starting a fresh run
+    /// with the latest content.
+    pub(crate) async fn phpstan_worker(&self) {
+        loop {
+            // ── Step 1: wait for work ───────────────────────────────
+            self.phpstan_notify.notified().await;
+
+            // Drain any extra stored permits so that notifications
+            // that arrived between the last run finishing and this
+            // `notified()` call don't cause an immediate second run.
+            // `Notify::notify_one()` stores at most one permit, but
+            // multiple `schedule_phpstan` calls during debounce or
+            // execution could leave one behind.
+            //
+            // We consume it by polling a fresh `notified()` with a
+            // zero timeout — if there's a stored permit it resolves
+            // immediately, otherwise it times out harmlessly.
+            let _ = tokio::time::timeout(std::time::Duration::ZERO, self.phpstan_notify.notified())
+                .await;
+
+            // ── Step 2: debounce (longer than normal diagnostics) ───
+            loop {
+                let version_before = self.diag_version.load(Ordering::Acquire);
+                tokio::time::sleep(std::time::Duration::from_millis(PHPSTAN_DEBOUNCE_MS)).await;
+                let version_after = self.diag_version.load(Ordering::Acquire);
+                if version_before == version_after {
+                    break;
+                }
+                // More edits arrived — loop and debounce again.
+            }
+
+            // ── Step 3: snapshot the pending URI ────────────────────
+            let uri = {
+                let mut pending = self.phpstan_pending_uri.lock();
+                pending.take()
+            };
+            let uri = match uri {
+                Some(u) => u,
+                None => continue,
+            };
+
+            // Snapshot the file content.
+            let content = {
+                let files = self.open_files.read();
+                match files.get(&uri) {
+                    Some(c) => c.clone(),
+                    None => continue,
+                }
+            };
+
+            // ── Step 4: resolve PHPStan binary ──────────────────────
+            let config = self.config();
+            if config.phpstan.is_disabled() {
+                continue;
+            }
+
+            let file_path = match uri.parse::<Url>().ok().and_then(|u| u.to_file_path().ok()) {
+                Some(p) => p,
+                None => continue,
+            };
+
+            let workspace_root = self.workspace_root.read().clone();
+            let workspace_root = match workspace_root {
+                Some(root) => root,
+                None => continue,
+            };
+
+            let bin_dir: Option<String> =
+                std::fs::read_to_string(workspace_root.join("composer.json"))
+                    .ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .map(|json| crate::composer::get_bin_dir(&json));
+
+            let resolved = match phpstan::resolve_phpstan(
+                Some(&workspace_root),
+                &config.phpstan,
+                bin_dir.as_deref(),
+            ) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            // ── Step 5: run PHPStan (the slow part) ─────────────────
+            // Move the blocking PHPStan execution onto a dedicated
+            // OS thread via `spawn_blocking`.  This is critical:
+            // `run_phpstan` contains a poll loop that blocks the
+            // thread.  If we ran it inline, the tokio runtime could
+            // schedule other futures (including a second iteration
+            // of this very worker) on other threads, breaking the
+            // "at most one PHPStan process" guarantee.  By awaiting
+            // the `spawn_blocking` handle, this task is suspended
+            // (not occupying a runtime thread) and no re-entry can
+            // happen until the handle resolves.
+            let phpstan_config = config.phpstan.clone();
+            let phpstan_diags = {
+                let result = tokio::task::spawn_blocking(move || {
+                    phpstan::run_phpstan(
+                        &resolved,
+                        &content,
+                        &file_path,
+                        &workspace_root,
+                        &phpstan_config,
+                    )
+                })
+                .await;
+
+                match result {
+                    Ok(Ok(diags)) => diags,
+                    Ok(Err(_e)) => {
+                        // PHPStan failures are silently ignored to
+                        // avoid flooding the editor with errors when
+                        // PHPStan is misconfigured or the project
+                        // doesn't use it.
+                        continue;
+                    }
+                    Err(_join_err) => {
+                        // The blocking task panicked or was cancelled.
+                        continue;
+                    }
+                }
+            };
+
+            // ── Step 6: cache results and re-publish ────────────────
+            {
+                let mut cache = self.phpstan_last_diags.lock();
+                cache.insert(uri.clone(), phpstan_diags);
+            }
+
+            // Re-publish diagnostics for this file so the editor
+            // sees the fresh PHPStan results merged with the native
+            // diagnostics.  We re-run the full publish (phases 1+2
+            // + fresh PHPStan cache) rather than publishing PHPStan
+            // results alone, because `publishDiagnostics` replaces
+            // the entire diagnostic set for the file.
+            let content = {
+                let files = self.open_files.read();
+                match files.get(&uri) {
+                    Some(c) => c.clone(),
+                    None => continue,
+                }
+            };
+            self.publish_diagnostics_for_file(&uri, &content).await;
+        }
+    }
+
     /// Clear diagnostics for a file (e.g. on `did_close`).
     pub(crate) async fn clear_diagnostics_for_file(&self, uri_str: &str) {
         // Remove cached slow diagnostics so we don't leak memory.
         self.diag_last_slow.lock().remove(uri_str);
+        // Remove cached PHPStan diagnostics too.
+        self.phpstan_last_diags.lock().remove(uri_str);
 
         let client = match &self.client {
             Some(c) => c,
@@ -285,63 +525,79 @@ impl Backend {
     }
 }
 
-/// Suppress redundant diagnostics when a more specific provider already
-/// covers the same (or overlapping) range.
+// ── Deduplication ───────────────────────────────────────────────────────────
+
+/// Suppress lower-priority diagnostics when a higher-priority one covers
+/// an overlapping range.
 ///
-/// Rules:
-/// - Drop `unresolved_member_access` when any `unknown_member`,
-///   `scalar_member_access`, or `unknown_class` diagnostic overlaps.
+/// Rules (in precedence order):
+/// 1. `unknown_class` trumps `unresolved_member_access`
+/// 2. `unknown_member` trumps `unresolved_member_access`
+/// 3. `scalar_member_access` trumps `unresolved_member_access`
+///
+/// Also removes exact duplicates (same range + same message).
 fn deduplicate_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
-    use unknown_classes::UNKNOWN_CLASS_CODE;
-    use unknown_members::{SCALAR_MEMBER_ACCESS_CODE, UNKNOWN_MEMBER_CODE};
-    use unresolved_member_access::UNRESOLVED_MEMBER_ACCESS_CODE;
-
-    // Collect ranges of higher-priority diagnostics.
-    let priority_ranges: Vec<Range> = diagnostics
-        .iter()
-        .filter_map(|d| {
-            let code = match &d.code {
-                Some(NumberOrString::String(s)) => s.as_str(),
-                _ => return None,
-            };
-            if code == UNKNOWN_MEMBER_CODE
-                || code == SCALAR_MEMBER_ACCESS_CODE
-                || code == UNKNOWN_CLASS_CODE
-            {
-                Some(d.range)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    if priority_ranges.is_empty() {
+    if diagnostics.is_empty() {
         return;
     }
 
+    // Collect the ranges of "priority" diagnostics that should
+    // suppress `unresolved_member_access` hints.
+    let priority_codes: &[&str] = &[
+        "unknown_class",
+        "unknown_member",
+        "scalar_member_access",
+        "unknown_function",
+    ];
+
+    let priority_ranges: Vec<Range> = diagnostics
+        .iter()
+        .filter(|d| {
+            d.code
+                .as_ref()
+                .map(|c| match c {
+                    NumberOrString::String(s) => priority_codes.contains(&s.as_str()),
+                    _ => false,
+                })
+                .unwrap_or(false)
+        })
+        .map(|d| d.range)
+        .collect();
+
     diagnostics.retain(|d| {
-        let code = match &d.code {
-            Some(NumberOrString::String(s)) => s.as_str(),
-            _ => return true,
-        };
-        if code != UNRESOLVED_MEMBER_ACCESS_CODE {
-            return true;
+        let is_unresolved = d
+            .code
+            .as_ref()
+            .map(|c| match c {
+                NumberOrString::String(s) => s == "unresolved_member_access",
+                _ => false,
+            })
+            .unwrap_or(false);
+
+        if is_unresolved {
+            // Suppress if any priority diagnostic overlaps this range.
+            !priority_ranges
+                .iter()
+                .any(|pr| ranges_overlap(pr, &d.range))
+        } else {
+            true
         }
-        // Drop this diagnostic if any priority diagnostic overlaps.
-        !priority_ranges
-            .iter()
-            .any(|pr| ranges_overlap(pr, &d.range))
     });
+
+    // Remove exact duplicates (same range + same message).
+    diagnostics.dedup_by(|a, b| a.range == b.range && a.message == b.message);
 }
 
-/// Check whether two LSP ranges overlap (share at least one character).
+/// Check whether two LSP ranges overlap.
 fn ranges_overlap(a: &Range, b: &Range) -> bool {
-    // Two ranges overlap when neither ends before the other starts.
+    // Two ranges overlap if neither ends before the other starts.
     !(a.end.line < b.start.line
         || (a.end.line == b.start.line && a.end.character <= b.start.character)
         || b.end.line < a.start.line
         || (b.end.line == a.start.line && b.end.character <= a.start.character))
 }
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 /// Build a diagnostic range from byte offsets, returning `None` if the
 /// conversion fails (e.g. invalid offset or multi-byte boundary).
@@ -370,145 +626,191 @@ fn byte_offset_to_position(content: &str, byte_offset: usize) -> Option<Position
     Some(Position { line, character })
 }
 
-// ─── Tests ──────────────────────────────────────────────────────────────────
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use unknown_classes::UNKNOWN_CLASS_CODE;
-    use unknown_members::{SCALAR_MEMBER_ACCESS_CODE, UNKNOWN_MEMBER_CODE};
-    use unresolved_member_access::UNRESOLVED_MEMBER_ACCESS_CODE;
 
-    fn make_range(line: u32, start_char: u32, end_char: u32) -> Range {
+    // ── helpers ─────────────────────────────────────────────────────
+
+    fn make_range(start_line: u32, start_char: u32, end_line: u32, end_char: u32) -> Range {
         Range {
             start: Position {
-                line,
+                line: start_line,
                 character: start_char,
             },
             end: Position {
-                line,
+                line: end_line,
                 character: end_char,
             },
         }
     }
 
-    fn make_diagnostic(code: &str, range: Range) -> Diagnostic {
+    fn make_diagnostic(
+        range: Range,
+        severity: DiagnosticSeverity,
+        code: &str,
+        message: &str,
+    ) -> Diagnostic {
         Diagnostic {
             range,
-            severity: Some(DiagnosticSeverity::HINT),
+            severity: Some(severity),
             code: Some(NumberOrString::String(code.to_string())),
             code_description: None,
             source: Some("phpantom".to_string()),
-            message: format!("test diagnostic ({})", code),
+            message: message.to_string(),
             related_information: None,
             tags: None,
             data: None,
         }
     }
 
-    // ── ranges_overlap ──────────────────────────────────────────────────
+    // ── ranges_overlap ──────────────────────────────────────────────
 
     #[test]
     fn overlapping_ranges_on_same_line() {
-        let a = make_range(5, 0, 10);
-        let b = make_range(5, 5, 15);
+        let a = make_range(5, 0, 5, 10);
+        let b = make_range(5, 5, 5, 15);
         assert!(ranges_overlap(&a, &b));
         assert!(ranges_overlap(&b, &a));
     }
 
     #[test]
     fn non_overlapping_ranges_on_same_line() {
-        let a = make_range(5, 0, 5);
-        let b = make_range(5, 5, 10);
+        let a = make_range(5, 0, 5, 5);
+        let b = make_range(5, 5, 5, 10);
         assert!(!ranges_overlap(&a, &b));
         assert!(!ranges_overlap(&b, &a));
     }
 
     #[test]
     fn non_overlapping_ranges_on_different_lines() {
-        let a = make_range(1, 0, 10);
-        let b = make_range(3, 0, 10);
+        let a = make_range(1, 0, 1, 10);
+        let b = make_range(2, 0, 2, 10);
         assert!(!ranges_overlap(&a, &b));
     }
 
     #[test]
     fn identical_ranges_overlap() {
-        let a = make_range(5, 3, 8);
-        assert!(ranges_overlap(&a, &a));
+        let r = make_range(3, 5, 3, 10);
+        assert!(ranges_overlap(&r, &r));
     }
 
     #[test]
     fn contained_range_overlaps() {
-        let outer = make_range(5, 0, 20);
-        let inner = make_range(5, 5, 10);
+        let outer = make_range(1, 0, 10, 0);
+        let inner = make_range(5, 5, 5, 10);
         assert!(ranges_overlap(&outer, &inner));
         assert!(ranges_overlap(&inner, &outer));
     }
 
-    // ── deduplicate_diagnostics ─────────────────────────────────────────
+    // ── deduplicate_diagnostics ─────────────────────────────────────
 
     #[test]
     fn suppresses_unresolved_member_when_unknown_class_overlaps() {
-        let range = make_range(5, 4, 20);
+        let range = make_range(5, 0, 5, 15);
         let mut diags = vec![
-            make_diagnostic(UNKNOWN_CLASS_CODE, range),
-            make_diagnostic(UNRESOLVED_MEMBER_ACCESS_CODE, range),
+            make_diagnostic(
+                range,
+                DiagnosticSeverity::WARNING,
+                "unknown_class",
+                "Unknown class X",
+            ),
+            make_diagnostic(
+                range,
+                DiagnosticSeverity::HINT,
+                "unresolved_member_access",
+                "Unresolved member access on X",
+            ),
         ];
         deduplicate_diagnostics(&mut diags);
         assert_eq!(diags.len(), 1);
         assert_eq!(
             diags[0].code,
-            Some(NumberOrString::String(UNKNOWN_CLASS_CODE.to_string())),
+            Some(NumberOrString::String("unknown_class".to_string()))
         );
     }
 
     #[test]
     fn suppresses_unresolved_member_when_unknown_member_overlaps() {
-        let range = make_range(5, 4, 20);
+        let range = make_range(10, 0, 10, 20);
         let mut diags = vec![
-            make_diagnostic(UNKNOWN_MEMBER_CODE, range),
-            make_diagnostic(UNRESOLVED_MEMBER_ACCESS_CODE, range),
+            make_diagnostic(
+                range,
+                DiagnosticSeverity::WARNING,
+                "unknown_member",
+                "Unknown member foo",
+            ),
+            make_diagnostic(
+                range,
+                DiagnosticSeverity::HINT,
+                "unresolved_member_access",
+                "Unresolved member access",
+            ),
         ];
         deduplicate_diagnostics(&mut diags);
         assert_eq!(diags.len(), 1);
         assert_eq!(
             diags[0].code,
-            Some(NumberOrString::String(UNKNOWN_MEMBER_CODE.to_string())),
+            Some(NumberOrString::String("unknown_member".to_string()))
         );
     }
 
     #[test]
     fn suppresses_unresolved_member_when_scalar_member_access_overlaps() {
-        let range = make_range(5, 4, 20);
+        let range_outer = make_range(3, 0, 3, 20);
+        let range_inner = make_range(3, 5, 3, 15);
         let mut diags = vec![
-            make_diagnostic(SCALAR_MEMBER_ACCESS_CODE, range),
-            make_diagnostic(UNRESOLVED_MEMBER_ACCESS_CODE, range),
+            make_diagnostic(
+                range_outer,
+                DiagnosticSeverity::ERROR,
+                "scalar_member_access",
+                "Cannot access member on scalar",
+            ),
+            make_diagnostic(
+                range_inner,
+                DiagnosticSeverity::HINT,
+                "unresolved_member_access",
+                "Unresolved member access",
+            ),
         ];
         deduplicate_diagnostics(&mut diags);
         assert_eq!(diags.len(), 1);
         assert_eq!(
             diags[0].code,
-            Some(NumberOrString::String(
-                SCALAR_MEMBER_ACCESS_CODE.to_string()
-            )),
+            Some(NumberOrString::String("scalar_member_access".to_string()))
         );
     }
 
     #[test]
     fn keeps_unresolved_member_when_no_priority_diagnostic() {
-        let range = make_range(5, 4, 20);
-        let mut diags = vec![make_diagnostic(UNRESOLVED_MEMBER_ACCESS_CODE, range)];
+        let range = make_range(5, 0, 5, 15);
+        let mut diags = vec![make_diagnostic(
+            range,
+            DiagnosticSeverity::HINT,
+            "unresolved_member_access",
+            "Unresolved member access",
+        )];
         deduplicate_diagnostics(&mut diags);
         assert_eq!(diags.len(), 1);
     }
 
     #[test]
     fn keeps_unresolved_member_on_different_range() {
-        let range_a = make_range(5, 0, 10);
-        let range_b = make_range(10, 0, 10);
         let mut diags = vec![
-            make_diagnostic(UNKNOWN_CLASS_CODE, range_a),
-            make_diagnostic(UNRESOLVED_MEMBER_ACCESS_CODE, range_b),
+            make_diagnostic(
+                make_range(5, 0, 5, 10),
+                DiagnosticSeverity::WARNING,
+                "unknown_class",
+                "Unknown class X",
+            ),
+            make_diagnostic(
+                make_range(10, 0, 10, 10),
+                DiagnosticSeverity::HINT,
+                "unresolved_member_access",
+                "Unresolved member access on Y",
+            ),
         ];
         deduplicate_diagnostics(&mut diags);
         assert_eq!(diags.len(), 2);
@@ -516,20 +818,36 @@ mod tests {
 
     #[test]
     fn suppresses_multiple_unresolved_members_with_priority_overlap() {
-        let range = make_range(5, 4, 20);
-        let other_range = make_range(8, 0, 15);
+        let range = make_range(5, 0, 5, 15);
         let mut diags = vec![
-            make_diagnostic(UNKNOWN_CLASS_CODE, range),
-            make_diagnostic(SCALAR_MEMBER_ACCESS_CODE, other_range),
-            make_diagnostic(UNRESOLVED_MEMBER_ACCESS_CODE, range),
-            make_diagnostic(UNRESOLVED_MEMBER_ACCESS_CODE, other_range),
+            make_diagnostic(
+                range,
+                DiagnosticSeverity::WARNING,
+                "unknown_class",
+                "Unknown class X",
+            ),
+            make_diagnostic(
+                range,
+                DiagnosticSeverity::HINT,
+                "unresolved_member_access",
+                "Unresolved 1",
+            ),
+            make_diagnostic(
+                range,
+                DiagnosticSeverity::HINT,
+                "unresolved_member_access",
+                "Unresolved 2",
+            ),
+            make_diagnostic(
+                make_range(20, 0, 20, 10),
+                DiagnosticSeverity::HINT,
+                "unresolved_member_access",
+                "Unresolved 3 (different range)",
+            ),
         ];
         deduplicate_diagnostics(&mut diags);
+        // Only the unknown_class + the one on a different range should survive.
         assert_eq!(diags.len(), 2);
-        assert!(diags.iter().all(|d| d.code
-            != Some(NumberOrString::String(
-                UNRESOLVED_MEMBER_ACCESS_CODE.to_string()
-            ))));
     }
 
     #[test]

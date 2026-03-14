@@ -208,6 +208,16 @@ impl LanguageServer for Backend {
         tokio::spawn(async move {
             worker_backend.diagnostic_worker().await;
         });
+
+        // Spawn the PHPStan worker as a separate background task.
+        // PHPStan is extremely slow and resource-intensive, so it runs
+        // in its own task with its own debounce timer and pending-URI
+        // slot.  At most one PHPStan process runs at a time.  Native
+        // diagnostics (fast + slow phases) are never blocked.
+        let phpstan_backend = self.clone_for_diagnostic_worker();
+        tokio::spawn(async move {
+            phpstan_backend.phpstan_worker().await;
+        });
     }
 
     async fn shutdown(&self) -> Result<()> {

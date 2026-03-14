@@ -172,32 +172,30 @@ positions produce `ClassReference` spans and which don't.
 ## 6. Diagnostic suppression intelligence
 **Impact: Medium · Effort: Medium**
 
-When PHPantom proxies diagnostics from external tools (PHPStan, Psalm,
-PHPMD, PHP_CodeSniffer), users need a way to suppress specific warnings.
-Rather than forcing them to install a separate extension or memorise each
-tool's suppression syntax, PHPantom can offer **code actions to insert
-the correct suppression comment** for the tool that produced the
-diagnostic.
+When PHPantom proxies diagnostics from external tools, users need a way
+to suppress specific warnings. Rather than forcing them to install a
+separate extension or memorise each tool's suppression syntax, PHPantom
+can offer **code actions to insert the correct suppression comment** for
+the tool that produced the diagnostic.
 
-### Behaviour
+PHPStan suppression is implemented: "Ignore PHPStan error" adds
+`// @phpstan-ignore <identifier>` (appending to existing ignores when
+present), and "Remove unnecessary @phpstan-ignore" cleans up unmatched
+ignores reported by PHPStan. What remains:
 
-- When the cursor is on a diagnostic that originated from a proxied
-  tool, offer a code action: `Suppress [TOOL] [RULE] for this line` /
-  `...for this function` / `...for this file`.
-- Insert the correct comment syntax for the originating tool:
-  - PHPStan: `// @phpstan-ignore [identifier]` (line-level), or
-    `@phpstan-ignore-next-line` above the line.
-  - Psalm: `/** @psalm-suppress [IssueType] */` on the line or above
-    the function/class.
-  - PHPCS: `// phpcs:ignore [Sniff.Name]` or `// phpcs:disable` /
-    `// phpcs:enable` blocks.
-  - PHPMD: `// @SuppressWarnings(PHPMD.[RuleName])` in a docblock.
+### Remaining tools
+
+- Psalm: `/** @psalm-suppress [IssueType] */` on the line or above
+  the function/class.
+- PHPCS: `// phpcs:ignore [Sniff.Name]` or `// phpcs:disable` /
+  `// phpcs:enable` blocks.
+- PHPMD: `// @SuppressWarnings(PHPMD.[RuleName])` in a docblock.
 - For PHPantom's own diagnostics: support `@suppress PHPxxxx`
   in docblocks (matching PHP Tools' convention) and a config flag
   `phpantom.diagnostics.enabled: bool` (default `true`).
 
-**Prerequisites:** External tool integration is a later phase. Start
-with suppression for our own diagnostics.
+**Prerequisites:** Each tool needs a diagnostic proxy before its
+suppression actions can be wired up.
 
 ---
 

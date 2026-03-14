@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **PHPStan diagnostics.** PHPStan errors appear inline as you edit, using PHPStan's editor mode (`--tmp-file` / `--instead-of`). Auto-detects `vendor/bin/phpstan` or `$PATH`. Runs in a dedicated background worker with a 2-second debounce and at most one process at a time, so native diagnostics are never blocked. Configurable via `[phpstan]` in `.phpantom.toml` (`command`, `memory-limit`, `timeout`).
+- **PHPStan ignore code actions.** "Ignore PHPStan error" adds `// @phpstan-ignore <identifier>` to the line (appending to existing ignores when present). "Remove unnecessary @phpstan-ignore" cleans up unmatched ignores that PHPStan flags, removing the specific identifier from multi-identifier comments or deleting the entire comment when it is the only one.
 - **Formatting.** `textDocument/formatting` proxies to php-cs-fixer and phpcbf (both can run in sequence). Auto-detects tools via Composer's configured bin directory, then `$PATH`. Per-tool command overrides and disable switches in `[formatting]` in `.phpantom.toml`.
 - **Progress indicators.** Go to Implementation and Find References now show a progress indicator in the editor while scanning.
 - **Selection Ranges.** Smart select / expand selection returns AST-aware nested ranges from innermost to outermost (identifier, expression, statement, block, function, class, file).

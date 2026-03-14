@@ -14,9 +14,13 @@
 //! - **Replace deprecated call** — when the cursor is on a deprecated
 //!   function or method call that has a `#[Deprecated(replacement: "...")]`
 //!   template, offer to rewrite the call to the suggested replacement.
+//! - **PHPStan ignore** — when the cursor is on a line with a PHPStan
+//!   error, offer to add `@phpstan-ignore <identifier>`.  When PHPStan
+//!   reports an unnecessary ignore, offer to remove it.
 
 mod implement_methods;
 mod import_class;
+mod phpstan_ignore;
 mod remove_unused_import;
 mod replace_deprecated;
 
@@ -47,6 +51,9 @@ impl Backend {
 
         // ── Replace deprecated call ─────────────────────────────────────
         self.collect_replace_deprecated_actions(uri, content, params, &mut actions);
+
+        // ── PHPStan ignore / remove unnecessary ignore ──────────────────
+        self.collect_phpstan_ignore_actions(uri, content, params, &mut actions);
 
         actions
     }
