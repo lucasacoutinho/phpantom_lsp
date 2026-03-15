@@ -47,6 +47,8 @@ feature surface grows.
 | --- | ------------------------------------------------------------------------- | ------ | ----------- | ------------------------------------------------------------------------------------ |
 | 87  | Reference-counted `ClassInfo` (`Arc<ClassInfo>`) — propagate through APIs | Medium | Performance | [performance.md §2](todo/performance.md#2-reference-counted-classinfo-arcclassinfo)  |
 | 94  | Pull diagnostics (`textDocument/diagnostic`) — replace push model         | Medium | Performance | [performance.md §15](todo/performance.md#15-pull-diagnostics-textdocumentdiagnostic) |
+| 102 | Implementation error diagnostic                                           | Medium | Diagnostics | [diagnostics.md §9](todo/diagnostics.md#9-implementation-error-diagnostic)           |
+| 115 | Syntax error diagnostic (surface Mago parse errors)                       | Low    | Diagnostics | [diagnostics.md §11](todo/diagnostics.md#11-syntax-error-diagnostic)                 |
 
 **After Sprint 3:** PHPantom feels like a complete LSP to everyday
 users. Outline, breadcrumbs, workspace search, semantic highlighting,
@@ -94,14 +96,14 @@ Intelephense premium users expect.
 | --- | ----------------------------------------------- | ------ | ------------- | -------------------------------------------------------------------------- |
 | —   | Clear refactoring gate                          | —      | Refactoring   | [refactor.md](todo/refactor.md)                                            |
 | 24  | PHPDoc block generation on `/**`                | Medium | LSP Features  | [lsp-features.md §3](todo/lsp-features.md#3-phpdoc-block-generation-on-)   |
-| 102 | Implementation error diagnostic                 | Medium | Diagnostics   | [diagnostics.md §9](todo/diagnostics.md#9-implementation-error-diagnostic) |
+| 114 | Undefined variable diagnostic                   | Medium | Diagnostics   | [diagnostics.md §10](todo/diagnostics.md#10-undefined-variable-diagnostic) |
 | 99  | File rename on class rename                     | Medium | LSP Features  | [lsp-features.md §20](todo/lsp-features.md#20-file-rename-on-class-rename) |
 | 103 | Stub extension selection (`[stubs] extensions`) | Low    | Configuration | [config.md §stubs](todo/config.md#extension-stub-selection)                |
 
 **After Sprint 5:** PHPantom is ready for office colleagues. They
-get PHPDoc generation and the diagnostics they're used to. Nobody
-switching from Intelephense (free or premium) feels like they lost
-more than they gained.
+get PHPDoc generation, undefined variable detection, and the
+diagnostics they're used to. Nobody switching from Intelephense
+(free or premium) feels like they lost more than they gained.
 
 ---
 

@@ -564,6 +564,20 @@ fn deduplicate_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
         .map(|d| d.range)
         .collect();
 
+    // Collect lines that have at least one precise (sub-line)
+    // diagnostic.  A diagnostic is "precise" when it does not span the
+    // entire line, i.e. it has a meaningful character range rather than
+    // `0..MAX`.  External tools like PHPStan only report a line number,
+    // so their diagnostics stretch the full line.  When a native
+    // diagnostic already pinpoints the exact location on that line, the
+    // full-line underline is redundant noise.
+    let mut lines_with_precise_diag = std::collections::HashSet::new();
+    for d in diagnostics.iter() {
+        if !is_full_line_range(&d.range) {
+            lines_with_precise_diag.insert(d.range.start.line);
+        }
+    }
+
     diagnostics.retain(|d| {
         let is_unresolved = d
             .code
@@ -576,16 +590,36 @@ fn deduplicate_diagnostics(diagnostics: &mut Vec<Diagnostic>) {
 
         if is_unresolved {
             // Suppress if any priority diagnostic overlaps this range.
-            !priority_ranges
+            return !priority_ranges
                 .iter()
-                .any(|pr| ranges_overlap(pr, &d.range))
-        } else {
-            true
+                .any(|pr| ranges_overlap(pr, &d.range));
         }
+
+        // Suppress full-line diagnostics on lines where a more precise
+        // diagnostic already exists.  This avoids the visual clutter of
+        // a line-wide PHPStan underline next to a pinpointed native
+        // error.  The suppressed diagnostic will reappear once the user
+        // resolves the precise one.
+        if is_full_line_range(&d.range)
+            && lines_with_precise_diag.contains(&d.range.start.line)
+        {
+            return false;
+        }
+
+        true
     });
 
     // Remove exact duplicates (same range + same message).
     diagnostics.dedup_by(|a, b| a.range == b.range && a.message == b.message);
+}
+
+/// Returns `true` if the range spans a full line (character 0 to a
+/// very large end character).  PHPStan and other line-only tools
+/// produce these ranges because they don't report column information.
+fn is_full_line_range(range: &Range) -> bool {
+    range.start.line == range.end.line
+        && range.start.character == 0
+        && range.end.character >= 1000
 }
 
 /// Check whether two LSP ranges overlap.
@@ -852,8 +886,111 @@ mod tests {
 
     #[test]
     fn no_op_when_no_diagnostics() {
-        let mut diags: Vec<Diagnostic> = Vec::new();
+        let mut diags: Vec<Diagnostic> = vec![];
         deduplicate_diagnostics(&mut diags);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn suppresses_full_line_phpstan_when_precise_diagnostic_on_same_line() {
+        let phpstan = Diagnostic {
+            range: make_range(5, 0, 5, u32::MAX),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("argument.type".to_string())),
+            source: Some("phpstan".to_string()),
+            message: "Parameter #1 $x expects int, string given.".to_string(),
+            ..Default::default()
+        };
+        let precise = Diagnostic {
+            range: make_range(5, 10, 5, 20),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("unknown_class".to_string())),
+            source: Some("phpantom".to_string()),
+            message: "Class 'Foo' not found".to_string(),
+            ..Default::default()
+        };
+        let mut diags = vec![phpstan, precise.clone()];
+        deduplicate_diagnostics(&mut diags);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, precise.message);
+    }
+
+    #[test]
+    fn keeps_full_line_phpstan_when_no_precise_diagnostic_on_line() {
+        let phpstan = Diagnostic {
+            range: make_range(5, 0, 5, u32::MAX),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("argument.type".to_string())),
+            source: Some("phpstan".to_string()),
+            message: "Parameter #1 $x expects int, string given.".to_string(),
+            ..Default::default()
+        };
+        let precise_other_line = Diagnostic {
+            range: make_range(10, 3, 10, 15),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("unknown_class".to_string())),
+            source: Some("phpantom".to_string()),
+            message: "Class 'Bar' not found".to_string(),
+            ..Default::default()
+        };
+        let mut diags = vec![phpstan.clone(), precise_other_line.clone()];
+        deduplicate_diagnostics(&mut diags);
+        assert_eq!(diags.len(), 2);
+    }
+
+    #[test]
+    fn keeps_precise_phpstan_diagnostic_on_same_line() {
+        // If a future PHPStan version provides column info, don't suppress it.
+        let phpstan_precise = Diagnostic {
+            range: make_range(5, 8, 5, 20),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("argument.type".to_string())),
+            source: Some("phpstan".to_string()),
+            message: "Parameter #1 $x expects int, string given.".to_string(),
+            ..Default::default()
+        };
+        let native_precise = Diagnostic {
+            range: make_range(5, 3, 5, 10),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("unknown_class".to_string())),
+            source: Some("phpantom".to_string()),
+            message: "Class 'Foo' not found".to_string(),
+            ..Default::default()
+        };
+        let mut diags = vec![phpstan_precise.clone(), native_precise.clone()];
+        deduplicate_diagnostics(&mut diags);
+        assert_eq!(diags.len(), 2);
+    }
+
+    #[test]
+    fn suppresses_multiple_full_line_diags_when_precise_exists() {
+        let phpstan1 = Diagnostic {
+            range: make_range(5, 0, 5, u32::MAX),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("argument.type".to_string())),
+            source: Some("phpstan".to_string()),
+            message: "Error one".to_string(),
+            ..Default::default()
+        };
+        let phpstan2 = Diagnostic {
+            range: make_range(5, 0, 5, u32::MAX),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("return.type".to_string())),
+            source: Some("phpstan".to_string()),
+            message: "Error two".to_string(),
+            ..Default::default()
+        };
+        let precise = Diagnostic {
+            range: make_range(5, 2, 5, 8),
+            severity: Some(DiagnosticSeverity::WARNING),
+            code: Some(NumberOrString::String("unknown_member".to_string())),
+            source: Some("phpantom".to_string()),
+            message: "Method 'foo' not found".to_string(),
+            ..Default::default()
+        };
+        let mut diags = vec![phpstan1, phpstan2, precise.clone()];
+        deduplicate_diagnostics(&mut diags);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].message, precise.message);
     }
 }
