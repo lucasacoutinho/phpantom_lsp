@@ -65,7 +65,6 @@ analysis and grouped here by user-facing impact.
 | D8  | Undefined variable diagnostic                                    | Medium | Diagnostics    | [diagnostics.md D8](todo/diagnostics.md#d8-undefined-variable-diagnostic)                   |
 | D3  | Deprecated rendering gaps                                        | Low    | Diagnostics    | [diagnostics.md D3](todo/diagnostics.md#d3-deprecated-rendering)                            |
 | D6  | Unreachable code diagnostic                                      | Low    | Diagnostics    | [diagnostics.md D6](todo/diagnostics.md#d6-unreachable-code-diagnostic)                     |
-| F4  | File rename on class rename                                      | Medium | LSP Features   | [lsp-features.md F4](todo/lsp-features.md#f4-file-rename-on-class-rename)                   |
 | E5  | Stub extension selection (`[stubs] extensions`)                  | Low    | External Stubs | [external-stubs.md E5](todo/external-stubs.md#e5-extension-stub-selection-stubs-extensions) |
 | A1  | Simplify with null coalescing / null-safe operator (code action) | Medium | Code Actions   | [actions.md A1](todo/actions.md#a1-simplify-with-null-coalescing--null-safe-operator)       |
 

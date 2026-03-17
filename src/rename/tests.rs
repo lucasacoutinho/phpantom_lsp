@@ -1307,3 +1307,363 @@ async fn rename_class_declaration_updates_in_same_namespace() {
         result_b
     );
 }
+
+// ─── File Rename on Class Rename ────────────────────────────────────────────
+
+/// Extract the `RenameFile` operation from a `WorkspaceEdit`, if any.
+fn extract_rename_file(edit: &WorkspaceEdit) -> Option<&RenameFile> {
+    let doc_changes = edit.document_changes.as_ref()?;
+    match doc_changes {
+        DocumentChanges::Operations(ops) => {
+            for op in ops {
+                if let DocumentChangeOperation::Op(ResourceOp::Rename(rf)) = op {
+                    return Some(rf);
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Collect all text edits for a given URI from a `WorkspaceEdit` that uses
+/// `document_changes` (the `DocumentChanges::Operations` variant).
+fn doc_change_edits_for_uri(edit: &WorkspaceEdit, uri: &Url) -> Vec<TextEdit> {
+    let Some(DocumentChanges::Operations(ops)) = &edit.document_changes else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for op in ops {
+        if let DocumentChangeOperation::Edit(tde) = op
+            && tde.text_document.uri == *uri
+        {
+            for e in &tde.edits {
+                match e {
+                    OneOf::Left(te) => result.push(te.clone()),
+                    OneOf::Right(ate) => result.push(TextEdit {
+                        range: ate.text_edit.range,
+                        new_text: ate.text_edit.new_text.clone(),
+                    }),
+                }
+            }
+        }
+    }
+    result
+}
+
+#[tokio::test]
+async fn rename_class_renames_file_when_psr4_match() {
+    // When the filename matches the class name and the client supports
+    // file renames, a RenameFile operation should be included.
+    let backend = Backend::new_test();
+    backend
+        .supports_file_rename
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let uri = Url::parse("file:///src/Foo.php").unwrap();
+    let text = concat!("<?php\n", "namespace App;\n", "\n", "class Foo {}\n",);
+
+    open_file(&backend, &uri, text).await;
+
+    let edit = rename(&backend, &uri, 3, 6, "Bar").await;
+    assert!(edit.is_some(), "Expected a workspace edit");
+
+    let ws = edit.unwrap();
+
+    // Should use document_changes, not changes.
+    assert!(
+        ws.document_changes.is_some(),
+        "Expected document_changes when file rename is included"
+    );
+    assert!(
+        ws.changes.is_none(),
+        "changes should be None when document_changes is used"
+    );
+
+    // Should contain a RenameFile operation.
+    let rf = extract_rename_file(&ws);
+    assert!(rf.is_some(), "Expected a RenameFile operation");
+
+    let rf = rf.unwrap();
+    assert_eq!(
+        rf.old_uri.to_string(),
+        "file:///src/Foo.php",
+        "Old URI should be the original file"
+    );
+    assert_eq!(
+        rf.new_uri.to_string(),
+        "file:///src/Bar.php",
+        "New URI should use the new class name"
+    );
+
+    // Text edits should target the new URI (file is renamed first).
+    let new_uri = Url::parse("file:///src/Bar.php").unwrap();
+    let edits = doc_change_edits_for_uri(&ws, &new_uri);
+    assert!(
+        !edits.is_empty(),
+        "Expected text edits targeting the new file URI"
+    );
+
+    // The class declaration should be renamed.
+    let has_bar = edits.iter().any(|e| e.new_text == "Bar");
+    assert!(has_bar, "Expected an edit renaming to Bar");
+}
+
+#[tokio::test]
+async fn rename_class_no_file_rename_when_filename_mismatch() {
+    // When the filename does NOT match the class name, no file rename
+    // should happen — only text edits.
+    let backend = Backend::new_test();
+    backend
+        .supports_file_rename
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let uri = Url::parse("file:///src/helpers.php").unwrap();
+    let text = concat!("<?php\n", "namespace App;\n", "\n", "class Foo {}\n",);
+
+    open_file(&backend, &uri, text).await;
+
+    let edit = rename(&backend, &uri, 3, 6, "Bar").await;
+    assert!(edit.is_some());
+
+    let ws = edit.unwrap();
+
+    // Should use plain changes, not document_changes.
+    assert!(
+        ws.changes.is_some(),
+        "Expected plain changes when filename doesn't match class name"
+    );
+    assert!(
+        ws.document_changes.is_none(),
+        "Should not include document_changes"
+    );
+}
+
+#[tokio::test]
+async fn rename_class_no_file_rename_when_multiple_classes() {
+    // When the file contains more than one class, do not rename the file.
+    let backend = Backend::new_test();
+    backend
+        .supports_file_rename
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let uri = Url::parse("file:///src/Foo.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "namespace App;\n",
+        "\n",
+        "class Foo {}\n",
+        "class Extra {}\n",
+    );
+
+    open_file(&backend, &uri, text).await;
+
+    let edit = rename(&backend, &uri, 3, 6, "Bar").await;
+    assert!(edit.is_some());
+
+    let ws = edit.unwrap();
+
+    // Multiple classes → no file rename.
+    assert!(
+        ws.changes.is_some(),
+        "Expected plain changes when multiple classes in file"
+    );
+    assert!(
+        ws.document_changes.is_none(),
+        "Should not include document_changes with multiple classes"
+    );
+}
+
+#[tokio::test]
+async fn rename_class_no_file_rename_when_client_unsupported() {
+    // When the client does not support file rename operations, only
+    // text edits should be produced.
+    let backend = Backend::new_test();
+    // supports_file_rename is false by default.
+
+    let uri = Url::parse("file:///src/Foo.php").unwrap();
+    let text = concat!("<?php\n", "namespace App;\n", "\n", "class Foo {}\n",);
+
+    open_file(&backend, &uri, text).await;
+
+    let edit = rename(&backend, &uri, 3, 6, "Bar").await;
+    assert!(edit.is_some());
+
+    let ws = edit.unwrap();
+
+    assert!(
+        ws.changes.is_some(),
+        "Expected plain changes when client does not support file rename"
+    );
+    assert!(
+        ws.document_changes.is_none(),
+        "Should not include document_changes without client support"
+    );
+}
+
+#[tokio::test]
+async fn rename_class_cross_file_with_file_rename() {
+    // Cross-file class rename with a use statement, plus file rename.
+    let backend = Backend::new_test();
+    backend
+        .supports_file_rename
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let uri_decl = Url::parse("file:///src/TaskResource.php").unwrap();
+    let uri_usage = Url::parse("file:///src/Task.php").unwrap();
+
+    let text_decl = concat!(
+        "<?php\n",
+        "namespace Eagle\\Tasks\\Resources;\n",
+        "\n",
+        "class TaskResource {}\n",
+    );
+
+    let text_usage = concat!(
+        "<?php\n",
+        "namespace Eagle\\Tasks;\n",
+        "\n",
+        "use Eagle\\Tasks\\Resources\\TaskResource;\n",
+        "\n",
+        "class Task {\n",
+        "    public function resource(): TaskResource {\n",
+        "        return new TaskResource();\n",
+        "    }\n",
+        "}\n",
+    );
+
+    open_file(&backend, &uri_decl, text_decl).await;
+    open_file(&backend, &uri_usage, text_usage).await;
+
+    let edit = rename(&backend, &uri_decl, 3, 6, "TaskDto").await;
+    assert!(edit.is_some(), "Expected workspace edit");
+
+    let ws = edit.unwrap();
+
+    // Should use document_changes with a RenameFile.
+    assert!(ws.document_changes.is_some());
+
+    let rf = extract_rename_file(&ws);
+    assert!(rf.is_some(), "Expected a RenameFile operation");
+
+    let rf = rf.unwrap();
+    assert_eq!(rf.old_uri.to_string(), "file:///src/TaskResource.php");
+    assert_eq!(rf.new_uri.to_string(), "file:///src/TaskDto.php");
+
+    // Edits in the usage file should NOT have their URI changed (only
+    // the definition file is renamed).
+    let usage_edits = doc_change_edits_for_uri(&ws, &uri_usage);
+    assert!(!usage_edits.is_empty(), "Expected edits in the usage file");
+
+    // Apply edits to verify correctness.
+    let result_usage = apply_edits(text_usage, &usage_edits);
+    assert!(
+        result_usage.contains("use Eagle\\Tasks\\Resources\\TaskDto;"),
+        "Use statement should be updated; got:\n{}",
+        result_usage
+    );
+    assert!(
+        result_usage.contains("TaskDto"),
+        "In-code references should be updated; got:\n{}",
+        result_usage
+    );
+
+    // The declaration file edits should target the new URI.
+    let new_decl_uri = Url::parse("file:///src/TaskDto.php").unwrap();
+    let decl_edits = doc_change_edits_for_uri(&ws, &new_decl_uri);
+    assert!(
+        !decl_edits.is_empty(),
+        "Expected edits targeting the new declaration file URI"
+    );
+
+    let result_decl = apply_edits(text_decl, &decl_edits);
+    assert!(
+        result_decl.contains("class TaskDto"),
+        "Class declaration should be renamed; got:\n{}",
+        result_decl
+    );
+}
+
+#[tokio::test]
+async fn rename_class_from_reference_site_renames_file() {
+    // Trigger rename from a reference site (not the declaration) and
+    // verify the file is still renamed.
+    let backend = Backend::new_test();
+    backend
+        .supports_file_rename
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let uri_decl = Url::parse("file:///src/Animal.php").unwrap();
+    let uri_usage = Url::parse("file:///src/Zoo.php").unwrap();
+
+    let text_decl = concat!(
+        "<?php\n",
+        "namespace Zoo\\Models;\n",
+        "\n",
+        "class Animal {}\n",
+    );
+
+    let text_usage = concat!(
+        "<?php\n",
+        "namespace Zoo;\n",
+        "\n",
+        "use Zoo\\Models\\Animal;\n",
+        "\n",
+        "class Zoo {\n",
+        "    public function get(): Animal {\n",
+        "        return new Animal();\n",
+        "    }\n",
+        "}\n",
+    );
+
+    open_file(&backend, &uri_decl, text_decl).await;
+    open_file(&backend, &uri_usage, text_usage).await;
+
+    // Rename from the reference site in Zoo.php (line 6, "Animal").
+    let edit = rename(&backend, &uri_usage, 6, 30, "Creature").await;
+    assert!(
+        edit.is_some(),
+        "Expected workspace edit from reference site"
+    );
+
+    let ws = edit.unwrap();
+
+    // Should include a file rename for the declaration file.
+    let rf = extract_rename_file(&ws);
+    assert!(rf.is_some(), "Expected a RenameFile operation");
+
+    let rf = rf.unwrap();
+    assert_eq!(rf.old_uri.to_string(), "file:///src/Animal.php");
+    assert_eq!(rf.new_uri.to_string(), "file:///src/Creature.php");
+}
+
+#[tokio::test]
+async fn rename_class_no_file_rename_for_non_namespaced() {
+    // Non-namespaced class — class_index uses bare name as FQN.
+    // File rename should still work if filename matches.
+    let backend = Backend::new_test();
+    backend
+        .supports_file_rename
+        .store(true, std::sync::atomic::Ordering::Release);
+
+    let uri = Url::parse("file:///src/Widget.php").unwrap();
+    let text = concat!("<?php\n", "class Widget {}\n",);
+
+    open_file(&backend, &uri, text).await;
+
+    let edit = rename(&backend, &uri, 1, 6, "Gadget").await;
+    assert!(edit.is_some());
+
+    let ws = edit.unwrap();
+
+    // Non-namespaced classes are stored in class_index with just
+    // the short name, so should_rename_file should still find it.
+    let rf = extract_rename_file(&ws);
+    assert!(
+        rf.is_some(),
+        "Expected a RenameFile for non-namespaced class with matching filename"
+    );
+
+    let rf = rf.unwrap();
+    assert_eq!(rf.new_uri.to_string(), "file:///src/Gadget.php");
+}

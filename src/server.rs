@@ -67,6 +67,19 @@ impl LanguageServer for Backend {
         self.supports_pull_diagnostics
             .store(client_supports_pull, Ordering::Release);
 
+        // Detect whether the client supports file rename operations in
+        // workspace edits.  Used by the rename handler to include a
+        // `RenameFile` operation when a class rename matches PSR-4 naming.
+        let client_supports_file_rename = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.workspace_edit.as_ref())
+            .and_then(|we| we.resource_operations.as_ref())
+            .is_some_and(|ops| ops.contains(&ResourceOperationKind::Rename));
+        self.supports_file_rename
+            .store(client_supports_file_rename, Ordering::Release);
+
         Ok(InitializeResult {
             offset_encoding: None,
             capabilities: ServerCapabilities {

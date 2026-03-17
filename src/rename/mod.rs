@@ -25,6 +25,7 @@
 mod tests;
 
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use tower_lsp::lsp_types::*;
 
@@ -224,6 +225,98 @@ impl Backend {
         }
     }
 
+    /// Check whether renaming a class should also rename the file.
+    ///
+    /// Returns the old and new file URIs as `(old_uri, new_uri)` when:
+    /// 1. The client supports file rename operations.
+    /// 2. The definition file's basename (without `.php`) matches the
+    ///    old class short name.
+    /// 3. The file contains exactly one class/interface/trait/enum
+    ///    declaration.
+    fn should_rename_file(&self, old_fqn: &str, new_short_name: &str) -> Option<(Url, Url)> {
+        if !self.supports_file_rename.load(Ordering::Acquire) {
+            return None;
+        }
+
+        let old_short = crate::util::short_name(old_fqn);
+
+        // Find the definition file URI from the class_index.
+        let def_uri_str = self.class_index.read().get(old_fqn).cloned()?;
+
+        let def_url = Url::parse(&def_uri_str).ok()?;
+        let def_path = def_url.to_file_path().ok()?;
+
+        // Check that the filename matches the old class name.
+        let stem = def_path.file_stem()?.to_str()?;
+        if stem != old_short {
+            return None;
+        }
+
+        // Check that the file contains exactly one class-like declaration.
+        let classes = self.get_classes_for_uri(&def_uri_str)?;
+        if classes.len() != 1 {
+            return None;
+        }
+
+        // Build the new file path: same directory, new name + .php.
+        let mut new_path = def_path.clone();
+        new_path.set_file_name(format!("{}.php", new_short_name));
+
+        let new_url = Url::from_file_path(&new_path).ok()?;
+
+        Some((def_url, new_url))
+    }
+
+    /// Convert a `changes` map into `document_changes` with a file rename.
+    ///
+    /// When the rename response needs to include a `RenameFile` operation,
+    /// the `WorkspaceEdit` must use `document_changes` (an array of
+    /// `DocumentChangeOperation`) instead of the simpler `changes` map,
+    /// because the `changes` map does not support file operations.
+    ///
+    /// Text edits targeting the old file URI are rewritten to target the
+    /// new URI so editors apply them after the rename.
+    fn convert_to_document_changes(
+        changes: HashMap<Url, Vec<TextEdit>>,
+        old_uri: &Url,
+        new_uri: &Url,
+    ) -> DocumentChanges {
+        let mut ops: Vec<DocumentChangeOperation> = Vec::new();
+
+        // Add the file rename operation first.
+        ops.push(DocumentChangeOperation::Op(ResourceOp::Rename(
+            RenameFile {
+                old_uri: old_uri.clone(),
+                new_uri: new_uri.clone(),
+                options: None,
+                annotation_id: None,
+            },
+        )));
+
+        // Convert each file's text edits into a TextDocumentEdit.
+        for (uri, edits) in changes {
+            // Edits that target the old file URI need to reference the
+            // new URI instead, because the rename happens first.
+            let target_uri = if uri == *old_uri {
+                new_uri.clone()
+            } else {
+                uri
+            };
+
+            let text_doc_edit = TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: target_uri,
+                    version: None,
+                },
+                edits: edits.into_iter().map(OneOf::Left).collect(),
+            };
+
+            ops.push(DocumentChangeOperation::Edit(text_doc_edit));
+        }
+
+        DocumentChanges::Operations(ops)
+    }
+
     /// Build a `WorkspaceEdit` for a class rename that correctly handles
     /// `use` import statements, aliases, and import collisions.
     ///
@@ -389,6 +482,19 @@ impl Backend {
 
         if changes.is_empty() {
             return None;
+        }
+
+        // Check whether the file should be renamed alongside the class.
+        if let Some((old_file_uri, new_file_uri)) =
+            self.should_rename_file(old_fqn_normalized, new_short_name)
+        {
+            let doc_changes =
+                Self::convert_to_document_changes(changes, &old_file_uri, &new_file_uri);
+            return Some(WorkspaceEdit {
+                changes: None,
+                document_changes: Some(doc_changes),
+                change_annotations: None,
+            });
         }
 
         Some(WorkspaceEdit {

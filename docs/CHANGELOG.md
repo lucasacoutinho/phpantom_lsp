@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **File rename on class rename.** Renaming a class, interface, trait, or enum whose file follows PSR-4 naming (filename matches the class name) now also renames the file to match the new class name. The file is only renamed when it contains a single class-like declaration and the editor supports file rename operations.
 - **`@see` in deprecation diagnostics.** When a `@deprecated` docblock also contains `@see` tags, the diagnostic message now includes the referenced symbols or URLs. A bare `@deprecated` with `@see NewClass::method()` shows "See: NewClass::method()" and a `@deprecated` with a message shows it in parentheses, e.g. "Use the new API. (see: NewClass::method())".
 - **Change visibility.** Code action on any method, property, constant, or promoted constructor parameter offers to change its visibility (`public`, `protected`, `private`). Each alternative is a separate action with kind `refactor.rewrite`.
 - **Update docblock.** Code action on a function or method whose existing docblock is out of sync with its signature. Adds missing `@param` tags, removes stale ones, reorders to match the signature, fixes contradicted types, and removes redundant `@return void`. Refinement types (e.g. `non-empty-string`, `array<int, string>`) are preserved. Descriptions and unrelated tags (`@throws`, `@template`, `@deprecated`) are left untouched.

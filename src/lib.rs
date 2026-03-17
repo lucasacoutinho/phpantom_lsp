@@ -430,6 +430,14 @@ pub struct Backend {
     /// `schedule_diagnostics_for_open_files`.  When `false`, the server
     /// falls back to the push model (`textDocument/publishDiagnostics`).
     pub(crate) supports_pull_diagnostics: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the client supports file rename operations in workspace edits.
+    ///
+    /// Set during `initialize` based on the client's
+    /// `workspace.workspaceEdit.resourceOperations` capability.  When `true`
+    /// and a class rename matches PSR-4 naming (filename == class name),
+    /// the rename response includes a `RenameFile` operation alongside the
+    /// text edits so the file is renamed to match the new class name.
+    pub(crate) supports_file_rename: Arc<std::sync::atomic::AtomicBool>,
     // NOTE: resolved_class_cache uses parking_lot::Mutex because it is
     // frequently written (cache stores) and RwLock read→write upgrades
     // are error-prone.
@@ -488,6 +496,7 @@ impl Backend {
             diag_result_ids: Arc::new(Mutex::new(HashMap::new())),
             diag_last_full: Arc::new(Mutex::new(HashMap::new())),
             supports_pull_diagnostics: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            supports_file_rename: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             config: Mutex::new(config::Config::default()),
         }
     }
@@ -676,6 +685,7 @@ impl Backend {
             diag_result_ids: Arc::clone(&self.diag_result_ids),
             diag_last_full: Arc::clone(&self.diag_last_full),
             supports_pull_diagnostics: Arc::clone(&self.supports_pull_diagnostics),
+            supports_file_rename: Arc::clone(&self.supports_file_rename),
             config: Mutex::new(self.config.lock().clone()),
         }
     }
