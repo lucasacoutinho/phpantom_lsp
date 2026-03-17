@@ -202,7 +202,6 @@ unlikely to move the needle for most users.
 | X6  | Disk cache (evaluate later)                                              | Medium     | High        |
 |     | **[Bug Fixes](todo/bugs.md)**                                            |            |             |
 | B2  | Orphan PHPStan processes on server shutdown                             | High       | Low         |
-| B3  | PHPStan `paths_match` false-positive on suffix                          | Medium     | Low         |
 | B4  | Diagnostic dedup only removes adjacent duplicates and uses wrong key    | Medium     | Low         |
 | B5  | Implementation error diagnostic skips enums                             | Medium     | Low         |
 | B6  | No cycle protection in `has_method_in_chain`                            | Medium     | Low         |

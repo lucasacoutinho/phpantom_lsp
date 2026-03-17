@@ -40,22 +40,6 @@ loop so the child process is killed promptly.
 
 ---
 
-## B3. PHPStan `paths_match` false-positive on suffix
-
-**Impact: Medium · Effort: Low**
-
-`paths_match` in `src/phpstan.rs` uses `ends_with` without requiring
-a path separator boundary. For example, `/project/src/AFoo.php`
-matches `Foo.php`, potentially attributing PHPStan diagnostics from
-one file to a different file with a similar name.
-
-**Fix:** Require a `/` before the suffix match:
-`a_norm.ends_with(&format!("/{}", b_norm))`.
-
-**File:** `src/phpstan.rs` L356-368.
-
----
-
 ## B4. Diagnostic dedup only removes adjacent duplicates and uses wrong key
 
 **Impact: Medium · Effort: Low**

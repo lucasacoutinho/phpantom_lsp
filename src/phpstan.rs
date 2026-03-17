@@ -363,8 +363,9 @@ fn paths_match(a: &str, b: &str) -> bool {
     if a_norm == b_norm {
         return true;
     }
-    // Check suffix match (one is a suffix of the other).
-    a_norm.ends_with(&b_norm) || b_norm.ends_with(&a_norm)
+    // Check suffix match (one is a suffix of the other), requiring a
+    // path separator boundary so that e.g. "AFoo.php" does not match "Foo.php".
+    a_norm.ends_with(&format!("/{}", b_norm)) || b_norm.ends_with(&format!("/{}", a_norm))
 }
 
 /// Strip Symfony Console ANSI-style tags like `<fg=cyan>` and `</>`.
@@ -522,8 +523,18 @@ mod tests {
     fn paths_match_windows_separators() {
         assert!(paths_match(
             "C:\\Users\\project\\src\\Foo.php",
-            "src/Foo.php"
+            "src/Foo.php",
         ));
+    }
+
+    #[test]
+    fn paths_match_rejects_partial_filename_suffix() {
+        assert!(!paths_match("/project/src/AFoo.php", "Foo.php",));
+    }
+
+    #[test]
+    fn paths_match_rejects_partial_dirname_suffix() {
+        assert!(!paths_match("/project/src/Foo.php", "rc/Foo.php",));
     }
 
     // ── strip_ansi_tags ─────────────────────────────────────────────
