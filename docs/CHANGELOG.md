@@ -45,6 +45,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Virtual property merging.** Native type hints are now considered when determining virtual property specificity. Previously only docblock types were compared, causing properties with native PHP type declarations (e.g., `public string $name`) to be incorrectly overridden by less specific virtual properties. Now native type hints contribute to specificity ranking alongside docblock types.
 - **PHPStan diagnostics.** Fixed a path matching false positive where files with similar name suffixes (e.g. `AFoo.php` vs `Foo.php`) could receive each other's PHPStan diagnostics.
 - **Update docblock action.** Docblocks containing `@param $name` with no type (e.g. `@param $name Some description`) are now parsed correctly. Previously the parameter name was consumed as the type token, causing the action to add a duplicate `@param mixed $name` tag.
 - **Rename updates imports.** Renaming a class now updates `use` statement FQNs (last segment only), preserves explicit aliases, and introduces an alias when the new name collides with an existing import in the same file. Previously, `use` statements were left unchanged, breaking the file.

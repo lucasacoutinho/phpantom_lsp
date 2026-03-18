@@ -2562,6 +2562,29 @@ class UpdateDocblockDemo
 }
 
 
+// ── Type Specificity in Virtual Property Merging ────────────────────────────
+
+class TypeSpecificityDemo
+{
+    public function demo(): void
+    {
+        $cfg = new ScaffoldingAppConfig();
+
+        // Hover $cfg->locale — should show string (from native type hint),
+        // not mixed (from the trait's @property tag).
+        $cfg->locale;
+
+        // Hover $cfg->timezone — should show string (from native type hint),
+        // not mixed (from the trait's @property tag).
+        $cfg->timezone;
+
+        // Hover $cfg->retries — should show int (from native type hint),
+        // not mixed (from the trait's @property tag).
+        $cfg->retries;
+    }
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
@@ -2706,6 +2729,22 @@ class ScaffoldingDeprecation
     public function legacySetTimezone(string $tz): void {}
 
     public function setTimezone(string $tz): void {}
+}
+
+/**
+ * @property mixed $locale
+ * @property mixed $timezone
+ * @property mixed $retries
+ */
+trait ScaffoldingMixedDefaults {}
+
+class ScaffoldingAppConfig
+{
+    use ScaffoldingMixedDefaults;
+
+    public string $locale = 'en';
+    public string $timezone = 'UTC';
+    public int $retries = 3;
 }
 
 /**

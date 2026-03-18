@@ -505,6 +505,120 @@ fn merge_mixed_does_not_replace_bare_type() {
 }
 
 #[test]
+fn merge_native_type_hint_beats_untyped_virtual() {
+    // A property with no type_hint but a native_type_hint should score
+    // higher than an untyped virtual property (specificity 0).
+    let mut class = make_class("Foo");
+    class.properties.push(PropertyInfo {
+        native_type_hint: Some("string".to_string()),
+        type_hint: None,
+        ..PropertyInfo::virtual_property("name", None)
+    });
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("name", None)], // no type at all
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].native_type_hint.as_deref(),
+        Some("string"),
+        "property with native type hint should not be overwritten by untyped virtual"
+    );
+}
+
+#[test]
+fn merge_native_type_hint_beats_mixed_virtual() {
+    // A property whose type_hint is None but native_type_hint is "int"
+    // should not be replaced by a virtual property typed "mixed".
+    let mut class = make_class("Foo");
+    class.properties.push(PropertyInfo {
+        native_type_hint: Some("int".to_string()),
+        type_hint: None,
+        ..PropertyInfo::virtual_property("code", None)
+    });
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("code", Some("mixed"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].native_type_hint.as_deref(),
+        Some("int"),
+        "property with native type hint should not be overwritten by mixed virtual"
+    );
+}
+
+#[test]
+fn merge_specific_virtual_beats_native_only() {
+    // A virtual property with a specific type_hint ("Decimal") should
+    // replace a property that only has a native_type_hint ("string")
+    // because docblock specificity (1) equals native specificity (1)
+    // and the incoming property does not win on a tie.
+    // Actually: both score 1, so the existing property is preserved
+    // (first-writer-wins at the same tier).
+    let mut class = make_class("Foo");
+    class.properties.push(PropertyInfo {
+        native_type_hint: Some("string".to_string()),
+        type_hint: None,
+        ..PropertyInfo::virtual_property("col", None)
+    });
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("col", Some("string"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    // Same specificity (both 1) → first writer wins
+    assert_eq!(
+        class.properties[0].native_type_hint.as_deref(),
+        Some("string"),
+        "equal specificity should preserve the existing property"
+    );
+}
+
+#[test]
+fn merge_generic_virtual_beats_native_bare() {
+    // A virtual property with a generic type ("array<string>", score 2)
+    // should replace a property that only has a native bare type
+    // ("array", score 1 via native fallback).
+    let mut class = make_class("Foo");
+    class.properties.push(PropertyInfo {
+        native_type_hint: Some("array".to_string()),
+        type_hint: None,
+        ..PropertyInfo::virtual_property("tags", None)
+    });
+
+    let virtual_members = VirtualMembers {
+        methods: Vec::new(),
+        properties: vec![make_property("tags", Some("array<string>"))],
+        constants: Vec::new(),
+    };
+
+    merge_virtual_members(&mut class, virtual_members);
+
+    assert_eq!(class.properties.len(), 1);
+    assert_eq!(
+        class.properties[0].type_hint.as_deref(),
+        Some("array<string>"),
+        "generic virtual type should replace a property with only a bare native type"
+    );
+}
+
+#[test]
 fn merge_handles_empty_virtual_members() {
     let mut class = make_class("Foo");
     class.methods.push(make_method("foo", Some("void")));

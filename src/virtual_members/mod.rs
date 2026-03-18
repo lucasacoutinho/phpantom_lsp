@@ -316,8 +316,8 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
             // This lets PHPDoc `@property array<string> $tags` override
             // a bare `array` from `$casts`, and a `$casts` `array`
             // override `mixed` from `$fillable`.
-            if type_specificity(&property.type_hint)
-                > type_specificity(&class.properties[idx].type_hint)
+            if property_type_specificity(&property)
+                > property_type_specificity(&class.properties[idx])
             {
                 class.properties[idx] = property;
             }
@@ -359,6 +359,29 @@ fn type_specificity(hint: &Option<String>) -> u8 {
             }
         }
     }
+}
+
+/// Score a property's type by how specific it is, considering both
+/// native and effective type hints.
+///
+/// The function first checks the effective type hint (docblock override),
+/// then falls back to the native type hint if the effective type is
+/// absent or non-specific.
+///
+/// This ensures that properties with actual PHP type declarations
+/// (e.g., `public string $name`) are ranked higher than those without
+/// any type information, even when docblocks are absent.
+fn property_type_specificity(property: &PropertyInfo) -> u8 {
+    // First check the effective type hint (may include docblock override)
+    let effective_score = type_specificity(&property.type_hint);
+
+    // If effective type is specific enough, use it
+    if effective_score > 0 {
+        return effective_score;
+    }
+
+    // Otherwise, fall back to native type hint
+    type_specificity(&property.native_type_hint)
 }
 
 /// Apply all registered providers to a base-resolved class.
