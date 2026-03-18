@@ -298,6 +298,15 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        // Signal background workers (diagnostic, PHPStan) to stop.
+        // The PHPStan `run_command_with_timeout` poll loop also checks
+        // this flag, so a running child process is killed within 50ms
+        // instead of waiting up to 60 seconds.
+        self.shutdown_flag.store(true, Ordering::Release);
+        // Wake both workers so they see the flag immediately instead
+        // of sleeping until the next edit arrives.
+        self.diag_notify.notify_one();
+        self.phpstan_notify.notify_one();
         Ok(())
     }
 

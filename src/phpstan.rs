@@ -146,6 +146,7 @@ pub(crate) fn run_phpstan(
     file_path: &Path,
     workspace_root: &Path,
     config: &PhpStanConfig,
+    cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<Vec<Diagnostic>, String> {
     let timeout_ms = config.timeout.unwrap_or(DEFAULT_TIMEOUT_MS);
     let timeout = Duration::from_millis(timeout_ms);
@@ -176,7 +177,7 @@ pub(crate) fn run_phpstan(
         .arg(file_path)
         .current_dir(workspace_root);
 
-    let result = run_command_with_timeout(&mut cmd, timeout);
+    let result = run_command_with_timeout(&mut cmd, timeout, cancelled);
 
     // Always clean up the temp file.
     let _ = std::fs::remove_file(&tmp_path);
@@ -432,6 +433,7 @@ struct CommandOutput {
 fn run_command_with_timeout(
     command: &mut Command,
     timeout: Duration,
+    cancelled: &std::sync::atomic::AtomicBool,
 ) -> Result<CommandOutput, String> {
     let mut child = command
         .stdout(Stdio::piped())
@@ -474,6 +476,11 @@ fn run_command_with_timeout(
                     let _ = child.kill();
                     let _ = child.wait();
                     return Err(format!("PHPStan timed out after {}ms", timeout.as_millis()));
+                }
+                if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("PHPStan cancelled (server shutting down)".to_string());
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }

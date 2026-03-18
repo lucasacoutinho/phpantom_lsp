@@ -15,31 +15,6 @@ within the same impact tier.
 
 ---
 
-## B2. Orphan PHPStan processes on server shutdown
-
-**Impact: High · Effort: Low**
-
-The `shutdown()` handler in `server.rs` is a no-op. The PHPStan and
-diagnostic background workers are spawned with `tokio::spawn` and
-their `JoinHandle`s are dropped. If PHPStan is running when the user
-closes their editor, the child process continues consuming CPU and
-memory until it hits its timeout (up to 60 seconds).
-
-The `run_command_with_timeout` busy-wait loop inside `spawn_blocking`
-has no cancellation check. There is no `CancellationToken` or similar
-mechanism to signal the workers to stop.
-
-**Fix:** Store the `JoinHandle`s (or a shared `CancellationToken`).
-In `shutdown`, signal cancellation and abort the tasks. In
-`run_command_with_timeout`, check a cancellation flag in the poll
-loop so the child process is killed promptly.
-
-**Files:** `src/server.rs` (shutdown, worker spawns),
-`src/phpstan.rs` (`run_command_with_timeout`),
-`src/diagnostics/mod.rs` (worker loops).
-
----
-
 ## B4. Diagnostic dedup only removes adjacent duplicates and uses wrong key
 
 **Impact: Medium · Effort: Low**

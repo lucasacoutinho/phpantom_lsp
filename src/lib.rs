@@ -438,6 +438,13 @@ pub struct Backend {
     /// the rename response includes a `RenameFile` operation alongside the
     /// text edits so the file is renamed to match the new class name.
     pub(crate) supports_file_rename: Arc<std::sync::atomic::AtomicBool>,
+    /// Shared flag set to `true` when the LSP `shutdown` request is
+    /// received.  Background workers (diagnostic, PHPStan) check this
+    /// flag on each iteration and exit their loops.  The PHPStan
+    /// `run_command_with_timeout` poll loop also checks it so that a
+    /// running child process is killed promptly instead of waiting up
+    /// to 60 seconds.
+    pub(crate) shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
     // NOTE: resolved_class_cache uses parking_lot::Mutex because it is
     // frequently written (cache stores) and RwLock read→write upgrades
     // are error-prone.
@@ -497,6 +504,7 @@ impl Backend {
             diag_last_full: Arc::new(Mutex::new(HashMap::new())),
             supports_pull_diagnostics: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_file_rename: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             config: Mutex::new(config::Config::default()),
         }
     }
@@ -686,6 +694,7 @@ impl Backend {
             diag_last_full: Arc::clone(&self.diag_last_full),
             supports_pull_diagnostics: Arc::clone(&self.supports_pull_diagnostics),
             supports_file_rename: Arc::clone(&self.supports_file_rename),
+            shutdown_flag: Arc::clone(&self.shutdown_flag),
             config: Mutex::new(self.config.lock().clone()),
         }
     }

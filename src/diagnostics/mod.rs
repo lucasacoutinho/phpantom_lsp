@@ -108,6 +108,7 @@ pub(crate) mod unknown_members;
 pub(crate) mod unresolved_member_access;
 mod unused_imports;
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use tower_lsp::lsp_types::*;
@@ -399,8 +400,16 @@ impl Backend {
     /// (one running + one pending) behaviour.
     pub(crate) async fn diagnostic_worker(&self) {
         loop {
+            if self.shutdown_flag.load(Ordering::Acquire) {
+                return;
+            }
+
             // ── Step 1: wait for work ───────────────────────────────
             self.diag_notify.notified().await;
+
+            if self.shutdown_flag.load(Ordering::Acquire) {
+                return;
+            }
 
             // ── Step 2: debounce ────────────────────────────────────
             loop {
@@ -477,8 +486,16 @@ impl Backend {
     /// with the latest content.
     pub(crate) async fn phpstan_worker(&self) {
         loop {
+            if self.shutdown_flag.load(Ordering::Acquire) {
+                return;
+            }
+
             // ── Step 1: wait for work ───────────────────────────────
             self.phpstan_notify.notified().await;
+
+            if self.shutdown_flag.load(Ordering::Acquire) {
+                return;
+            }
 
             // Drain any extra stored permits so that notifications
             // that arrived between the last run finishing and this
@@ -567,6 +584,7 @@ impl Backend {
             // (not occupying a runtime thread) and no re-entry can
             // happen until the handle resolves.
             let phpstan_config = config.phpstan.clone();
+            let shutdown_flag = Arc::clone(&self.shutdown_flag);
             let phpstan_diags = {
                 let result = tokio::task::spawn_blocking(move || {
                     phpstan::run_phpstan(
@@ -575,6 +593,7 @@ impl Backend {
                         &file_path,
                         &workspace_root,
                         &phpstan_config,
+                        &shutdown_flag,
                     )
                 })
                 .await;

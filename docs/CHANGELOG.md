@@ -7,12 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Position encoding.** All LSP position conversions now correctly count UTF-16 code units, matching the LSP specification. Files containing emoji or supplementary Unicode characters no longer produce incorrect positions for completions, hover, go-to-definition, references, highlights, or code actions.
-- **Deprecated-usage diagnostics.** Deprecated-usage checks no longer block the instant Phase 1 diagnostic push. They now run in Phase 2 (slow) alongside other type-resolution-dependent checks, so syntax errors and unused-import warnings appear without delay.
-- **Formatting responsiveness.** The formatting handler no longer blocks the async runtime while waiting for external tools. Completion, hover, and other requests remain responsive while php-cs-fixer or PHP_CodeSniffer runs.
-
 ### Added
 
 - **Semantic Tokens.** Type-aware syntax highlighting that goes beyond what a TextMate grammar can achieve. Classes, interfaces, enums, traits, methods, properties, parameters, variables, functions, constants, and template parameters all get distinct token types. Modifiers convey declaration sites, static access, readonly, deprecated, and abstract status.
@@ -55,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Hover on empty arrays.** `[]` and `array()` literals now show `array` on hover instead of nothing.
 - **Catch clause completion.** Throwable interfaces and abstract exception classes now appear in catch clause completions. Previously only concrete, non-abstract classes were offered.
 - **Type-hint and PHPDoc completion.** Traits are now excluded from completions in parameter types, return types, property types, and PHPDoc type tags. `@throws` continues to use Throwable-filtered completion.
+- **Position encoding.** All LSP position conversions now correctly count UTF-16 code units, matching the LSP specification. Files containing emoji or supplementary Unicode characters no longer produce incorrect positions for completions, hover, go-to-definition, references, highlights, or code actions.
+- **Deprecated-usage diagnostics.** Deprecated-usage checks no longer block the instant Phase 1 diagnostic push. They now run in Phase 2 (slow) alongside other type-resolution-dependent checks, so syntax errors and unused-import warnings appear without delay.
+- **Formatting responsiveness.** The formatting handler no longer blocks the async runtime while waiting for external tools. Completion, hover, and other requests remain responsive while php-cs-fixer or PHP_CodeSniffer runs.
+- **Graceful shutdown.** Background workers (diagnostic, PHPStan) now stop promptly when the editor closes. Previously, a running PHPStan process could continue consuming CPU and memory for up to 60 seconds after shutdown.
 
 ## [0.5.0] - 2026-03-12
 
