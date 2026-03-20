@@ -4,7 +4,9 @@
 /// (`$var = <expr>`) to zero or more `ClassInfo` values.  It handles:
 ///
 ///   - `new ClassName(…)` → the instantiated class
-///   - Array access: `$arr[0]`, `$arr[$key]` → generic element type
+///   - Array access: `$arr[0]` → generic element type,
+///     `$arr['key']` → array shape value type,
+///     `$arr['key'][0]` → chained bracket access
 ///   - Function calls: `someFunc()` → return type
 ///   - Method calls: `$this->method()`, `$obj->method()` → return type
 ///   - Static calls: `ClassName::method()` → return type
@@ -41,7 +43,9 @@ use crate::completion::resolver::VarResolutionCtx;
 /// resolved to class types.  It handles:
 ///
 ///   - `new ClassName(…)` → the instantiated class
-///   - Array access: `$arr[0]`, `$arr[$key]` → generic element type
+///   - Array access: `$arr[0]` → generic element type,
+///     `$arr['key']` → array shape value type,
+///     `$arr['key'][0]` → chained bracket access
 ///   - Function calls: `someFunc()` → return type
 ///   - Method calls: `$this->method()`, `$obj->method()` → return type
 ///   - Static calls: `ClassName::method()` → return type
@@ -478,48 +482,128 @@ fn resolve_rhs_array_access<'b>(
     expr: &'b Expression<'b>,
     ctx: &VarResolutionCtx<'_>,
 ) -> Vec<ClassInfo> {
-    if let Expression::Variable(Variable::Direct(base_dv)) = array_access.array {
-        let base_var = base_dv.name.to_string();
-        let access_offset = expr.span().start.offset as usize;
+    // Collect bracket segments and find the innermost base variable by
+    // walking through nested ArrayAccess nodes.  This handles both
+    // single access (`$result['data']`) and chained access
+    // (`$result['items'][0]`).
+    let mut segments: Vec<ArrayBracketSegment> = Vec::new();
+    let mut current_expr: &Expression<'_> = array_access.array;
 
-        // Strategy 1: docblock annotation (`@var`, `@param`).
-        if let Some(raw_type) =
-            docblock::find_iterable_raw_type_in_source(ctx.content, access_offset, &base_var)
-            && let Some(element_type) = docblock::types::extract_generic_value_type(&raw_type)
-        {
-            return crate::completion::type_resolution::type_hint_to_classes(
-                &element_type,
-                &ctx.current_class.name,
-                ctx.all_classes,
-                ctx.class_loader,
-            );
-        }
+    // Classify the outermost (current) index first.
+    segments.push(classify_array_index(array_access.index));
 
-        // Strategy 2: resolve the base variable's type via AST-based
-        // assignment scanning and extract the iterable element type.
-        // This handles cases like `$attrs = $ref->getAttributes();`
-        // where there is no explicit `@var` annotation but the method
-        // return type is `ReflectionAttribute[]`.
-        let current_class = Some(ctx.current_class);
-        if let Some(raw_type) = super::raw_type_inference::resolve_variable_assignment_raw_type(
-            &base_var,
-            ctx.content,
-            access_offset as u32,
-            current_class,
-            ctx.all_classes,
-            ctx.class_loader,
-            ctx.function_loader,
-        ) && let Some(element_type) = docblock::types::extract_generic_value_type(&raw_type)
-        {
-            return crate::completion::type_resolution::type_hint_to_classes(
-                &element_type,
-                &ctx.current_class.name,
-                ctx.all_classes,
-                ctx.class_loader,
-            );
+    // Walk inward through nested ArrayAccess nodes.
+    while let Expression::ArrayAccess(inner) = current_expr {
+        segments.push(classify_array_index(inner.index));
+        current_expr = inner.array;
+    }
+
+    // Segments were collected innermost-last; reverse to left-to-right order.
+    segments.reverse();
+
+    // The innermost expression must be a variable.
+    let Expression::Variable(Variable::Direct(base_dv)) = current_expr else {
+        return vec![];
+    };
+    let base_var = base_dv.name.to_string();
+    let access_offset = expr.span().start.offset as usize;
+
+    // Resolve the base variable's raw type string from either a
+    // docblock annotation or AST-based assignment scanning.
+    let raw_type =
+        docblock::find_iterable_raw_type_in_source(ctx.content, access_offset, &base_var).or_else(
+            || {
+                super::raw_type_inference::resolve_variable_assignment_raw_type(
+                    &base_var,
+                    ctx.content,
+                    access_offset as u32,
+                    Some(ctx.current_class),
+                    ctx.all_classes,
+                    ctx.class_loader,
+                    ctx.function_loader,
+                )
+            },
+        );
+
+    let Some(mut current_type) = raw_type else {
+        return vec![];
+    };
+
+    // Expand type aliases so that shape/generic extraction can see the
+    // underlying type (e.g. a `@phpstan-type` alias).
+    if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
+        &current_type,
+        &ctx.current_class.name,
+        ctx.all_classes,
+        ctx.class_loader,
+    ) {
+        current_type = expanded;
+    }
+
+    // Walk each bracket segment, narrowing the type at each step.
+    for seg in &segments {
+        match seg {
+            ArrayBracketSegment::StringKey(key) => {
+                // String key → try array shape value extraction first.
+                if let Some(value_type) =
+                    docblock::types::extract_array_shape_value_type(&current_type, key)
+                {
+                    current_type = value_type;
+                } else if let Some(element_type) =
+                    docblock::types::extract_generic_value_type(&current_type)
+                {
+                    // Fallback: generic element type (e.g. `array<string, Foo>`
+                    // accessed with a string key).
+                    current_type = element_type;
+                } else {
+                    return vec![];
+                }
+            }
+            ArrayBracketSegment::ElementAccess => {
+                // Numeric / variable index → generic element type.
+                if let Some(element_type) =
+                    docblock::types::extract_generic_value_type(&current_type)
+                {
+                    current_type = element_type;
+                } else {
+                    return vec![];
+                }
+            }
         }
     }
-    vec![]
+
+    crate::completion::type_resolution::type_hint_to_classes(
+        &current_type,
+        &ctx.current_class.name,
+        ctx.all_classes,
+        ctx.class_loader,
+    )
+}
+
+/// Classification of an array access index expression.
+enum ArrayBracketSegment {
+    /// A string-key access, e.g. `['items']`.
+    StringKey(String),
+    /// A numeric or variable index access, e.g. `[0]` or `[$i]`.
+    ElementAccess,
+}
+
+/// Classify an array index expression as either a string key or generic
+/// element access.
+fn classify_array_index(index: &Expression<'_>) -> ArrayBracketSegment {
+    if let Expression::Literal(Literal::String(s)) = index {
+        let key = s.value.map(|v| v.to_string()).unwrap_or_else(|| {
+            let raw = s.raw;
+            raw.strip_prefix('\'')
+                .and_then(|r| r.strip_suffix('\''))
+                .or_else(|| raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')))
+                .unwrap_or(raw)
+                .to_string()
+        });
+        ArrayBracketSegment::StringKey(key)
+    } else {
+        ArrayBracketSegment::ElementAccess
+    }
 }
 
 /// Build a template substitution map for a function-level `@template` call.

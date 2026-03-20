@@ -7897,3 +7897,92 @@ test('x', 'y');
         text
     );
 }
+
+// ─── Array shape string key access variable hover ───────────────────────────
+
+#[test]
+fn hover_variable_assigned_from_array_shape_string_key() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class User {
+    public function getName(): string {}
+}
+class Demo {
+    public function test(): void {
+        /** @var array{name: User, age: int} $data */
+        $data = getData();
+        $name = $data['name'];
+        $name->getName();
+    }
+}
+"#;
+
+    // Hover on $name should show User type
+    let hover = hover_at(&backend, uri, content, 9, 9).expect("expected hover on $name");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("User"),
+        "$name should resolve to User from array shape key access, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_from_chained_bracket_access() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Gift {
+    public function open(): string {}
+}
+class Demo {
+    public function test(): void {
+        /** @var array{items: list<Gift>} $result */
+        $result = getResult();
+        $first = $result['items'][0];
+        $first->open();
+    }
+}
+"#;
+
+    // Hover on $first should show Gift type
+    let hover = hover_at(&backend, uri, content, 9, 9).expect("expected hover on $first");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Gift"),
+        "$first should resolve to Gift from chained bracket access, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_type_from_shape_shows_no_namespace_corruption() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Demo {
+    public function test(): void {
+        /** @var array{data: string, items: list<int>} $result */
+        $result = getResult();
+        $result;
+    }
+}
+"#;
+
+    // Hover on $result should show the shape type without a corrupted
+    // namespace line (the `{` in `array{...}` must not bleed into the
+    // namespace extraction).
+    let hover = hover_at(&backend, uri, content, 5, 9).expect("expected hover on $result");
+    let text = hover_text(&hover);
+    assert!(
+        !text.contains("namespace array"),
+        "array shape type should not produce a 'namespace array' line, got: {}",
+        text
+    );
+    assert!(
+        text.contains("array{"),
+        "hover should show the array shape type, got: {}",
+        text
+    );
+}

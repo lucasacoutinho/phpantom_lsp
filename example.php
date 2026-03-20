@@ -1003,6 +1003,25 @@ class GenericContextDemo
 }
 
 
+// ── Generic Shape Substitution ──────────────────────────────────────────────
+
+class GenericShapeDemo
+{
+    public function demo(): void
+    {
+        $src = new ScaffoldingGenericShape();
+
+        // Template params inside array shape bodies are substituted through inheritance
+        $result = $src->getResult();
+        $result['data']->open();          // array{data: T} with T=Gift → Gift
+
+        // Chained bracket access walks shape key then list element
+        $first = $result['items'][0];
+        $first->open();                   // list<T> with T=Gift → Gift
+    }
+}
+
+
 // ── Foreach, Key Types, and Destructuring ───────────────────────────────────
 
 class IterationDemo
@@ -2836,6 +2855,21 @@ class ScaffoldingExpressionType
         $this->primary = new Response(200, 'OK');
     }
 }
+
+// ScaffoldingGenericShape — used by GenericShapeDemo
+/**
+ * @template T
+ */
+class ScaffoldingGenericShapeBase
+{
+    /** @return array{data: T, items: list<T>} */
+    public function getResult(): array { return []; }
+}
+
+/**
+ * @extends ScaffoldingGenericShapeBase<Gift>
+ */
+class ScaffoldingGenericShape extends ScaffoldingGenericShapeBase {}
 
 class ScaffoldingCollectionForeach
 {

@@ -256,6 +256,61 @@ fn test_short_name() {
 }
 
 #[test]
+fn test_apply_substitution_array_shape() {
+    let mut subs = HashMap::new();
+    subs.insert("T".to_string(), "User".to_string());
+
+    assert_eq!(
+        apply_substitution("array{data: T, items: list<T>}", &subs),
+        "array{data: User, items: list<User>}"
+    );
+}
+
+#[test]
+fn test_apply_substitution_object_shape() {
+    let mut subs = HashMap::new();
+    subs.insert("T".to_string(), "User".to_string());
+
+    assert_eq!(
+        apply_substitution("object{name: T}", &subs),
+        "object{name: User}"
+    );
+}
+
+#[test]
+fn test_apply_substitution_array_shape_nested() {
+    let mut subs = HashMap::new();
+    subs.insert("T".to_string(), "Foo".to_string());
+
+    assert_eq!(
+        apply_substitution("array{inner: array{val: T}}", &subs),
+        "array{inner: array{val: Foo}}"
+    );
+}
+
+#[test]
+fn test_apply_substitution_shape_in_union() {
+    let mut subs = HashMap::new();
+    subs.insert("T".to_string(), "User".to_string());
+
+    assert_eq!(
+        apply_substitution("array{data: T}|null", &subs),
+        "array{data: User}|null"
+    );
+}
+
+#[test]
+fn test_apply_substitution_shape_no_key() {
+    let mut subs = HashMap::new();
+    subs.insert("T".to_string(), "User".to_string());
+
+    assert_eq!(
+        apply_substitution("array{T, string}", &subs),
+        "array{User, string}"
+    );
+}
+
+#[test]
 fn test_apply_substitution_to_method_modifies_return_and_params() {
     let mut subs = HashMap::new();
     subs.insert("TValue".to_string(), "Language".to_string());

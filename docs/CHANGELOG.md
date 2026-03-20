@@ -55,6 +55,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Generic shape substitution.** Template parameters inside array shapes (`array{data: T}`) and object shapes (`object{name: T}`) are now correctly substituted when inherited through `@extends`. Previously only template parameters inside angle brackets were resolved, leaving bare references like `T` unsubstituted in shape bodies.
+- **Array shape bracket access.** Variables assigned from string-key bracket access on array shapes (`$name = $data['name']`) now resolve to the correct value type. Chained access (`$first = $result['items'][0]`) walks through shape keys and generic element types in sequence. This fixes completion, hover, and go-to-definition for variables derived from array shape fields. Previously only direct `$data['key']->` subjects resolved; intermediate variable assignments lost the type.
+- **Hover on array shape types.** Hovering over a variable whose type is an array shape (e.g. `array{data: User}`) no longer produces a corrupted `namespace array{...` line in the popup.
+- **Eloquent `morphedByMany` relationships.** The inverse side of polymorphic many-to-many relationships (`$this->morphedByMany(...)`) is now recognised. Virtual properties and `_count` properties are synthesized for models using this relationship type.
 - **Hover.** Hovering over unresolved function calls, unknown constants, or unresolvable `self`/`static`/`parent`/`$this` keywords no longer shows a bare placeholder. If the symbol cannot be found, no hover is shown.
 - **Add @throws.** The code action no longer double-indents the closing `*/` when inserting a `@throws` tag into an existing multi-line docblock.
 - **PHPStan stale-diagnostic clearing.** The `@throws`-based staleness check now scopes to the enclosing function's docblock instead of searching the entire file. A `@throws` tag on a different function no longer causes an unrelated diagnostic to be incorrectly cleared.

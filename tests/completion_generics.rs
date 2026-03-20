@@ -6086,3 +6086,379 @@ async fn test_match_class_string_forwarded_to_static_method() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+/// Array shape bodies should have their template parameters substituted
+/// when a child class extends a generic parent.  Before B14, the bare `T`
+/// inside `array{data: T, items: list<T>}` was left unsubstituted because
+/// `apply_substitution` did not recurse into `{…}` blocks.
+#[tokio::test]
+async fn test_generic_array_shape_substitution() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///generics_shape.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template T\n",
+        " */\n",
+        "class ShapeBase {\n",
+        "    /** @return array{data: T, items: list<T>} */\n",
+        "    public function getResult(): array {}\n",
+        "}\n",
+        "\n",
+        "class User {\n",
+        "    public function getName(): string {}\n",
+        "}\n",
+        "\n",
+        "/**\n",
+        " * @extends ShapeBase<User>\n",
+        " */\n",
+        "class UserShapeChild extends ShapeBase {\n",
+        "    public function test(): void {\n",
+        "        $result = $this->getResult();\n",
+        "        $result['data']->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 19,
+                character: 28,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getName"),
+                "Should resolve array shape data: T → User and show 'getName', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Object shape bodies should also have template parameters substituted.
+#[tokio::test]
+async fn test_generic_object_shape_substitution() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///generics_object_shape.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template T\n",
+        " */\n",
+        "class ObjectShapeBase {\n",
+        "    /** @return object{payload: T} */\n",
+        "    public function fetch(): object {}\n",
+        "}\n",
+        "\n",
+        "class Order {\n",
+        "    public function getTotal(): float {}\n",
+        "}\n",
+        "\n",
+        "/**\n",
+        " * @extends ObjectShapeBase<Order>\n",
+        " */\n",
+        "class OrderFetcher extends ObjectShapeBase {\n",
+        "    public function test(): void {\n",
+        "        $obj = $this->fetch();\n",
+        "        $obj->payload->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 19,
+                character: 23,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getTotal"),
+                "Should resolve object shape payload: T → Order and show 'getTotal', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Variable assigned from a string-key bracket access into an array shape.
+/// `$first = $result['data']; $first->` should resolve `$first` to `Gift`
+/// via `extract_array_shape_value_type` in the RHS resolution path.
+#[tokio::test]
+async fn test_generic_shape_string_key_variable_assignment() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///generics_shape_assign.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template T\n",
+        " */\n",
+        "class ShapeAssignBase {\n",
+        "    /** @return array{data: T, items: list<T>} */\n",
+        "    public function getResult(): array {}\n",
+        "}\n",
+        "\n",
+        "class Gift {\n",
+        "    public function open(): string {}\n",
+        "}\n",
+        "\n",
+        "/**\n",
+        " * @extends ShapeAssignBase<Gift>\n",
+        " */\n",
+        "class GiftShapeAssign extends ShapeAssignBase {\n",
+        "    public function test(): void {\n",
+        "        $result = $this->getResult();\n",
+        "        $first = $result['data'];\n",
+        "        $first->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 20,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"open"),
+                "Should resolve $first from $result['data'] (shape key) to Gift and show 'open', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Variable assigned from chained bracket access: string key then element.
+/// `$first = $result['items'][0]; $first->` should walk
+/// StringKey("items") → `list<Gift>`, then ElementAccess → `Gift`.
+#[tokio::test]
+async fn test_generic_shape_chained_bracket_variable_assignment() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///generics_shape_chain_assign.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "/**\n",
+        " * @template T\n",
+        " */\n",
+        "class ShapeChainAssignBase {\n",
+        "    /** @return array{data: T, items: list<T>} */\n",
+        "    public function getResult(): array {}\n",
+        "}\n",
+        "\n",
+        "class Gift {\n",
+        "    public function open(): string {}\n",
+        "}\n",
+        "\n",
+        "/**\n",
+        " * @extends ShapeChainAssignBase<Gift>\n",
+        " */\n",
+        "class GiftShapeChainAssign extends ShapeChainAssignBase {\n",
+        "    public function test(): void {\n",
+        "        $result = $this->getResult();\n",
+        "        $first = $result['items'][0];\n",
+        "        $first->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 20,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"open"),
+                "Should resolve $first from $result['items'][0] (shape + list<T>) to Gift and show 'open', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Variable assigned from string key on a plain (non-inherited) @var shape.
+/// `/** @var array{name: User} $data */ ... $name = $data['name']; $name->`
+#[tokio::test]
+async fn test_shape_string_key_from_var_annotation() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///shape_var_annotation.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public function getName(): string {}\n",
+        "}\n",
+        "\n",
+        "class Demo {\n",
+        "    public function test(): void {\n",
+        "        /** @var array{name: User, age: int} $data */\n",
+        "        $data = getData();\n",
+        "        $name = $data['name'];\n",
+        "        $name->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 10,
+                character: 16,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(result.is_some(), "Completion should return results");
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"getName"),
+                "Should resolve $name from $data['name'] (shape via @var) to User and show 'getName', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

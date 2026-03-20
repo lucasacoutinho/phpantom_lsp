@@ -312,9 +312,21 @@ synthesizing `create()`/`make()`, load the associated model class.
 For each relationship method on the model, push a `has{Relationship}`
 and `for{Relationship}` virtual method (PascalCase of the method
 name) that returns `static` (i.e. the factory class itself).
-The `has*` variant should accept optional `int $count` and
-`array|callable $state` parameters; `for*` should accept
-`array|callable $state`.
+
+Larastan's `ModelFactoryMethodsClassReflectionExtension` reveals the
+exact parameter signatures to synthesize:
+
+- **`has{Rel}()`** — four overloads: no args, `int $count`,
+  `array|callable $state`, or `int $count, array|callable $state`.
+- **`for{Rel}()`** — two overloads: no args, or
+  `array|callable $state`.
+- **`trashed()`** — only synthesized when the model uses
+  `SoftDeletes`. No parameters, returns `static`.
+
+The strip-and-match algorithm: strip the `has`/`for` prefix, convert
+the remainder to camelCase, and check whether the model has a
+relationship method with that name. If not, the dynamic method is
+not offered.
 
 #### L7. `$pivot` property on BelongsToMany related models
 

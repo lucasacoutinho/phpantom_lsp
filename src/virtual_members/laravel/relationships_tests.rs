@@ -324,6 +324,16 @@ fn infer_morph_to_many_from_body() {
 }
 
 #[test]
+fn infer_morphed_by_many_from_body() {
+    let body = r#"return $this->morphedByMany(Tag::class, 'taggable');"#;
+    let result = infer_relationship_from_body(body).unwrap();
+    assert_eq!(
+        result,
+        "\\Illuminate\\Database\\Eloquent\\Relations\\MorphToMany<Tag>"
+    );
+}
+
+#[test]
 fn infer_has_many_through_from_body() {
     let body = "{ return $this->hasManyThrough(Post::class, Country::class); }";
     assert_eq!(

@@ -19,12 +19,6 @@ within the same impact tier.
 
 # Scheduled Sprints
 
-## Sprint 3 — Bug fixes
-
-| #   | Item                                                                                                              | Impact | Effort |
-| --- | ----------------------------------------------------------------------------------------------------------------- | ------ | ------ |
-|     | **Release 0.6.0**                                                                                                 |        |        |
-
 ## Sprint 4 — Refactoring toolkit
 
 | #   | Item                                                                               | Impact | Effort |
@@ -144,7 +138,6 @@ unlikely to move the needle for most users.
 | S5  | Language construct signature help and hover                                                                                                                  | Low        | Low         |
 |     | **[Laravel](todo/laravel.md)**                                                                                                                               |            |             |
 | L4  | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)                                                                                            | Medium     | Medium      |
-| L2  | `morphedByMany` missing from relationship method map                                                                                                         | Low-Medium | Low         |
 | L3  | `$dates` array (deprecated)                                                                                                                                  | Low-Medium | Low         |
 | L6  | Factory `has*`/`for*` relationship methods                                                                                                                   | Low-Medium | Medium      |
 | L7  | `$pivot` property on BelongsToMany                                                                                                                           | Medium     | Medium-High |

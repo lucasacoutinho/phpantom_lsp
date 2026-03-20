@@ -67,6 +67,13 @@ check compares the richness of the return type.
    `native_type_hint`. Also inherit `description` and
    `return_description` when the child lacks them.
 
+   **Parameter name remapping.** When propagating `@param` types,
+   match by position, not by name. A child may rename `$userId` to
+   `$id`; the parent's `@param int $userId` at position 0 should
+   still flow to the child's position 0. PHPStan's
+   `PhpDocInheritanceResolver` builds an explicit positional mapping
+   for this.
+
 2. **During interface merging** (`resolve_class_fully_inner`): same
    logic — when an interface method is skipped because the class
    already defines it, enrich the existing method with the

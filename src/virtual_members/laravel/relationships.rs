@@ -49,6 +49,10 @@ const RELATIONSHIP_METHOD_FQN_MAP: &[(&str, &str)] = &[
         "Illuminate\\Database\\Eloquent\\Relations\\MorphToMany",
     ),
     (
+        "morphedByMany",
+        "Illuminate\\Database\\Eloquent\\Relations\\MorphToMany",
+    ),
+    (
         "hasManyThrough",
         "Illuminate\\Database\\Eloquent\\Relations\\HasManyThrough",
     ),
@@ -211,8 +215,8 @@ pub(crate) fn count_property_to_relationship_method(
 ///
 /// Supports all standard Eloquent relationship builder methods:
 /// `hasOne`, `hasMany`, `belongsTo`, `belongsToMany`, `morphOne`,
-/// `morphMany`, `morphTo`, `morphToMany`, `hasManyThrough`, and
-/// `hasOneThrough`.
+/// `morphMany`, `morphTo`, `morphToMany`, `morphedByMany`,
+/// `hasManyThrough`, and `hasOneThrough`.
 ///
 /// Returns `None` if no recognisable pattern is found.
 pub fn infer_relationship_from_body(body_text: &str) -> Option<String> {

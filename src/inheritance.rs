@@ -829,6 +829,38 @@ pub(crate) fn apply_substitution<'a>(
         );
     }
 
+    // Handle array/object shapes: `array{key: T, ...}` or `object{key: T}`.
+    if let Some(brace_pos) = find_brace_at_depth_0(s) {
+        let base = &s[..brace_pos];
+        let rest = &s[brace_pos + 1..];
+        let close_pos = find_matching_close_brace(rest);
+        let inner = &rest[..close_pos];
+        let after = &rest[close_pos + 1..]; // anything after `}`
+
+        let entries = split_generic_args(inner);
+        let resolved_entries: Vec<String> = entries
+            .iter()
+            .map(|entry| {
+                // Check for `key: type` syntax — find `:` at depth 0.
+                if let Some(colon_pos) = find_colon_at_depth_0(entry) {
+                    let key_part = &entry[..colon_pos + 1]; // includes the `:`
+                    let val_part = entry[colon_pos + 1..].trim_start();
+                    let resolved_val = apply_substitution(val_part, subs);
+                    format!("{key_part} {resolved_val}")
+                } else {
+                    // Bare type entry (no key), e.g. `array{T, string}`.
+                    apply_substitution(entry, subs).into_owned()
+                }
+            })
+            .collect();
+
+        let mut result = format!("{}{{{}}}", base, resolved_entries.join(", "));
+        if !after.is_empty() {
+            result.push_str(after);
+        }
+        return Cow::Owned(result);
+    }
+
     // Handle generic types: `Base<Arg1, Arg2>`.
     if let Some(angle_pos) = find_angle_at_depth_0(s) {
         let base = &s[..angle_pos];
@@ -957,6 +989,7 @@ pub(crate) fn apply_substitution<'a>(
 fn split_at_depth_0(s: &str, delimiter: char) -> Option<Vec<&str>> {
     let mut depth_angle = 0i32;
     let mut depth_paren = 0i32;
+    let mut depth_brace = 0i32;
     let mut found = false;
 
     // First pass: check if splitting is needed.
@@ -966,7 +999,9 @@ fn split_at_depth_0(s: &str, delimiter: char) -> Option<Vec<&str>> {
             '>' => depth_angle -= 1,
             '(' => depth_paren += 1,
             ')' => depth_paren -= 1,
-            c if c == delimiter && depth_angle == 0 && depth_paren == 0 => {
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            c if c == delimiter && depth_angle == 0 && depth_paren == 0 && depth_brace == 0 => {
                 found = true;
                 break;
             }
@@ -982,6 +1017,7 @@ fn split_at_depth_0(s: &str, delimiter: char) -> Option<Vec<&str>> {
     let mut parts = Vec::new();
     depth_angle = 0;
     depth_paren = 0;
+    depth_brace = 0;
     let mut start = 0;
 
     for (i, ch) in s.char_indices() {
@@ -990,7 +1026,9 @@ fn split_at_depth_0(s: &str, delimiter: char) -> Option<Vec<&str>> {
             '>' => depth_angle -= 1,
             '(' => depth_paren += 1,
             ')' => depth_paren -= 1,
-            c if c == delimiter && depth_angle == 0 && depth_paren == 0 => {
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            c if c == delimiter && depth_angle == 0 && depth_paren == 0 && depth_brace == 0 => {
                 parts.push(&s[start..i]);
                 start = i + ch.len_utf8();
             }
@@ -1010,6 +1048,68 @@ fn find_angle_at_depth_0(s: &str) -> Option<usize> {
             '(' => depth_paren += 1,
             ')' => depth_paren -= 1,
             '<' if depth_paren == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Find the position of the first `{` at nesting depth 0 (respecting
+/// `<…>` and `(…)` nesting).
+fn find_brace_at_depth_0(s: &str) -> Option<usize> {
+    let mut depth_angle = 0i32;
+    let mut depth_paren = 0i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => depth_angle -= 1,
+            '(' => depth_paren += 1,
+            ')' => depth_paren -= 1,
+            '{' if depth_angle == 0 && depth_paren == 0 => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Find the matching `}` for an already-opened `{`, respecting nested
+/// `{…}`, `<…>`, and `(…)` pairs.  The input `s` starts *after* the
+/// opening `{`.
+fn find_matching_close_brace(s: &str) -> usize {
+    let mut depth = 1i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+    }
+    // Fallback: end of string (malformed type).
+    s.len()
+}
+
+/// Find the position of the first `:` at nesting depth 0 inside a shape
+/// entry (respecting `<…>`, `(…)`, and `{…}` nesting).
+fn find_colon_at_depth_0(s: &str) -> Option<usize> {
+    let mut depth_angle = 0i32;
+    let mut depth_paren = 0i32;
+    let mut depth_brace = 0i32;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '<' => depth_angle += 1,
+            '>' => depth_angle -= 1,
+            '(' => depth_paren += 1,
+            ')' => depth_paren -= 1,
+            '{' => depth_brace += 1,
+            '}' => depth_brace -= 1,
+            ':' if depth_angle == 0 && depth_paren == 0 && depth_brace == 0 => {
+                return Some(i);
+            }
             _ => {}
         }
     }

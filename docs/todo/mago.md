@@ -440,7 +440,12 @@ No existing code changes behaviour.
    - `Callable { params: Vec<CallableParam>, return_type: Option<Box<PhpType>> }`
    - `Conditional { param: String, condition: ParamCondition, then: Box<PhpType>, otherwise: Box<PhpType> }`
    - `Slice(Box<PhpType>)` — `T[]`
-   - `Variable(String)` — `$this`, template variables
+   - `Variable { name: String, scope: TemplateScope }` — `$this`,
+     template variables. The scope distinguishes class-level `T` from
+     method-level `T` on the same class. PHPStan identifies template
+     types by name + scope (`TemplateTypeScope`); without this,
+     a method declaring its own `@template T` that shadows the
+     class's `T` would produce incorrect substitutions.
    - `ClassString(Option<Box<PhpType>>)` — `class-string<T>`
    - `KeyOf(Box<PhpType>)`, `ValueOf(Box<PhpType>)`
    - `Static`, `Self_`, `Parent`

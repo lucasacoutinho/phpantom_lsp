@@ -1302,7 +1302,7 @@ fn resolve_type_namespace(
     // Find the base type name: take everything before `<`, `|`, `&`,
     // `?`, or `[`.
     let base_end = type_str
-        .find(['<', '|', '&', '?', '['])
+        .find(['<', '|', '&', '?', '[', '{'])
         .unwrap_or(type_str.len());
     let base = type_str[..base_end].trim();
 

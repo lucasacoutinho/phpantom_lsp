@@ -14,5 +14,3 @@ within the same impact tier.
 | **Effort** | **Low** (≤ 1 day), **Medium** (2-5 days), **Medium-High** (1-2 weeks), **High** (2-4 weeks), **Very High** (> 1 month) |
 
 ---
-
-No outstanding items.

@@ -806,6 +806,12 @@ fn resolve_rhs_raw_type<'b>(rhs: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
             Expression::Static(_) => Some(ctx.current_class.name.clone()),
             _ => None,
         },
+        // ── Array access: `$arr['key']` or `$arr[0]` ──
+        // Walk through nested ArrayAccess nodes to collect bracket
+        // segments, resolve the base variable's type, then narrow
+        // through each segment (shape key → value type, element
+        // access → generic value type).
+        Expression::ArrayAccess(_) => resolve_rhs_array_access_raw_type(rhs, ctx),
         // ── Parenthesized: unwrap ──
         Expression::Parenthesized(p) => resolve_rhs_raw_type(p.expression, ctx),
         // ── Ternary / elvis: `$a ? $b : $c` or `$a ?: $c` ──
@@ -853,6 +859,99 @@ fn resolve_rhs_raw_type<'b>(rhs: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
             None
         }),
     }
+}
+
+/// Resolve an array access expression to a raw type string.
+///
+/// Walks through nested `ArrayAccess` nodes to collect bracket segments
+/// (string key vs element access), resolves the innermost base
+/// variable's type, then narrows through each segment:
+///   - String key → `extract_array_shape_value_type`
+///   - Element access → `extract_generic_value_type` (including scalar results)
+fn resolve_rhs_array_access_raw_type<'b>(
+    expr: &'b Expression<'b>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Option<String> {
+    // Collect bracket segments innermost-last.
+    let mut segments: Vec<bool> = Vec::new(); // true = string key
+    let mut keys: Vec<String> = Vec::new();
+    let mut current: &Expression<'_> = expr;
+
+    while let Expression::ArrayAccess(access) = current {
+        if let Expression::Literal(Literal::String(s)) = access.index {
+            let key = s.value.map(|v| v.to_string()).unwrap_or_else(|| {
+                let raw = s.raw;
+                raw.strip_prefix('\'')
+                    .and_then(|r| r.strip_suffix('\''))
+                    .or_else(|| raw.strip_prefix('"').and_then(|r| r.strip_suffix('"')))
+                    .unwrap_or(raw)
+                    .to_string()
+            });
+            segments.push(true);
+            keys.push(key);
+        } else {
+            segments.push(false);
+            keys.push(String::new());
+        }
+        current = access.array;
+    }
+
+    // Reverse to left-to-right order.
+    segments.reverse();
+    keys.reverse();
+
+    // The base must be a variable.
+    let Expression::Variable(Variable::Direct(dv)) = current else {
+        return None;
+    };
+    let base_var = dv.name.to_string();
+    let access_offset = expr.span().start.offset;
+
+    // Resolve the base variable's raw type.
+    let mut current_type =
+        docblock::find_iterable_raw_type_in_source(ctx.content, access_offset as usize, &base_var)
+            .or_else(|| {
+                resolve_variable_assignment_raw_type(
+                    &base_var,
+                    ctx.content,
+                    access_offset,
+                    Some(ctx.current_class),
+                    ctx.all_classes,
+                    ctx.class_loader,
+                    ctx.function_loader,
+                )
+            })?;
+
+    // Expand type aliases.
+    if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
+        &current_type,
+        &ctx.current_class.name,
+        ctx.all_classes,
+        ctx.class_loader,
+    ) {
+        current_type = expanded;
+    }
+
+    // Walk each segment.
+    for (i, is_string_key) in segments.iter().enumerate() {
+        if *is_string_key {
+            if let Some(vt) =
+                docblock::types::extract_array_shape_value_type(&current_type, &keys[i])
+            {
+                current_type = vt;
+            } else if let Some(et) = docblock::types::extract_iterable_element_type(&current_type) {
+                current_type = et;
+            } else {
+                return None;
+            }
+        } else if let Some(et) = docblock::types::extract_iterable_element_type(&current_type) {
+            current_type = et;
+        } else {
+            return None;
+        }
+    }
+
+    Some(current_type)
 }
 
 /// Combine two optional raw type strings into a union.
