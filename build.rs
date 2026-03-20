@@ -12,8 +12,18 @@
 //! ## Automatic stub fetching
 //!
 //! If the stubs directory doesn't exist, the build script will automatically
-//! fetch the latest release of phpstorm-stubs from GitHub. This allows
-//! `cargo install` to work without any additional setup.
+//! fetch phpstorm-stubs from GitHub. This allows `cargo install` to work
+//! without any additional setup.
+//!
+//! ## Pinned version with integrity verification
+//!
+//! The file `stubs.lock` (checked into version control) pins the exact
+//! commit SHA and records the SHA-256 hash of the corresponding GitHub
+//! tarball.  The build script downloads that specific commit and verifies
+//! the hash before extracting.  This ensures reproducible, tamper-evident
+//! builds.
+//!
+//! To update the pinned version run `scripts/update-stubs.sh`.
 //!
 //! ## Re-run strategy
 //!
@@ -24,7 +34,7 @@
 //!
 //! Instead we watch the project root directory (`.`).  Its mtime changes
 //! whenever a direct child like `stubs/` is created or removed.  We also
-//! watch `build.rs` for targeted rebuilds.
+//! watch `build.rs` and `stubs.lock` for targeted rebuilds.
 //!
 //! To avoid unnecessary recompilation of the main crate we compare the
 //! newly generated content against the existing output file and only write
@@ -39,19 +49,7 @@ use std::io::Read;
 use std::path::Path;
 
 use flate2::read::GzDecoder;
-use serde::Deserialize;
 use tar::Archive;
-
-/// Direct tarball URL for the `master` branch.
-///
-/// Unlike the releases API endpoint this does not require authentication
-/// and always points at the latest commit.  PHPStan uses the same
-/// approach (see their `update-phpstorm-stubs.yml` workflow).
-const MASTER_TARBALL_URL: &str =
-    "https://github.com/JetBrains/phpstorm-stubs/archive/refs/heads/master.tar.gz";
-
-/// GitHub API URL to query the latest commit SHA on `master`.
-const MASTER_SHA_URL: &str = "https://api.github.com/repos/JetBrains/phpstorm-stubs/commits/master";
 
 /// Relative path from the crate root to the stubs map file.
 const MAP_FILE: &str = "stubs/jetbrains/phpstorm-stubs/PhpStormStubsMap.php";
@@ -60,10 +58,10 @@ const MAP_FILE: &str = "stubs/jetbrains/phpstorm-stubs/PhpStormStubsMap.php";
 /// relative paths found in the map file).
 const STUBS_DIR: &str = "stubs/jetbrains/phpstorm-stubs";
 
-/// GitHub API response for a single commit (only the fields we need).
-#[derive(Deserialize)]
-struct GitHubCommit {
-    sha: String,
+/// Contents of `stubs.lock`.
+struct StubsLock {
+    commit: String,
+    sha256: String,
 }
 
 fn main() {
@@ -74,14 +72,17 @@ fn main() {
     // reliably trigger when they first appear.
     println!("cargo:rerun-if-changed=.");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=stubs.lock");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let stubs_path = Path::new(&manifest_dir).join(STUBS_DIR);
     let map_path = Path::new(&manifest_dir).join(MAP_FILE);
 
+    let lock = read_stubs_lock(&manifest_dir);
+
     if !map_path.exists() {
         eprintln!("cargo:warning=Stubs not found, fetching from GitHub...");
-        if let Err(e) = fetch_stubs(&manifest_dir) {
+        if let Err(e) = fetch_stubs(&manifest_dir, &lock) {
             eprintln!("cargo:warning=Failed to fetch stubs from GitHub: {}", e);
             eprintln!("cargo:warning=Building without stubs (network may be unavailable).");
             println!("cargo:rustc-env=PHPANTOM_STUBS_VERSION=none");
@@ -91,13 +92,8 @@ fn main() {
     }
 
     // Emit the stubs version so the binary can log it at runtime.
-    // fetch_stubs writes a `.version` file next to the extracted stubs.
-    let version_file = Path::new(&manifest_dir).join("stubs/.version");
-    let stubs_version = fs::read_to_string(&version_file)
-        .ok()
-        .map(|v| v.trim().to_string())
-        .unwrap_or_else(|| "unknown".to_string());
-    println!("cargo:rustc-env=PHPANTOM_STUBS_VERSION={}", stubs_version);
+    let short = &lock.commit[..lock.commit.len().min(10)];
+    println!("cargo:rustc-env=PHPANTOM_STUBS_VERSION=master@{}", short);
 
     let map_content = match fs::read_to_string(&map_path) {
         Ok(c) => c,
@@ -236,27 +232,165 @@ fn main() {
     write_if_changed(&out);
 }
 
-fn fetch_stubs(manifest_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
-    // Try to fetch the commit SHA for a meaningful version string.
-    // This is best-effort — if it fails we still download the tarball.
-    let commit_sha = match ureq::get(MASTER_SHA_URL)
-        .header("User-Agent", "phpantom-lsp-build")
-        .header("Accept", "application/vnd.github.v3+json")
-        .call()
-    {
-        Ok(mut resp) => {
-            let commit: GitHubCommit = resp.body_mut().read_json()?;
-            commit.sha
-        }
-        Err(_) => String::from("unknown"),
-    };
+// ── Stub fetching ───────────────────────────────────────────────────────
 
-    eprintln!(
-        "cargo:warning=Downloading phpstorm-stubs master ({})",
-        &commit_sha[..commit_sha.len().min(10)]
+/// Read `stubs.lock` and return the pinned commit + hash.
+///
+/// Panics if the file is missing or malformed — `stubs.lock` is checked
+/// into version control and must always be present.
+fn read_stubs_lock(manifest_dir: &str) -> StubsLock {
+    let lock_path = Path::new(manifest_dir).join("stubs.lock");
+    let content = fs::read_to_string(&lock_path)
+        .unwrap_or_else(|e| panic!("Failed to read stubs.lock: {}\nThis file is required and should be checked into version control.", e));
+
+    let mut commit: Option<String> = None;
+    let mut sha256: Option<String> = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            let value = value.trim().trim_matches('"');
+            match key {
+                "commit" => commit = Some(value.to_string()),
+                "sha256" => sha256 = Some(value.to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    StubsLock {
+        commit: commit.expect("stubs.lock is missing 'commit' field"),
+        sha256: sha256.expect("stubs.lock is missing 'sha256' field"),
+    }
+}
+
+/// Compute the SHA-256 hex digest of a byte slice.
+fn sha256_hex(data: &[u8]) -> String {
+    // Minimal SHA-256 implementation to avoid adding a build-dependency.
+    // Based on the FIPS 180-4 specification.
+
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+
+    #[inline(always)]
+    fn ch(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) ^ (!x & z)
+    }
+    #[inline(always)]
+    fn maj(x: u32, y: u32, z: u32) -> u32 {
+        (x & y) ^ (x & z) ^ (y & z)
+    }
+    #[inline(always)]
+    fn ep0(x: u32) -> u32 {
+        x.rotate_right(2) ^ x.rotate_right(13) ^ x.rotate_right(22)
+    }
+    #[inline(always)]
+    fn ep1(x: u32) -> u32 {
+        x.rotate_right(6) ^ x.rotate_right(11) ^ x.rotate_right(25)
+    }
+    #[inline(always)]
+    fn sig0(x: u32) -> u32 {
+        x.rotate_right(7) ^ x.rotate_right(18) ^ (x >> 3)
+    }
+    #[inline(always)]
+    fn sig1(x: u32) -> u32 {
+        x.rotate_right(17) ^ x.rotate_right(19) ^ (x >> 10)
+    }
+
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+
+    // Pre-processing: pad the message.
+    let bit_len = (data.len() as u64) * 8;
+    let mut padded = data.to_vec();
+    padded.push(0x80);
+    while (padded.len() % 64) != 56 {
+        padded.push(0x00);
+    }
+    padded.extend_from_slice(&bit_len.to_be_bytes());
+
+    // Process each 512-bit (64-byte) block.
+    for block in padded.chunks_exact(64) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                block[4 * i],
+                block[4 * i + 1],
+                block[4 * i + 2],
+                block[4 * i + 3],
+            ]);
+        }
+        for i in 16..64 {
+            w[i] = sig1(w[i - 2])
+                .wrapping_add(w[i - 7])
+                .wrapping_add(sig0(w[i - 15]))
+                .wrapping_add(w[i - 16]);
+        }
+
+        let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = h;
+
+        for i in 0..64 {
+            let t1 = hh
+                .wrapping_add(ep1(e))
+                .wrapping_add(ch(e, f, g))
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let t2 = ep0(a).wrapping_add(maj(a, b, c));
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(t1);
+            d = c;
+            c = b;
+            b = a;
+            a = t1.wrapping_add(t2);
+        }
+
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
+    }
+
+    format!(
+        "{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}{:08x}",
+        h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]
+    )
+}
+
+fn fetch_stubs(manifest_dir: &str, lock: &StubsLock) -> Result<(), Box<dyn std::error::Error>> {
+    let short = &lock.commit[..lock.commit.len().min(10)];
+    let tarball_url = format!(
+        "https://github.com/JetBrains/phpstorm-stubs/archive/{}.tar.gz",
+        lock.commit
     );
 
-    let mut tarball_response = ureq::get(MASTER_TARBALL_URL)
+    eprintln!(
+        "cargo:warning=Downloading phpstorm-stubs pinned at {}",
+        short
+    );
+
+    let mut tarball_response = ureq::get(&tarball_url)
         .header("User-Agent", "phpantom-lsp-build")
         .call()?;
 
@@ -266,13 +400,31 @@ fn fetch_stubs(manifest_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         .as_reader()
         .read_to_end(&mut tarball_bytes)?;
 
+    // Verify the SHA-256 hash against stubs.lock.
+    let actual_hash = sha256_hex(&tarball_bytes);
+    if actual_hash != lock.sha256 {
+        return Err(format!(
+            "SHA-256 mismatch for phpstorm-stubs tarball!\n  \
+             expected: {}\n  \
+             actual:   {}\n  \
+             Run scripts/update-stubs.sh to refresh stubs.lock.",
+            lock.sha256, actual_hash
+        )
+        .into());
+    }
+    eprintln!("cargo:warning=SHA-256 verified: {}", actual_hash);
+
     let decoder = GzDecoder::new(&tarball_bytes[..]);
     let mut archive = Archive::new(decoder);
 
     let target_dir = Path::new(manifest_dir).join("stubs/jetbrains/phpstorm-stubs");
     fs::create_dir_all(&target_dir)?;
 
-    // GitHub tarballs have a top-level directory like "JetBrains-phpstorm-stubs-abc1234/"
+    // Safety: disable platform-specific features we don't need.
+    archive.set_unpack_xattrs(false);
+    archive.set_preserve_permissions(false);
+
+    // GitHub tarballs have a top-level directory like "phpstorm-stubs-abc1234/"
     // We need to strip that prefix when extracting.
     for entry in archive.entries()? {
         let mut entry = entry?;
@@ -284,6 +436,28 @@ fn fetch_stubs(manifest_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
 
         let relative_path: std::path::PathBuf = components[1..].iter().collect();
+
+        // Path confinement: reject any relative path that could escape
+        // the target directory via `..` or absolute/prefix components.
+        // We use component inspection instead of `canonicalize` because
+        // the target directory may not exist yet.
+        {
+            use std::path::Component;
+            let mut safe = true;
+            for comp in relative_path.components() {
+                match comp {
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                        safe = false;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if !safe {
+                continue;
+            }
+        }
+
         let dest_path = target_dir.join(&relative_path);
 
         if let Some(parent) = dest_path.parent() {
@@ -298,18 +472,14 @@ fn fetch_stubs(manifest_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Record which version was fetched so subsequent builds (that skip
-    // the download because stubs/ already exists) can still read it.
-    let version_file = Path::new(manifest_dir).join("stubs/.version");
-    let version_label = format!("master@{}", &commit_sha[..commit_sha.len().min(10)]);
-    let _ = fs::write(&version_file, &version_label);
-
     eprintln!(
-        "cargo:warning=Successfully downloaded phpstorm-stubs {}",
-        version_label
+        "cargo:warning=Successfully downloaded phpstorm-stubs master@{}",
+        short
     );
     Ok(())
 }
+
+// ── Stub map generation ─────────────────────────────────────────────────
 
 /// Write an empty stub map when stubs aren't available.
 fn write_empty_stubs() {

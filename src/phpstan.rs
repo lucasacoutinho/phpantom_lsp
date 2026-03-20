@@ -40,6 +40,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use tempfile::NamedTempFile;
+
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 
 use crate::config::PhpStanConfig;
@@ -156,7 +158,8 @@ pub(crate) fn run_phpstan(
     // (not a sibling file) because PHPStan's --tmp-file is designed
     // to work with arbitrary temp paths, and we avoid polluting the
     // project directory.
-    let tmp_path = write_temp_file(file_path, content)?;
+    let tmp = write_temp_file(file_path, content)?;
+    let tmp_path = tmp.path().to_path_buf();
 
     // Build the PHPStan command.
     //
@@ -179,8 +182,9 @@ pub(crate) fn run_phpstan(
 
     let result = run_command_with_timeout(&mut cmd, timeout, cancelled);
 
-    // Always clean up the temp file.
-    let _ = std::fs::remove_file(&tmp_path);
+    // NamedTempFile auto-deletes on drop — but we keep `tmp` alive
+    // until after we've consumed the command output.
+    let _ = &tmp;
 
     match result {
         Ok(output) => {
@@ -399,32 +403,24 @@ fn strip_ansi_tags(s: &str) -> String {
 
 /// Write content to a temporary file for PHPStan's `--tmp-file` flag.
 ///
-/// Uses the system temp directory with a unique name that preserves
-/// the `.php` extension (PHPStan requires a `.php` extension).
-fn write_temp_file(original: &Path, content: &str) -> Result<PathBuf, String> {
-    let stem = original
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("phpantom");
+/// Uses the system temp directory via `tempfile::Builder`.  The `.php`
+/// extension is preserved because PHPStan requires it.  Returns a
+/// `NamedTempFile` whose destructor automatically removes the file on
+/// drop — the caller must keep it alive until after PHPStan finishes.
+fn write_temp_file(_original: &Path, content: &str) -> Result<NamedTempFile, String> {
+    let mut temp = tempfile::Builder::new()
+        .prefix("phpantom-")
+        .suffix(".php")
+        .tempfile()
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
 
-    let unique = std::process::id();
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    let temp_name = format!("phpantom-{}-{}-{}.php", stem, unique, timestamp);
-    let temp_path = std::env::temp_dir().join(temp_name);
-
-    let mut file = std::fs::File::create(&temp_path)
-        .map_err(|e| format!("Failed to create temp file {}: {}", temp_path.display(), e))?;
-
-    file.write_all(content.as_bytes())
+    temp.write_all(content.as_bytes())
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
-    file.flush()
+    temp.flush()
         .map_err(|e| format!("Failed to flush temp file: {}", e))?;
 
-    Ok(temp_path)
+    Ok(temp)
 }
 
 /// Result of running an external command.
@@ -933,19 +929,20 @@ mod tests {
         let original = Path::new("/project/src/Foo.php");
         let tmp = write_temp_file(original, content).unwrap();
 
-        assert!(tmp.exists());
-        assert!(tmp.extension().and_then(|e| e.to_str()) == Some("php"));
+        assert!(tmp.path().exists());
+        assert!(tmp.path().extension().and_then(|e| e.to_str()) == Some("php"));
         assert!(
-            tmp.file_name()
+            tmp.path()
+                .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .contains("phpantom-")
         );
 
-        let read_back = std::fs::read_to_string(&tmp).unwrap();
+        let read_back = std::fs::read_to_string(tmp.path()).unwrap();
         assert_eq!(read_back, content);
 
-        let _ = std::fs::remove_file(&tmp);
+        // NamedTempFile auto-deletes on drop — no manual remove needed.
     }
 
     // ── PhpStanConfig helpers ───────────────────────────────────────

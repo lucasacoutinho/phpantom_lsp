@@ -21,18 +21,16 @@ bumpalo = "3"
 ignore = "0.4"
 memchr = "2"
 parking_lot = "0.12"
+tempfile = "3"
 toml = "1"
 
 [build-dependencies]
-ureq = { version = "3", features = ["json"] }
+ureq = "3"
 tar = "0.4"
 flate2 = "1"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
 
 [dev-dependencies]
 datatest-stable = "0.3"
-tempfile = "3"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [[test]]

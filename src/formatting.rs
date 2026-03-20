@@ -49,6 +49,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
+use tempfile::NamedTempFile;
+
 use tower_lsp::lsp_types::{Position, Range, TextEdit};
 
 use crate::config::FormattingConfig;
@@ -296,7 +298,7 @@ fn run_php_cs_fixer(
     file_path: &Path,
     timeout: Duration,
 ) -> Result<String, String> {
-    let temp_path = write_sibling_temp_file(file_path, content)?;
+    let temp = write_sibling_temp_file(file_path, content)?;
 
     let result = run_command_with_timeout(
         Command::new(tool_path)
@@ -304,16 +306,12 @@ fn run_php_cs_fixer(
             .arg("--using-cache=no")
             .arg("--quiet")
             .arg("--no-interaction")
-            .arg(&temp_path),
+            .arg(temp.path()),
         timeout,
     );
 
-    let formatted = std::fs::read_to_string(&temp_path).map_err(|e| {
-        let _ = std::fs::remove_file(&temp_path);
-        format!("Failed to read formatted output: {}", e)
-    })?;
-
-    let _ = std::fs::remove_file(&temp_path);
+    let formatted = std::fs::read_to_string(temp.path())
+        .map_err(|e| format!("Failed to read formatted output: {}", e))?;
 
     match result {
         Ok(status) => {
@@ -348,22 +346,18 @@ fn run_phpcbf(
     file_path: &Path,
     timeout: Duration,
 ) -> Result<String, String> {
-    let temp_path = write_sibling_temp_file(file_path, content)?;
+    let temp = write_sibling_temp_file(file_path, content)?;
 
     let result = run_command_with_timeout(
         Command::new(tool_path)
             .arg("--no-colors")
             .arg("-q")
-            .arg(&temp_path),
+            .arg(temp.path()),
         timeout,
     );
 
-    let formatted = std::fs::read_to_string(&temp_path).map_err(|e| {
-        let _ = std::fs::remove_file(&temp_path);
-        format!("Failed to read formatted output: {}", e)
-    })?;
-
-    let _ = std::fs::remove_file(&temp_path);
+    let formatted = std::fs::read_to_string(temp.path())
+        .map_err(|e| format!("Failed to read formatted output: {}", e))?;
 
     match result {
         Ok(status) => {
@@ -390,32 +384,27 @@ fn run_phpcbf(
 /// Write content to a temporary file in the same directory as `original`
 /// so that tool config discovery (which walks up from the file) works.
 ///
-/// The temp file is hidden (dot-prefixed) and includes the process ID
-/// for uniqueness.
-fn write_sibling_temp_file(original: &Path, content: &str) -> Result<PathBuf, String> {
+/// Returns a `NamedTempFile` whose destructor automatically removes the
+/// file on drop.  The caller must keep it alive until after reading back
+/// the formatted content.
+fn write_sibling_temp_file(original: &Path, content: &str) -> Result<NamedTempFile, String> {
     let parent = original
         .parent()
         .ok_or_else(|| "Cannot determine parent directory of file".to_string())?;
 
-    let stem = original
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("phpantom");
+    let mut temp = tempfile::Builder::new()
+        .prefix(".phpantom-fmt-")
+        .suffix(".php")
+        .tempfile_in(parent)
+        .map_err(|e| format!("Failed to create temp file in {}: {}", parent.display(), e))?;
 
-    let unique = std::process::id();
-    let temp_name = format!(".{}.phpantom-fmt.{}.php", stem, unique);
-    let temp_path = parent.join(temp_name);
-
-    let mut file = std::fs::File::create(&temp_path)
-        .map_err(|e| format!("Failed to create temp file {}: {}", temp_path.display(), e))?;
-
-    file.write_all(content.as_bytes())
+    temp.write_all(content.as_bytes())
         .map_err(|e| format!("Failed to write temp file: {}", e))?;
 
-    file.flush()
+    temp.flush()
         .map_err(|e| format!("Failed to flush temp file: {}", e))?;
 
-    Ok(temp_path)
+    Ok(temp)
 }
 
 /// Result of running an external command.
@@ -931,16 +920,15 @@ mod tests {
         let content = "<?php\necho 'formatted';\n";
         let temp = write_sibling_temp_file(&original, content).unwrap();
 
-        assert_eq!(temp.parent(), original.parent());
-        let name = temp.file_name().unwrap().to_str().unwrap();
-        assert!(name.starts_with('.'));
-        assert!(name.contains("phpantom-fmt"));
+        assert_eq!(temp.path().parent(), original.parent());
+        let name = temp.path().file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with(".phpantom-fmt-"));
         assert!(name.ends_with(".php"));
 
-        let read_back = std::fs::read_to_string(&temp).unwrap();
+        let read_back = std::fs::read_to_string(temp.path()).unwrap();
         assert_eq!(read_back, content);
 
-        let _ = std::fs::remove_file(&temp);
+        // NamedTempFile auto-deletes on drop — no manual remove needed.
     }
 
     // ── execute_strategy with built-in ──────────────────────────────
