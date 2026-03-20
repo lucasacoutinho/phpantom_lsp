@@ -4,6 +4,8 @@
   <img src="docs/assets/spookaphant.svg" alt="Spookaphant" width="316" height="230" />
 </p>
 
+[![codecov](https://codecov.io/gh/AJenbo/phpantom_lsp/graph/badge.svg?token=UH5RFA3AR9)](https://codecov.io/gh/AJenbo/phpantom_lsp)
+
 A fast, lightweight PHP language server written in Rust. Ready in seconds, uses a fraction of the RAM other language servers need, and stays responsive throughout. No indexing phase, no waiting.
 
 > [!NOTE]
