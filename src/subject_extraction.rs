@@ -261,6 +261,19 @@ fn extract_arrow_subject(chars: &[char], arrow_pos: usize) -> String {
                 return format!("{}{}", before, segments.join(""));
             }
 
+            // ── Call expression base: `$c->items()[0]->` ─────────
+            // When the base before `[…]` is a call expression (ends
+            // with `)`), extract it so that patterns like
+            // `$c->items()[0]->` and `Collection::all()[0]->`
+            // produce a subject that the resolver can handle.
+            if pos > 0
+                && chars[pos - 1] == ')'
+                && let Some(call_base) = extract_call_subject(chars, pos)
+            {
+                segments.reverse();
+                return format!("{}{}", call_base, segments.join(""));
+            }
+
             // ── Inline array literal: `[expr][0]->` ──────────────
             // When there is no `$var` base and we consumed at least
             // two bracket pairs, the outermost (last-consumed) bracket

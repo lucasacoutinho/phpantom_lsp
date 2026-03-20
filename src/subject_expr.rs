@@ -177,6 +177,18 @@ impl SubjectExpr {
             };
         }
 
+        // ── Call expression with array access: `$c->items()[]` ──────
+        // When the subject ends with `]` and the base before the first
+        // `[` that follows a `)` is a call expression, parse as
+        // `ArrayAccess` with a `CallExpr` base.  This handles patterns
+        // like `$c->items()[0]->`, `Collection::all()[0]->`, and
+        // `getItems()[0]->`.
+        if subject.ends_with(']')
+            && let Some(result) = parse_call_array_access(subject)
+        {
+            return result;
+        }
+
         // ── `$var::member` — class-string variable static access ────
         // When a variable is followed by `::`, it holds a class-string
         // (e.g. `$cls = Pen::class; $cls::make()`).  Parse as
@@ -560,6 +572,80 @@ fn parse_variable_array_access(subject: &str) -> Option<SubjectExpr> {
 
     Some(SubjectExpr::ArrayAccess {
         base: Box::new(SubjectExpr::parse(base_var)),
+        segments,
+    })
+}
+
+/// Parse a call expression followed by bracket access: `$c->items()[]`,
+/// `Collection::all()[]`, `getItems()[]`.
+///
+/// Finds the `)` that ends the call expression, splits off the bracket
+/// segments after it, then recursively parses the call portion as the
+/// base of an `ArrayAccess`.
+fn parse_call_array_access(subject: &str) -> Option<SubjectExpr> {
+    // Scan for `)` followed immediately by `[` — that is the boundary
+    // between the call expression and the bracket segments.
+    // We need to find the *last* `)` that is followed by `[`, walking
+    // balanced parens.  A simpler approach: find the position of `)[`
+    // at paren-depth 0, scanning left-to-right.
+    let bytes = subject.as_bytes();
+    let mut depth = 0i32;
+    let mut split = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                // Check if the next char is `[` — that marks the boundary.
+                if depth == 0 && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+                    split = Some(i + 1); // position right after `)`
+                }
+            }
+            _ => {}
+        }
+    }
+    let split = split?;
+
+    let call_part = &subject[..split];
+    let bracket_part = &subject[split..];
+
+    // The call part must end with `)` and be a valid call expression.
+    if !call_part.ends_with(')') {
+        return None;
+    }
+
+    // Parse bracket segments.
+    let mut segments = Vec::new();
+    let mut rest = bracket_part;
+    while rest.starts_with('[') {
+        let close = rest.find(']')?;
+        let inner = rest[1..close].trim();
+        if let Some(key) = inner
+            .strip_prefix('\'')
+            .and_then(|s| s.strip_suffix('\''))
+            .or_else(|| inner.strip_prefix('"').and_then(|s| s.strip_suffix('"')))
+        {
+            segments.push(BracketSegment::StringKey(key.to_string()));
+        } else {
+            segments.push(BracketSegment::ElementAccess);
+        }
+        rest = &rest[close + 1..];
+    }
+
+    if segments.is_empty() {
+        return None;
+    }
+
+    // Recursively parse the call portion as the base expression.
+    let base = SubjectExpr::parse(call_part);
+
+    // Only accept if the base actually parsed as a CallExpr.
+    if !matches!(base, SubjectExpr::CallExpr { .. }) {
+        return None;
+    }
+
+    Some(SubjectExpr::ArrayAccess {
+        base: Box::new(base),
         segments,
     })
 }

@@ -292,8 +292,35 @@ pub(crate) fn resolve_target_classes_expr(
             results
         }
 
-        // ── Array access on variable ────────────────────────────
+        // ── Array access on variable or call expression ─────────
         SubjectExpr::ArrayAccess { base, segments } => {
+            // When the base is a call expression (e.g. `$c->items()[0]`),
+            // resolve the call's raw return type and use it as a candidate
+            // for array-segment walking.  This mirrors the variable path
+            // but sources the raw type from the method/function signature
+            // instead of from docblock annotations or assignments.
+            if let SubjectExpr::CallExpr { callee, args_text } = base.as_ref() {
+                let call_raw = resolve_call_raw_return_type(callee, args_text, ctx);
+                if let Some(raw) = call_raw {
+                    let candidates = std::iter::once(raw);
+                    if let Some(resolved) =
+                        super::source::helpers::try_chained_array_access_with_candidates(
+                            candidates,
+                            segments,
+                            current_class,
+                            all_classes,
+                            class_loader,
+                        )
+                    {
+                        return resolved.into_iter().map(Arc::new).collect();
+                    }
+                }
+                // If raw-type approach didn't work, fall back to resolving
+                // the call normally (handles cases like `getItems()[0]`
+                // where the return type is already a class with ArrayAccess).
+                return vec![];
+            }
+
             let base_var = base.to_subject_text();
 
             // Build candidate raw types from multiple strategies.
@@ -350,6 +377,59 @@ pub(crate) fn resolve_target_classes_expr(
             }
             class_loader(&text).into_iter().collect()
         }
+    }
+}
+
+/// Extract the raw return type string from a call expression's callee.
+///
+/// Given a `CallExpr`'s callee and arguments, resolves the owning class
+/// (for method/static-method calls) or the function info (for standalone
+/// functions), finds the matching method/function, and returns its raw
+/// return type string (e.g. `"Item[]"`).  This is used by the
+/// `ArrayAccess` handler to strip array dimensions and resolve the
+/// element type when the base of `[0]` is a call expression.
+fn resolve_call_raw_return_type(
+    callee: &SubjectExpr,
+    _args_text: &str,
+    ctx: &ResolutionCtx<'_>,
+) -> Option<String> {
+    match callee {
+        SubjectExpr::MethodCall { base, method } => {
+            let base_classes = resolve_target_classes_expr(base, AccessKind::Arrow, ctx);
+            for cls in &base_classes {
+                if let Some(m) = cls
+                    .methods
+                    .iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(method))
+                    && let Some(ref ret) = m.return_type
+                {
+                    return Some(ret.clone());
+                }
+            }
+            None
+        }
+        SubjectExpr::StaticMethodCall { class, method } => {
+            let owner = resolve_static_owner_class(class, ctx);
+            if let Some(ref cls) = owner
+                && let Some(m) = cls
+                    .methods
+                    .iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(method))
+                && let Some(ref ret) = m.return_type
+            {
+                return Some(ret.clone());
+            }
+            None
+        }
+        SubjectExpr::FunctionCall(fn_name) => {
+            if let Some(fl) = ctx.function_loader
+                && let Some(func_info) = fl(fn_name)
+            {
+                return func_info.return_type.clone();
+            }
+            None
+        }
+        _ => None,
     }
 }
 

@@ -390,6 +390,45 @@ fn test_parenthesized_property_invocation() {
 }
 
 #[test]
+fn test_call_expression_base_array_access() {
+    // $c->items()[0]->
+    let input = "$c->items()[0]->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "$c->items()[]",
+        "Subject should be the call expression base plus index segment"
+    );
+}
+
+#[test]
+fn test_static_call_expression_base_array_access() {
+    // Collection::all()[0]->
+    let input = "Collection::all()[0]->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "Collection::all()[]",
+        "Subject should be the static call expression base plus index segment"
+    );
+}
+
+#[test]
+fn test_function_call_base_array_access() {
+    // getItems()[0]->
+    let input = "getItems()[0]->";
+    let chars: Vec<char> = input.chars().collect();
+    let arrow_pos = input.rfind("->").unwrap();
+    let result = extract_arrow_subject(&chars, arrow_pos);
+    assert_eq!(
+        result, "getItems()[]",
+        "Subject should be the function call base plus index segment"
+    );
+}
+
+#[test]
 fn test_inline_new_expression_method_chain() {
     // (new Foo)->bar()->
     let input = "(new Foo)->bar()->";

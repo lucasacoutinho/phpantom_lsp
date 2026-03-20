@@ -1996,6 +1996,10 @@ class ArrayAccessDemo
 
         $first = $pens[0];
         $first->color();                  // resolves via $first = $pens[0]
+
+        // Inline method-return array access (no intermediate variable)
+        $src->fetchAll()[0]->write();     // resolves Pen from Pen[] return type
+        $src->fetchAll()[0]->color();     // same, different member
     }
 }
 

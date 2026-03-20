@@ -1661,3 +1661,92 @@ $f->create()->name;
         diags
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Method return → array access: $c->items()[0]->getLabel()
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// When a method returns `Item[]` and the caller indexes inline
+/// (`$c->items()[0]->getLabel()`), the element type should resolve
+/// and no false "cannot verify" warning should appear.
+#[test]
+fn no_diagnostic_for_method_return_array_access_bracket_type() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Item {
+    public function getLabel(): string { return ''; }
+}
+class Collection {
+    /** @return Item[] */
+    public function items(): array { return []; }
+}
+class Consumer {
+    public function run(): void {
+        $c = new Collection();
+        $c->items()[0]->getLabel();
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("getLabel")),
+        "No diagnostic expected for getLabel on Item resolved via method-return array access, got: {:?}",
+        diags
+    );
+}
+
+/// Same pattern with `array<int, Item>` generic return type.
+#[test]
+fn no_diagnostic_for_method_return_array_access_generic_type() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Item {
+    public function getLabel(): string { return ''; }
+}
+class Collection {
+    /** @return array<int, Item> */
+    public function items(): array { return []; }
+}
+class Consumer {
+    public function run(): void {
+        $c = new Collection();
+        $c->items()[0]->getLabel();
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("getLabel")),
+        "No diagnostic expected for getLabel on Item resolved via generic method-return array access, got: {:?}",
+        diags
+    );
+}
+
+/// Static method returning an array: `Collection::all()[0]->getLabel()`.
+#[test]
+fn no_diagnostic_for_static_method_return_array_access() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let text = r#"<?php
+class Item {
+    public function getLabel(): string { return ''; }
+}
+class Collection {
+    /** @return Item[] */
+    public static function all(): array { return []; }
+}
+class Consumer {
+    public function run(): void {
+        Collection::all()[0]->getLabel();
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    assert!(
+        !diags.iter().any(|d| d.message.contains("getLabel")),
+        "No diagnostic expected for getLabel on Item resolved via static method-return array access, got: {:?}",
+        diags
+    );
+}

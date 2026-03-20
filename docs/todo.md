@@ -172,7 +172,6 @@ unlikely to move the needle for most users.
 | X6  | Disk cache (evaluate later)                                                                                                                                  | Medium     | High        |
 |     | **[Bug Fixes](todo/bugs.md)**                                                                                                                                |            |             |
 | B14 | [Redundant file re-parsing in unknown-member diagnostics](todo/bugs.md#b14-redundant-file-re-parsing-in-unknown-member-diagnostics)                          | Medium     | Medium-High |
-| B15 | [Array element from method return chain not resolved in diagnostics](todo/bugs.md#b15-array-element-from-method-return-chain-not-resolved-in-diagnostics)    | Low        | Low         |
 |     | **[Inline Completion](todo/inline-completion.md)**                                                                                                           |            |             |
 | N1  | Template engine (type-aware snippets)                                                                                                                        | Medium     | High        |
 | N2  | N-gram prediction from PHP corpus                                                                                                                            | Medium     | Very High   |

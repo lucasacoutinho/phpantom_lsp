@@ -745,3 +745,73 @@ fn parse_parenthesized_variable_invocation() {
         other => panic!("Expected CallExpr, got: {other:?}"),
     }
 }
+
+// ── Call expression with array access ───────────────────────────────
+
+#[test]
+fn parse_instance_method_call_array_access() {
+    // `$c->items()[]` — method returning array, indexed inline.
+    let parsed = SubjectExpr::parse("$c->items()[]");
+    match &parsed {
+        SubjectExpr::ArrayAccess { base, segments } => {
+            assert!(
+                matches!(base.as_ref(), SubjectExpr::CallExpr { .. }),
+                "Expected CallExpr base, got: {base:?}"
+            );
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0], BracketSegment::ElementAccess);
+        }
+        other => panic!("Expected ArrayAccess, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parse_static_method_call_array_access() {
+    // `Collection::all()[]` — static method returning array, indexed.
+    let parsed = SubjectExpr::parse("Collection::all()[]");
+    match &parsed {
+        SubjectExpr::ArrayAccess { base, segments } => {
+            assert!(
+                matches!(base.as_ref(), SubjectExpr::CallExpr { .. }),
+                "Expected CallExpr base, got: {base:?}"
+            );
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0], BracketSegment::ElementAccess);
+        }
+        other => panic!("Expected ArrayAccess, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parse_function_call_array_access() {
+    // `getItems()[]` — function returning array, indexed.
+    let parsed = SubjectExpr::parse("getItems()[]");
+    match &parsed {
+        SubjectExpr::ArrayAccess { base, segments } => {
+            assert!(
+                matches!(base.as_ref(), SubjectExpr::CallExpr { .. }),
+                "Expected CallExpr base, got: {base:?}"
+            );
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0], BracketSegment::ElementAccess);
+        }
+        other => panic!("Expected ArrayAccess, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parse_call_array_access_with_string_key() {
+    // `$c->getData()['name']` — method returning array, keyed access.
+    let parsed = SubjectExpr::parse("$c->getData()['name']");
+    match &parsed {
+        SubjectExpr::ArrayAccess { base, segments } => {
+            assert!(
+                matches!(base.as_ref(), SubjectExpr::CallExpr { .. }),
+                "Expected CallExpr base, got: {base:?}"
+            );
+            assert_eq!(segments.len(), 1);
+            assert_eq!(segments[0], BracketSegment::StringKey("name".to_string()));
+        }
+        other => panic!("Expected ArrayAccess, got: {other:?}"),
+    }
+}

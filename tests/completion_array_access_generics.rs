@@ -315,3 +315,110 @@ async fn test_var_array_generic_with_unknown_value_rhs() {
     assert_has_member(&items, "name");
     assert_has_member(&items, "getEmail");
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Method return → array access: $c->items()[0]->
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[tokio::test]
+async fn test_method_return_array_access_bracket_type() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_method_arr.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Item {\n",
+        "    public function getLabel(): string { return ''; }\n",
+        "}\n",
+        "class Collection {\n",
+        "    /** @return Item[] */\n",
+        "    public function items(): array { return []; }\n",
+        "}\n",
+        "class Consumer {\n",
+        "    public function run(): void {\n",
+        "        $c = new Collection();\n",
+        "        $c->items()[0]->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 11, 24).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "getLabel");
+}
+
+#[tokio::test]
+async fn test_method_return_array_access_generic_type() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_method_arr_generic.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Item {\n",
+        "    public function getLabel(): string { return ''; }\n",
+        "}\n",
+        "class Collection {\n",
+        "    /** @return array<int, Item> */\n",
+        "    public function items(): array { return []; }\n",
+        "}\n",
+        "class Consumer {\n",
+        "    public function run(): void {\n",
+        "        $c = new Collection();\n",
+        "        $c->items()[0]->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 11, 24).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "getLabel");
+}
+
+#[tokio::test]
+async fn test_static_method_return_array_access() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_static_method_arr.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Item {\n",
+        "    public function getLabel(): string { return ''; }\n",
+        "}\n",
+        "class Collection {\n",
+        "    /** @return Item[] */\n",
+        "    public static function all(): array { return []; }\n",
+        "}\n",
+        "class Consumer {\n",
+        "    public function run(): void {\n",
+        "        Collection::all()[0]->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 10, 30).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "getLabel");
+}
+
+#[tokio::test]
+async fn test_method_return_list_array_access() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test_method_list_arr.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Item {\n",
+        "    public function getLabel(): string { return ''; }\n",
+        "}\n",
+        "class Collection {\n",
+        "    /** @return list<Item> */\n",
+        "    public function items(): array { return []; }\n",
+        "}\n",
+        "class Consumer {\n",
+        "    public function run(): void {\n",
+        "        $c = new Collection();\n",
+        "        $c->items()[0]->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let result = complete_at(&backend, &uri, text, 11, 24).await;
+    let items = unwrap_items(result);
+    assert_has_member(&items, "getLabel");
+}
