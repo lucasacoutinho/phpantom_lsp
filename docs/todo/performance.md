@@ -417,3 +417,129 @@ If they are not, replace the fallback with a `None` return and a
 debug log. If they are, consider populating `fqn_index` earlier in
 the pipeline (e.g. during the byte-level scan phase) to close the
 window.
+
+---
+
+## P9. `resolved_class_cache` generic-arg specialisation
+
+**Impact: Medium · Effort: Medium**
+
+The resolved-class cache is keyed by `(FQN, Vec<String>)`. Every
+distinct generic instantiation of the same class (e.g.
+`Builder<User>`, `Builder<Order>`, `Builder<Product>`) triggers a
+full `resolve_class_fully` call, even though the base resolution
+(inheritance merging, trait merging, virtual member injection) is
+identical. Only the final generic substitution differs.
+
+In a Laravel codebase with hundreds of Eloquent models, this means
+`Builder` is fully resolved hundreds of times, once per model.
+
+### Fix
+
+Cache the base-resolved class (before generic substitution)
+separately, keyed by FQN alone. When a generic instantiation is
+requested, look up the base-resolved class and apply
+`apply_substitution` on top. The substitution step is cheap
+(string rewriting) compared to the full resolution (inheritance
+walking, trait merging, virtual member providers).
+
+This requires splitting `resolve_class_fully` into two stages:
+base resolution (cached by FQN) and generic specialisation (cached
+by `(FQN, Vec<String>)` as today, but with a much cheaper miss
+path).
+
+---
+
+## P10. Redundant `parse_and_cache_file` from multiple threads
+
+**Impact: Medium · Effort: Low**
+
+When two threads simultaneously try to resolve the same vendor
+class, both miss `fqn_index`, both call `parse_and_cache_file`,
+and both parse the same file. The second parse is wasted work.
+This is most visible during the Phase 2 diagnostic pass when many
+threads resolve vendor classes for the first time.
+
+### Fix
+
+Add a `DashSet<String>` (or similar) of "currently being parsed"
+URIs. Before calling `parse_and_cache_file`, insert the URI into
+the set. If the insert fails (another thread is already parsing
+it), spin-wait or skip and let the other thread's result propagate
+through `fqn_index`. Remove the URI from the set after parsing
+completes.
+
+---
+
+## P11. Uncached base-resolution in `build_scope_methods_for_builder`
+
+**Impact: Low-Medium · Effort: Low**
+
+`build_scope_methods_for_builder` calls
+`resolve_class_with_inheritance` (base resolution) for the model
+class. This is not covered by the thread-local resolved-class
+cache, which stores fully-resolved classes (after virtual member
+injection), not base-resolved ones.
+
+Every time an Eloquent `Builder<Model>` is resolved with scope
+injection, the model is base-resolved from scratch. With many
+Builder instantiations in a single file this adds up.
+
+### Fix
+
+Either introduce a separate base-resolution cache (keyed by FQN),
+or restructure so `build_scope_methods_for_builder` accepts the
+already-resolved model class from the caller (which may already
+have it from the resolved-class cache).
+
+---
+
+## P12. `find_or_load_function` Phase 1.75 serial bottleneck
+
+**Impact: Low · Effort: Low**
+
+For the first unknown function that misses both `global_functions`
+and `autoload_function_index`, Phase 1.75 iterates all known
+autoload file paths and calls `update_ast` on each unparsed one
+until the function is found. With ~50 autoload files this is a
+one-time cost per thread, but it blocks the thread while it
+happens.
+
+### Fix
+
+Pre-load all autoload files during initialisation (in the
+`initialized` handler, after the byte-level scan). This moves the
+cost to startup, where it can run in parallel with other init work,
+and eliminates the blocking fallback during interactive use.
+
+---
+
+## Appendix: Profiling
+
+### Commands
+
+```sh
+# Record (Ctrl-C after ~60s):
+perf record -g --call-graph dwarf -- \
+  ./target/release/phpantom_lsp analyze \
+  src/core/Purchase/Services/PurchaseFileService.php
+
+# Text report (top functions):
+perf report --stdio --no-children | head -80
+
+# Flamegraph (requires the `flamegraph` crate or perf-tools):
+perf script | flamegraph > /tmp/phpantom.svg
+```
+
+### Pathological test file
+
+`PurchaseFileService.php` (~700-line Eloquent-heavy service with
+~55 imports) is the most expensive single file encountered so far.
+The per-collector timing is controlled by a `>= 2s` threshold in
+`src/analyse.rs` Phase 2 (search for `⏱`). It prints a breakdown
+like:
+
+```
+⏱  63.2s  src/core/Purchase/Services/PurchaseFileService.php
+  [fast=1ms cls=40ms mem=23696ms fn=12ms unres=16781ms arg=22568ms impl=0ms depr=54ms]
+```

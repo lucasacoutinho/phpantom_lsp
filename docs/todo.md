@@ -24,8 +24,8 @@ within the same impact tier.
 | #   | Item                                                                               | Impact | Effort |
 | --- | ---------------------------------------------------------------------------------- | ------ | ------ |
 | R1  | [Extract cursor-context AST helper](todo/refactor.md#r1-cursor-context-ast-helper) | —      | Low    |
-| A1  | [Extract method](todo/actions.md#a1-extract-method)                                | High   | High   |
-| A2  | [Extract variable](todo/actions.md#a2-extract-variable)                            | Medium | Medium |
+| A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                | High   | High   |
+| A5  | [Extract variable](todo/actions.md#a5-extract-variable)                            | Medium | Medium |
 | A4  | [Inline variable](todo/actions.md#a4-inline-variable)                              | Medium | Medium |
 | A6  | [Generate constructor](todo/actions.md#a6-generate-constructor)                    | Medium | Medium |
 | A7  | [Promote constructor parameter](todo/actions.md#a7-promote-constructor-parameter)  | Medium | Low    |
@@ -49,17 +49,16 @@ within the same impact tier.
 
 ## Sprint 5 — Polish for office adoption
 
-| #   | Item                                                                          | Impact      | Effort |
-| --- | ----------------------------------------------------------------------------- | ----------- | ------ |
-|     | Clear [refactoring gate](todo/refactor.md)                                    | —           | —      |
-| F1  | [Workspace symbol search](todo/lsp-features.md#f1-workspace-symbol-search)    | High        | Medium |
-| F2  | [Document symbols / outline](todo/lsp-features.md#f2-document-symbols)        | High        | Low    |
-| A8  | [Implement interface methods](todo/actions.md#a8-implement-interface-methods) | Medium-High | Medium |
-| A9  | [Add missing use import (auto)](todo/actions.md#a9-auto-import)               | Medium-High | Medium |
-| D1  | [Unknown class diagnostic](todo/diagnostics.md#d1-unknown-class-diagnostic)   | Medium      | Medium |
-| D3  | [Unknown method / property diagnostic](todo/diagnostics.md#d3-unknown-member) | Medium      | Medium |
-| D4  | [Unused variable warning](todo/diagnostics.md#d4-unused-variable)             | Medium      | Medium |
-|     | **Release 0.8.0**                                                             |             |        |
+| #   | Item                                                       | Impact | Effort |
+| --- | ---------------------------------------------------------- | ------ | ------ |
+|     | Clear [refactoring gate](todo/refactor.md)                 | —      | —      |
+| D4  | Unused variable warning                                    | Medium | Medium |
+|     | **Release 0.8.0**                                          |        |        |
+
+> **Note:** F1 (Workspace symbol search), F2 (Document symbols), A8
+> (Implement interface methods), A9 (Auto import), D1 (Unknown class
+> diagnostic), and D3 (Unknown member diagnostic) were originally
+> planned here but have already shipped.
 
 ## Sprint 6 — Type intelligence depth
 
@@ -103,45 +102,77 @@ unlikely to move the needle for most users.
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------- | ----------- |
 |     | **[Completion](todo/completion.md)**                                                                                                                         |            |             |
 | C1  | Array functions needing new code paths                                                                                                                       | Medium     | High        |
+| C10 | [Lazy documentation via `completionItem/resolve`](todo/completion.md#c10-lazy-documentation-via-completionitemresolve)                                        | Medium     | Medium      |
+| C12 | [Smarter member ordering after `->` / `::`](todo/completion.md#c12-smarter-member-ordering-after----)                                                        | Medium     | Medium      |
 | C4  | Go-to-definition for array shape keys via bracket access                                                                                                     | Low-Medium | Medium      |
+| C8  | `class_alias()` support                                                                                                                                      | Low-Medium | Medium      |
+| C9  | [Filesystem proximity as an affinity tiebreaker](todo/completion.md#c9-filesystem-proximity-as-an-affinity-tiebreaker)                                        | Low-Medium | Low         |
 | C5  | Non-array functions with dynamic return types                                                                                                                | Low        | High        |
 | C6  | `#[ReturnTypeContract]` parameter-dependent return types                                                                                                     | Low        | Low         |
 | C7  | `#[ExpectedValues]` parameter value suggestions                                                                                                              | Low        | Medium      |
-| C8  | `class_alias()` support                                                                                                                                      | Low-Medium | Medium      |
+| C11 | [Deprecation markers on class-name completions from all sources](todo/completion.md#c11-deprecation-markers-on-class-name-completions-from-all-sources)       | Low        | Low         |
 |     | **[Type Inference](todo/type-inference.md)**                                                                                                                 |            |             |
-| T4  | Non-empty-\* type narrowing and propagation                                                                                                                  | Low        | Low         |
-| T5  | Fiber type resolution                                                                                                                                        | Low        | Low         |
+| T7  | [`key-of<T>` and `value-of<T>` resolution](todo/type-inference.md#t7-key-oft-and-value-oft-resolution)                                                       | Medium     | Medium      |
 | T6  | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                       | Low-Medium | Low-Medium  |
 | T8  | [Null coalesce (`??`) type refinement](todo/type-inference.md#t8-null-coalesce--type-refinement)                                                              | Low-Medium | Low         |
+| T4  | Non-empty-\* type narrowing and propagation                                                                                                                  | Low        | Low         |
+| T5  | Fiber type resolution                                                                                                                                        | Low        | Low         |
 | T9  | [Dead-code elimination after `never`-returning calls](todo/type-inference.md#t9-dead-code-elimination-after-never-returning-calls)                            | Low        | Low-Medium  |
 | T10 | [Ternary expression as RHS of list destructuring](todo/type-inference.md#t10-ternary-expression-as-rhs-of-list-destructuring)                                 | Low        | Low-Medium  |
 | T11 | [Nested list destructuring](todo/type-inference.md#t11-nested-list-destructuring)                                                                             | Low        | Low-Medium  |
 |     | **[Diagnostics](todo/diagnostics.md)**                                                                                                                       |            |             |
+| D8  | [Undefined variable diagnostic](todo/diagnostics.md#d8-undefined-variable-diagnostic)                                                                        | High       | Medium      |
 | D2  | Chain error propagation (flag only the first broken link)                                                                                                    | Medium     | Medium      |
 | D5  | Diagnostic suppression intelligence                                                                                                                          | Medium     | Medium      |
+| D11 | [Invalid class-like kind in context](todo/diagnostics.md#d11-invalid-class-like-kind-in-context)                                                             | Medium     | Low         |
+| D6  | [Unreachable code diagnostic](todo/diagnostics.md#d6-unreachable-code-diagnostic)                                                                            | Low-Medium | Low         |
 | D10 | PHPMD diagnostic proxy                                                                                                                                       | Low        | Medium      |
 |     | **[Code Actions](todo/actions.md)**                                                                                                                          |            |             |
-| A3  | Switch → match conversion                                                                                                                                    | Low        | Medium      |
+| A1  | [Simplify with null coalescing / null-safe operator](todo/actions.md#a1-simplify-with-null-coalescing--null-safe-operator)                                    | Medium     | Medium      |
+| A5  | [Extract variable](todo/actions.md#a5-extract-variable)                                                                                                      | Medium     | Medium      |
+| A7  | [Extract constant](todo/actions.md#a7-extract-constant)                                                                                                      | Medium     | Medium      |
+| A8  | [Update docblock to match signature](todo/actions.md#a8-update-docblock-to-match-signature)                                                                  | Medium     | Medium      |
+| A6  | [Inline function/method](todo/actions.md#a6-inline-functionmethod)                                                                                           | Medium     | High        |
+| A11 | [ScopeCollector infrastructure](todo/actions.md#a11-scopecollector-infrastructure)                                                                            | Medium     | Medium      |
 | A10 | Generate interface from class                                                                                                                                | Low-Medium | Medium      |
+| A3  | Switch → match conversion                                                                                                                                    | Low        | Medium      |
 |     | **[PHPStan Code Actions](todo/phpstan-actions.md)**                                                                                                          |            |             |
 | P1  | `new.static` — add `final` or `@phpstan-consistent-constructor`                                                                                              | Medium     | Low         |
 | P2  | `method.missingOverride` — add `#[Override]`                                                                                                                 | Medium     | Low         |
 | P3  | `method.override` / `property.override` — remove `#[Override]`                                                                                               | Medium     | Low         |
-| P6  | `return.type` — update return type to match actual returns                                                                                                   | Medium     | Medium      |
+| P5  | `method.tentativeReturnType` — add `#[\ReturnTypeWillChange]`                                                                                                | Medium     | Low         |
 | P7  | `return.phpDocType` — fix `@return` to match native type                                                                                                     | Medium     | Low         |
 | P8  | `parameter.phpDocType` — fix `@param` to match native type                                                                                                   | Medium     | Low         |
-| P10 | `return.unusedType` — remove unused type from return union                                                                                                   | Medium     | Medium      |
+| P9  | `property.phpDocType` — fix property docblock type                                                                                                           | Medium     | Low         |
 | P11 | `method.visibility` / `property.visibility` — fix overriding visibility                                                                                      | Medium     | Low         |
+| P12 | `class.prefixed` — fix prefixed class name                                                                                                                   | Medium     | Low         |
+| P4  | `assign.byRefForeachExpr` — unset by-reference foreach variable                                                                                              | Medium     | Medium      |
+| P6  | `return.type` — update return type to match actual returns                                                                                                   | Medium     | Medium      |
+| P10 | `return.unusedType` — remove unused type from return union                                                                                                   | Medium     | Medium      |
 | P13 | `property.notFound` — declare missing property (same-class)                                                                                                  | Medium     | Medium      |
+| P14 | `throws.unusedType` — narrow `@throws` to actual thrown types                                                                                                | Medium     | Medium      |
+| P15 | Template bound from tip — add `@template T of X`                                                                                                             | Medium     | Medium      |
+| P16 | `match.unhandled` — add missing match arms                                                                                                                   | Medium     | Medium      |
 | P17 | `missingType.iterableValue` — add `@return` with inferred element type                                                                                       | Medium     | High        |
+| P18 | `deadCode.unreachable` — remove unreachable code                                                                                                             | Low        | Low         |
+| P19 | `property.unused` / `method.unused` — remove unused member                                                                                                   | Low        | Low         |
+| P20 | `generics.callSiteVarianceRedundant` — remove redundant variance annotation                                                                                  | Low        | Low         |
+| P21 | `return.void` — remove return value from void function                                                                                                       | Low        | Low         |
+| P22 | `return.empty` — add return value or change return type to void                                                                                              | Low        | Low         |
+| P23 | `instanceof.alwaysTrue` — remove redundant instanceof check                                                                                                  | Low        | Low         |
+| P24 | `catch.neverThrown` — remove unnecessary catch clause                                                                                                        | Low        | Low         |
 |     | **[LSP Features](todo/lsp-features.md)**                                                                                                                     |            |             |
+| F2  | [Partial result streaming via `$/progress`](todo/lsp-features.md#f2-partial-result-streaming-via-progress)                                                   | Medium     | Medium-High |
 | F3  | Incremental text sync                                                                                                                                        | Low-Medium | Medium      |
 |     | **[Signature Help](todo/signature-help.md)**                                                                                                                 |            |             |
+| S1  | [Attribute constructor signature help](todo/signature-help.md#s1-attribute-constructor-signature-help)                                                        | Medium     | Medium      |
+| S2  | [Closure / arrow function parameter signature help](todo/signature-help.md#s2-closure--arrow-function-parameter-signature-help)                               | Medium     | Medium      |
 | S3  | Multiple overloaded signatures                                                                                                                               | Medium     | Medium-High |
 | S4  | Named argument awareness in active parameter                                                                                                                 | Low-Medium | Medium      |
 | S5  | Language construct signature help and hover                                                                                                                  | Low        | Low         |
 |     | **[Laravel](todo/laravel.md)**                                                                                                                               |            |             |
 | L4  | Custom Eloquent builders (`HasBuilder` / `#[UseEloquentBuilder]`)                                                                                            | Medium     | Medium      |
+| L2  | [`morphedByMany` missing from relationship method map](todo/laravel.md#l2-morphedbymany-missing-from-relationship-method-map)                                | Low-Medium | Low         |
 | L3  | `$dates` array (deprecated)                                                                                                                                  | Low-Medium | Low         |
 | L6  | Factory `has*`/`for*` relationship methods                                                                                                                   | Low-Medium | Medium      |
 | L7  | `$pivot` property on BelongsToMany                                                                                                                           | Medium     | Medium-High |
@@ -154,18 +185,24 @@ unlikely to move the needle for most users.
 | E3  | IDE-provided and `.phpantom.toml` stub paths                                                                                                                 | Low-Medium | Low         |
 | E6  | Stub install prompt for non-Composer projects                                                                                                                | Low        | Low         |
 |     | **[Performance](todo/performance.md)**                                                                                                                       |            |             |
+| P1.5 | [Layered class resolution (zero-copy inheritance)](todo/performance.md#p15-layered-class-resolution-zero-copy-inheritance)                                   | High       | Very High   |
+| P9  | [`resolved_class_cache` generic-arg specialisation](todo/performance.md#p9-resolved_class_cache-generic-arg-specialisation)                                  | Medium     | Medium      |
+| P10 | [Redundant `parse_and_cache_file` from multiple threads](todo/performance.md#p10-redundant-parse_and_cache_file-from-multiple-threads)                       | Medium     | Low         |
+| P2  | Type AST for `apply_substitution` (full refactor)                                                                                                            | Medium     | High        |
+| P11 | [Uncached base-resolution in `build_scope_methods_for_builder`](todo/performance.md#p11-uncached-base-resolution-in-build_scope_methods_for_builder)          | Low-Medium | Low         |
+| P3  | Parallel pre-filter in `find_implementors`                                                                                                                   | Low-Medium | Medium      |
 | P1a | `type_hint_to_classes` returns `Vec<Arc<ClassInfo>>`                                                                                                         | Low        | Low         |
 | P1b | Propagate `Arc<ClassInfo>` through variable-resolution pipeline                                                                                              | Low        | Medium      |
-| P2  | Type AST for `apply_substitution` (full refactor)                                                                                                            | Medium     | High        |
-| P3  | Parallel pre-filter in `find_implementors`                                                                                                                   | Low-Medium | Medium      |
 | P4  | `memmem` for block comment terminator search                                                                                                                 | Low        | Low         |
 | P5  | `memmap2` for file reads during scanning                                                                                                                     | Low        | Low         |
 | P6  | O(n²) transitive eviction in `evict_fqn`                                                                                                                     | Low        | Low         |
 | P7  | `diag_pending_uris` uses `Vec::contains` for dedup                                                                                                           | Low        | Low         |
 | P8  | `find_class_in_ast_map` linear fallback scan                                                                                                                 | Low        | Low         |
+| P12 | [`find_or_load_function` Phase 1.75 serial bottleneck](todo/performance.md#p12-find_or_load_function-phase-175-serial-bottleneck)                            | Low        | Low         |
 |     | **[Indexing](todo/indexing.md)**                                                                                                                             |            |             |
 | X1  | Staleness detection and auto-refresh                                                                                                                         | Medium     | Medium      |
 | X3  | Completion item detail on demand (`completionItem/resolve`)                                                                                                  | Medium     | Medium      |
+| X7  | [Recency tracking](todo/indexing.md#x7-recency-tracking)                                                                                                     | Medium     | Medium      |
 | X2  | Parallel file processing — remaining work                                                                                                                    | Low-Medium | Medium      |
 | X5  | Granular progress reporting for indexing, GTI, and Find References                                                                                           | Low-Medium | Medium      |
 | X4  | Full background indexing (`strategy = "full"`)                                                                                                               | Medium     | High        |
