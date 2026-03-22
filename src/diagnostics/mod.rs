@@ -570,6 +570,14 @@ impl Backend {
             // collect_argument_count_diagnostics share resolved
             // subjects instead of re-resolving them independently.
             let _subj_guard = crate::completion::resolver::with_diagnostic_subject_cache();
+
+            // Provide scope boundaries so the diagnostic subject cache
+            // can distinguish variables in different methods of the same
+            // class (prevents cross-method cache pollution).
+            if let Some(sm) = self.symbol_maps.read().get(uri_str) {
+                crate::completion::resolver::set_diagnostic_subject_cache_scopes(sm.scopes.clone());
+            }
+
             self.collect_slow_diagnostics(uri_str, content, &mut slow_diagnostics);
         }
 

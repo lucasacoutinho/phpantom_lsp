@@ -34,12 +34,13 @@
 //!
 //! To avoid this, we cache the resolution outcome per unique
 //! `(subject_text, access_kind, scope_key)` tuple, where `scope_key`
-//! is the name and byte offset of the innermost enclosing class (or a
-//! sentinel for top-level code).  This means all `$this->` accesses in
-//! the same class share one resolution, and all `$var->` accesses in
-//! the same class share one resolution.  The cache lives for a single
-//! `collect_unknown_member_diagnostics` call and is not shared across
-//! files or invocations.
+//! combines the innermost enclosing class (name + byte offset) with
+//! the innermost enclosing function/method/closure scope start offset.
+//! This means `$var->` accesses in different methods of the same class
+//! get independent cache entries even when the variable name is the
+//! same but has a different type in each method.  The cache lives for
+//! a single `collect_unknown_member_diagnostics` call and is not
+//! shared across files or invocations.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -80,13 +81,25 @@ pub(crate) const SCALAR_MEMBER_ACCESS_CODE: &str = "scalar_member_access";
 ///
 /// Two member accesses share the same scope when they are inside the
 /// same class body (identified by class name and byte offset of the
-/// opening brace).  Top-level code outside any class uses a sentinel.
+/// opening brace) **and** the same function/method/closure body
+/// (identified by its start offset).  This prevents two methods in
+/// the same class from sharing a cache entry when a same-named
+/// variable has a different type in each method.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum ScopeKey {
-    /// Inside a class at the given byte offset.
-    Class { name: String, start_offset: u32 },
-    /// Top-level code outside any class.
-    TopLevel,
+    /// Inside a class at the given byte offset, within a specific
+    /// function/method/closure scope.  `fn_scope_start` is the byte
+    /// offset of the enclosing function body (from
+    /// [`SymbolMap::find_enclosing_scope`]), or `0` for class-level
+    /// code outside any method.
+    Class {
+        name: String,
+        start_offset: u32,
+        fn_scope_start: u32,
+    },
+    /// Top-level code outside any class, within a specific
+    /// function scope (`0` when truly top-level).
+    TopLevel { fn_scope_start: u32 },
 }
 
 /// Cache key combining the subject text, access kind, and scope.
@@ -123,14 +136,16 @@ enum SubjectOutcome {
 /// Per-pass cache mapping subject keys to their resolution outcomes.
 type SubjectCache = HashMap<SubjectCacheKey, SubjectOutcome>;
 
-/// Build a [`ScopeKey`] from the innermost enclosing class (if any).
-fn scope_key_for(current_class: Option<&ClassInfo>) -> ScopeKey {
+/// Build a [`ScopeKey`] from the innermost enclosing class (if any)
+/// and the enclosing function/method/closure scope start offset.
+fn scope_key_for(current_class: Option<&ClassInfo>, fn_scope_start: u32) -> ScopeKey {
     match current_class {
         Some(cc) => ScopeKey::Class {
             name: cc.name.clone(),
             start_offset: cc.start_offset,
+            fn_scope_start,
         },
-        None => ScopeKey::TopLevel,
+        None => ScopeKey::TopLevel { fn_scope_start },
     }
 }
 
@@ -240,6 +255,12 @@ impl Backend {
         // once per unique chain expression.
         let _subj_guard = crate::completion::resolver::with_diagnostic_subject_cache();
 
+        // Provide scope boundaries so the diagnostic subject cache can
+        // distinguish variables in different methods of the same class.
+        // In production this is already set by the outer caller; for
+        // standalone calls (tests, benchmarks) set it here.
+        crate::completion::resolver::set_diagnostic_subject_cache_scopes(symbol_map.scopes.clone());
+
         // ── Subject resolution cache for this diagnostic pass ───────────
         let mut subject_cache: SubjectCache = HashMap::new();
 
@@ -275,12 +296,13 @@ impl Backend {
             };
 
             let current_class = find_innermost_enclosing_class(&local_classes, span.start);
+            let fn_scope_start = symbol_map.find_enclosing_scope(span.start);
 
             // ── Look up or populate the subject cache ───────────────────
             let cache_key = SubjectCacheKey {
                 subject_text: subject_text.clone(),
                 access_kind,
-                scope: scope_key_for(current_class),
+                scope: scope_key_for(current_class, fn_scope_start),
             };
 
             let outcome = subject_cache
@@ -2876,6 +2898,107 @@ class Test {
         assert!(
             diags.is_empty(),
             "expected no false positive on conditional $this return chain, got: {diags:?}"
+        );
+    }
+
+    // ── Cross-method cache isolation (B1) ───────────────────────────
+
+    #[test]
+    fn no_false_positive_when_same_var_has_different_type_in_different_methods() {
+        // Regression test for B1: the subject resolution cache was scoped
+        // to the enclosing class, not the enclosing method.  Two methods
+        // in the same class that both use `$order->` would share a cache
+        // entry even when `$order` has a completely different type in each
+        // method.  The first resolution wins and subsequent methods get
+        // the wrong type, producing false-positive "unknown member"
+        // diagnostics.
+        let php = r#"<?php
+class OrderA {
+    public function propOnA(): void {}
+}
+class OrderB {
+    public function propOnB(): void {}
+}
+class Service {
+    public function handleA(OrderA $order): void {
+        $order->propOnA();
+    }
+    public function handleB(OrderB $order): void {
+        $order->propOnB();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no false positives when same-named variable has different types \
+             in different methods, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_false_positive_same_var_different_type_top_level_functions() {
+        // Same bug as the class-method variant, but with top-level
+        // functions instead of methods.
+        let php = r#"<?php
+class Alpha {
+    public function alphaMethod(): void {}
+}
+class Beta {
+    public function betaMethod(): void {}
+}
+function first(Alpha $x): void {
+    $x->alphaMethod();
+}
+function second(Beta $x): void {
+    $x->betaMethod();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no false positives for same-named variable in different \
+             top-level functions, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn flags_unknown_member_despite_valid_in_other_method() {
+        // The flip side of B1: make sure that a member that IS valid in
+        // one method is still flagged as unknown in another method where
+        // the variable has a different type that lacks the member.
+        let php = r#"<?php
+class HasFoo {
+    public function foo(): void {}
+}
+class NoFoo {
+    public function bar(): void {}
+}
+class Service {
+    public function a(HasFoo $x): void {
+        $x->foo();
+    }
+    public function b(NoFoo $x): void {
+        $x->foo();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("foo") && d.message.contains("NoFoo")),
+            "expected diagnostic for foo() on NoFoo in method b(), got: {diags:?}"
+        );
+        // Make sure it's exactly one diagnostic (the one in method b).
+        let foo_diags: Vec<_> = diags.iter().filter(|d| d.message.contains("foo")).collect();
+        assert_eq!(
+            foo_diags.len(),
+            1,
+            "expected exactly one 'foo' diagnostic (in method b), got: {foo_diags:?}"
         );
     }
 }

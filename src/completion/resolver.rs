@@ -155,21 +155,24 @@ impl<'a> VarResolutionCtx<'a> {
 /// (unknown_member, argument_count) share results instead of
 /// re-resolving the same subjects independently.
 ///
-/// The cache key is `(subject_text, access_kind)`.  Scope-sensitive
-/// keys (like which class $this refers to) are implicit in the
-/// subject_text: `$this` is only used inside a class body, and
-/// multiple classes in one file produce distinct `cursor_offset`
-/// values that yield different `current_class` lookups before
-/// calling `resolve_target_classes`.
+/// The cache key is `(subject_text, access_kind, scope_start)` where
+/// `scope_start` is the byte offset of the innermost enclosing
+/// function/method/closure body.  This ensures that two methods in
+/// the same class that both use `$order->` get independent cache
+/// entries when `$order` has a different type in each method.
 ///
-/// NOTE: We deliberately do NOT include `cursor_offset` in the key.
-/// The point of this cache is cross-collector reuse, and the same
-/// subject at different call sites within the same scope resolves
-/// identically.
-type DiagSubjectCache = HashMap<(String, AccessKind), Vec<Arc<ClassInfo>>>;
+/// Scope boundaries are stored alongside the cache and set by
+/// [`set_diagnostic_subject_cache_scopes`].
+type DiagSubjectCache = HashMap<(String, AccessKind, u32), Vec<Arc<ClassInfo>>>;
+
+/// Scope boundaries `(start_offset, end_offset)` for the current file,
+/// stored alongside the diagnostic subject cache so that
+/// [`resolve_target_classes`] can compute the enclosing scope from the
+/// `cursor_offset` without needing a reference to the [`SymbolMap`].
+type DiagSubjectCacheState = (DiagSubjectCache, Vec<(u32, u32)>);
 
 thread_local! {
-    static DIAG_SUBJECT_CACHE: RefCell<Option<DiagSubjectCache>> = const { RefCell::new(None) };
+    static DIAG_SUBJECT_CACHE: RefCell<Option<DiagSubjectCacheState>> = const { RefCell::new(None) };
 }
 
 /// Guard that owns the diagnostic subject cache lifetime.
@@ -192,15 +195,59 @@ impl Drop for DiagSubjectCacheGuard {
 ///
 /// While the returned guard is alive, `resolve_target_classes` will
 /// check and populate the cache.  Nested calls return a no-op guard.
+///
+/// After calling this, use [`set_diagnostic_subject_cache_scopes`] to
+/// provide the scope boundaries for the file being diagnosed so that
+/// the cache can distinguish variables in different methods.
 pub(crate) fn with_diagnostic_subject_cache() -> DiagSubjectCacheGuard {
     let already_active = DIAG_SUBJECT_CACHE.with(|cell| cell.borrow().is_some());
     if already_active {
         return DiagSubjectCacheGuard { owns_cache: false };
     }
     DIAG_SUBJECT_CACHE.with(|cell| {
-        *cell.borrow_mut() = Some(HashMap::new());
+        *cell.borrow_mut() = Some((HashMap::new(), Vec::new()));
     });
     DiagSubjectCacheGuard { owns_cache: true }
+}
+
+/// Provide scope boundaries for the active diagnostic subject cache.
+///
+/// Must be called while a [`DiagSubjectCacheGuard`] is alive.  The
+/// scopes are `(start_offset, end_offset)` pairs for every
+/// function, method, closure, and arrow function body in the file.
+/// They are used to compute the enclosing scope for each
+/// `cursor_offset`, ensuring that same-named variables in different
+/// methods resolve independently.
+pub(crate) fn set_diagnostic_subject_cache_scopes(scopes: Vec<(u32, u32)>) {
+    DIAG_SUBJECT_CACHE.with(|cell| {
+        let mut borrow = cell.borrow_mut();
+        if let Some((_map, stored_scopes)) = borrow.as_mut() {
+            *stored_scopes = scopes;
+        }
+    });
+}
+
+/// Find the enclosing scope start offset for a given cursor position
+/// using the scope boundaries stored in the diagnostic subject cache.
+///
+/// Returns `0` when no scope contains the offset (top-level code) or
+/// when the cache is not active.
+fn diag_cache_enclosing_scope(cursor_offset: u32) -> u32 {
+    DIAG_SUBJECT_CACHE.with(|cell| {
+        let borrow = cell.borrow();
+        match borrow.as_ref() {
+            Some((_map, scopes)) => {
+                let mut best: u32 = 0;
+                for &(start, end) in scopes {
+                    if start <= cursor_offset && cursor_offset <= end && start > best {
+                        best = start;
+                    }
+                }
+                best
+            }
+            None => 0,
+        }
+    })
 }
 
 /// Resolve a completion subject to all candidate class types.
@@ -213,19 +260,23 @@ pub(crate) fn with_diagnostic_subject_cache() -> DiagSubjectCacheGuard {
 /// dispatches via `match` for exhaustive, type-safe routing.
 ///
 /// When a [`DiagSubjectCacheGuard`] is active on the current thread,
-/// results are cached by `(subject_text, access_kind)` so that
-/// multiple diagnostic collectors sharing the same file avoid
-/// redundant resolution work.
+/// results are cached by `(subject_text, access_kind, scope_start)`
+/// so that multiple diagnostic collectors sharing the same file avoid
+/// redundant resolution work while keeping different method scopes
+/// independent.
 pub(crate) fn resolve_target_classes(
     subject: &str,
     access_kind: AccessKind,
     ctx: &ResolutionCtx<'_>,
 ) -> Vec<Arc<ClassInfo>> {
     // ── Fast path: check the thread-local diagnostic cache ──────
-    let cache_key = (subject.to_string(), access_kind);
+    let scope_start = diag_cache_enclosing_scope(ctx.cursor_offset);
+    let cache_key = (subject.to_string(), access_kind, scope_start);
     let cached = DIAG_SUBJECT_CACHE.with(|cell| {
         let borrow = cell.borrow();
-        borrow.as_ref().and_then(|map| map.get(&cache_key).cloned())
+        borrow
+            .as_ref()
+            .and_then(|(map, _)| map.get(&cache_key).cloned())
     });
     if let Some(result) = cached {
         return result;
@@ -237,7 +288,7 @@ pub(crate) fn resolve_target_classes(
     // ── Populate the cache if active ────────────────────────────
     DIAG_SUBJECT_CACHE.with(|cell| {
         let mut borrow = cell.borrow_mut();
-        if let Some(map) = borrow.as_mut() {
+        if let Some((map, _)) = borrow.as_mut() {
             map.insert(cache_key, result.clone());
         }
     });

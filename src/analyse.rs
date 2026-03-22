@@ -226,6 +226,16 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         let _subj_guard =
                             crate::completion::resolver::with_diagnostic_subject_cache();
 
+                        // Provide scope boundaries so the diagnostic subject
+                        // cache can distinguish variables in different methods
+                        // of the same class (prevents cross-method cache
+                        // pollution).
+                        if let Some(sm) = backend.symbol_maps.read().get(uri.as_str()) {
+                            crate::completion::resolver::set_diagnostic_subject_cache_scopes(
+                                sm.scopes.clone(),
+                            );
+                        }
+
                         let mut raw = Vec::new();
                         let file_start = std::time::Instant::now();
 

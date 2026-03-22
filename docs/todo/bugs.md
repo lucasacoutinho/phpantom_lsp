@@ -15,49 +15,6 @@ within the same impact tier.
 
 ---
 
-#### B1. Diagnostic subject cache scoped to class, not method
-
-| | |
-|---|---|
-| **Impact** | Critical |
-| **Effort** | Medium |
-
-The `SubjectCacheKey` in `unknown_members.rs` uses `(subject_text,
-access_kind, enclosing_class)` as the cache key. Two methods in the
-same class that both use `$order->` share the same cache entry, even
-when `$order` has a completely different type in each method. The first
-resolution wins and all subsequent accesses in other methods get the
-wrong type.
-
-This accounts for roughly 68% of false-positive `unknown_member`
-diagnostics in heavily-typed codebases (confirmed across a ~2 500 file
-Laravel project). The same bug affects `argument_count` diagnostics
-via the shared `DIAG_SUBJECT_CACHE`.
-
-The underlying `resolve_target_classes` already receives a
-`cursor_offset` that provides method-level scoping, but the cache sits
-in front of it and short-circuits with the stale result.
-
-**Reproduction:** any class with two methods that have a same-named
-parameter of different types.
-
-```php
-class Service {
-    public function handleA(OrderA $order): void {
-        $order->propOnA(); // ← reported as missing on OrderB
-    }
-    public function handleB(OrderB $order): void {
-        $order->propOnB(); // resolves fine (cached first)
-    }
-}
-```
-
-**Fix direction:** include the enclosing method (or at minimum the
-`cursor_offset` range of the enclosing function body) in the cache key
-so that each method scope gets its own resolution.
-
----
-
 #### B2. Trait `$this` member access produces false positives
 
 | | |

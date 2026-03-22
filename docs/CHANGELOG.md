@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **False-positive diagnostics for same-named variables in different methods.** When two methods in the same class both used a variable like `$order`, the diagnostic cache resolved it once and reused that type for every other method in the class. The second method saw the wrong type and flagged valid member accesses as unknown. Both the per-file subject cache and the cross-collector resolution cache are now scoped to the enclosing function/method/closure body, so each method resolves variables independently.
 - **CLI analyze performance (pathological files).** Single-file analysis of Eloquent-heavy services dropped from ~6 min to ~63 s (5.8× faster). The shared package (~2 500 files) dropped from 14 m 28 s to 1 m 25 s (10× faster, now ~30 % faster than PHPStan on the same machine). Key changes:
   - *Negative class cache.* `find_or_load_class` now caches "not found" results so repeated references to unknown types skip the four-phase lookup (fqn_index → classmap → PSR-4 → stubs). Invalidated when new classes are discovered.
   - *`SharedVec<T>` cheap-clone wrapper.* `ClassInfo.methods`, `.properties`, and `.constants` are now `SharedVec<T>` (an `Arc<Vec<T>>` newtype). Cloning a `ClassInfo` bumps three refcounts instead of deep-copying hundreds of method/property/constant structs. Copy-on-write mutation via `Arc::make_mut` preserves correctness.
