@@ -180,8 +180,6 @@ unlikely to move the needle for most users.
 | L9  | Higher-order collection proxies                                                                                                                              | Low-Medium | Medium-High |
 | L10 | `View::withX()` / `RedirectResponse::withX()` dynamic methods                                                                                                | Low        | Low         |
 | L11 | `$appends` array                                                                                                                                             | Low        | Low         |
-| L12 | [`auth()` helper return type](todo/laravel.md#l12-auth-helper-return-type)                                                                                   | Low-Medium | Low         |
-| L13 | [`app()->make()` container return type](todo/laravel.md#l13-appmake-container-return-type)                                                                   | Low        | Medium      |
 |     | **[External Stubs](todo/external-stubs.md)**                                                                                                                 |            |             |
 | E2  | Project-level stubs as type resolution source                                                                                                                | Medium     | Medium      |
 | E3  | IDE-provided and `.phpantom.toml` stub paths                                                                                                                 | Low-Medium | Low         |
