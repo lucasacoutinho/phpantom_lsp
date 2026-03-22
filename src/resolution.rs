@@ -235,18 +235,54 @@ impl Backend {
         uri: &str,
         php_version: Option<PhpVersion>,
     ) -> Option<Vec<Arc<ClassInfo>>> {
-        let mut classes = Self::parse_php_versioned(content, php_version);
         let file_use_map = self.parse_use_statements(content);
         let file_namespace = self.parse_namespace(content);
-        Self::resolve_parent_class_names(&mut classes, &file_use_map, &file_namespace);
+
+        // Parse classes with per-class namespace tracking so that
+        // multi-namespace files (e.g. PDO.php with both `namespace { }`
+        // and `namespace Pdo { }`) resolve parent names correctly.
+        let classes_with_ns = Self::parse_php_versioned_with_namespaces(content, php_version);
+
+        // Group classes by their enclosing namespace and resolve parent
+        // names once per group, mirroring the logic in `update_ast_inner`.
+        let mut classes: Vec<ClassInfo> = Vec::with_capacity(classes_with_ns.len());
+        let mut ns_groups: HashMap<Option<String>, Vec<usize>> = HashMap::new();
+        for (i, (_cls, ns)) in classes_with_ns.iter().enumerate() {
+            ns_groups.entry(ns.clone()).or_default().push(i);
+        }
+
+        // Flatten into a single Vec, preserving original order.
+        for (cls, _) in &classes_with_ns {
+            classes.push(cls.clone());
+        }
+
+        if ns_groups.len() <= 1 {
+            // Single namespace (common case): resolve with file namespace.
+            Self::resolve_parent_class_names(&mut classes, &file_use_map, &file_namespace);
+        } else {
+            // Multi-namespace file: resolve each group with its own
+            // namespace context so that classes in `namespace { }` are
+            // not polluted by a sibling `namespace Pdo { }` block.
+            for (group_ns, indices) in &ns_groups {
+                let mut group: Vec<ClassInfo> =
+                    indices.iter().map(|&i| classes[i].clone()).collect();
+                Self::resolve_parent_class_names(&mut group, &file_use_map, group_ns);
+                for (j, &idx) in indices.iter().enumerate() {
+                    classes[idx] = group[j].clone();
+                }
+            }
+        }
 
         // Set the per-class file_namespace so that classes loaded via
         // PSR-4 / classmap carry their namespace.  This mirrors the
         // same assignment done in `update_ast_inner` for files opened
         // through `did_open` / `did_change`.
-        for cls in &mut classes {
+        for (i, cls) in classes.iter_mut().enumerate() {
             if cls.file_namespace.is_none() {
-                cls.file_namespace = file_namespace.clone();
+                cls.file_namespace = classes_with_ns[i]
+                    .1
+                    .clone()
+                    .or_else(|| file_namespace.clone());
             }
         }
 

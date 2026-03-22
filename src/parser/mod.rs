@@ -969,6 +969,23 @@ impl Backend {
     /// `#[PhpStormStubsElementAvailable]` whose version range excludes
     /// the target version are filtered out during extraction.
     pub fn parse_php_versioned(content: &str, php_version: Option<PhpVersion>) -> Vec<ClassInfo> {
+        Self::parse_php_versioned_with_namespaces(content, php_version)
+            .into_iter()
+            .map(|(cls, _ns)| cls)
+            .collect()
+    }
+
+    /// Like [`parse_php_versioned`] but returns each class together with
+    /// the namespace block it was declared in.
+    ///
+    /// This is needed by [`parse_and_cache_content_versioned`](crate::resolution)
+    /// so that multi-namespace stub files (e.g. PDO.php with both
+    /// `namespace { }` and `namespace Pdo { }`) resolve parent class
+    /// names against the correct namespace context.
+    pub fn parse_php_versioned_with_namespaces(
+        content: &str,
+        php_version: Option<PhpVersion>,
+    ) -> Vec<(ClassInfo, Option<String>)> {
         with_parsed_program(content, "parse_php", |program, content| {
             let mut use_map = HashMap::new();
             Self::extract_use_statements_from_statements(program.statements.iter(), &mut use_map);
@@ -982,13 +999,46 @@ impl Backend {
                 namespace,
             };
 
-            let mut classes = Vec::new();
-            Self::extract_classes_from_statements(
-                program.statements.iter(),
-                &mut classes,
-                Some(&doc_ctx),
-            );
-            classes
+            let mut result: Vec<(ClassInfo, Option<String>)> = Vec::new();
+
+            for statement in program.statements.iter() {
+                match statement {
+                    Statement::Namespace(ns) => {
+                        let block_ns: Option<String> = ns
+                            .name
+                            .as_ref()
+                            .map(|ident| ident.value().to_string())
+                            .filter(|n| !n.is_empty());
+
+                        let mut block_classes = Vec::new();
+                        Self::extract_classes_from_statements(
+                            ns.statements().iter(),
+                            &mut block_classes,
+                            Some(&doc_ctx),
+                        );
+                        for cls in block_classes {
+                            result.push((cls, block_ns.clone()));
+                        }
+                    }
+                    Statement::Class(_)
+                    | Statement::Interface(_)
+                    | Statement::Trait(_)
+                    | Statement::Enum(_) => {
+                        let mut top_classes = Vec::new();
+                        Self::extract_classes_from_statements(
+                            std::iter::once(statement),
+                            &mut top_classes,
+                            Some(&doc_ctx),
+                        );
+                        for cls in top_classes {
+                            result.push((cls, None));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            result
         })
     }
 

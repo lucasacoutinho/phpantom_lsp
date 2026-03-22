@@ -114,25 +114,3 @@ this map before flagging. The map only needs entries for functions
 where the stub's single signature cannot represent the valid call
 forms.
 
----
-
-#### B8. `getCode`/`getMessage` not found through deep inheritance chains
-
-| | |
-|---|---|
-| **Impact** | Low |
-| **Effort** | Low |
-
-Methods inherited from `Throwable` (like `getCode()` and
-`getMessage()`) are not found on `QueryException`, which inherits
-through `QueryException → PDOException → RuntimeException → Exception`.
-The chain involves both vendor classes and stub classes.
-
-**Observed:** 3 diagnostics in `shared` for `getCode()` and
-`getMessage()` on `Illuminate\Database\QueryException`.
-
-**Fix:** Investigate whether the inheritance chain breaks at the
-vendor-to-stub boundary (PDOException is in stubs, RuntimeException
-is in stubs). The chain resolution may stop walking when it crosses
-from a vendor class to a stub class, or the depth limit may be
-insufficient.

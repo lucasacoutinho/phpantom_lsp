@@ -1786,3 +1786,91 @@ async fn test_interface_virtual_members_visible_through_parent_chain() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Deep inheritance chain through stubs (B8) ──────────────────────────────
+
+/// Methods inherited from `Exception` (like `getCode()`, `getMessage()`) should
+/// be found on a class that extends through a multi-level chain where
+/// intermediate classes live in stubs (e.g. PDOException → RuntimeException →
+/// Exception).
+#[tokio::test]
+async fn test_completion_deep_inheritance_through_stubs() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///deep_chain.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class QueryException extends \\PDOException {\n",
+        "    public function getSql(): string { return ''; }\n",
+        "}\n",
+        "class DeepChainTest {\n",
+        "    public function handle(QueryException $e): void {\n",
+        "        $e->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 6,
+                character: 12,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for QueryException"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            // Own method
+            assert!(
+                method_names.contains(&"getSql"),
+                "Should include own method 'getSql', got: {:?}",
+                method_names
+            );
+
+            // Methods from Exception (3 levels up: QueryException → PDOException → RuntimeException → Exception)
+            assert!(
+                method_names.contains(&"getMessage"),
+                "Should include 'getMessage' inherited from Exception through deep chain, got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"getCode"),
+                "Should include 'getCode' inherited from Exception through deep chain, got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"getTrace"),
+                "Should include 'getTrace' inherited from Exception through deep chain, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

@@ -104,7 +104,6 @@ unlikely to move the needle for most users.
 | B3  | [Trait static/self suppression not applied inside closures](todo/bugs.md#b3-trait-staticself-suppression-not-applied-inside-closures)                         | Medium      | Low         |
 | B4  | [Variable reassignment loses type when parameter name is reused](todo/bugs.md#b4-variable-reassignment-loses-type-when-parameter-name-is-reused)             | Medium      | Medium      |
 | B7  | [Overloaded built-in function signatures in stubs](todo/bugs.md#b7-overloaded-built-in-function-signatures-in-stubs)                                         | Low         | Low         |
-| B8  | [`getCode`/`getMessage` not found through deep inheritance chains](todo/bugs.md#b8-getcodemessage-not-found-through-deep-inheritance-chains)                 | Low         | Low         |
 |     | **[Completion](todo/completion.md)**                                                                                                                         |             |             |
 | C1  | Array functions needing new code paths                                                                                                                       | Medium     | High        |
 | C10 | [Lazy documentation via `completionItem/resolve`](todo/completion.md#c10-lazy-documentation-via-completionitemresolve)                                        | Medium     | Medium      |
