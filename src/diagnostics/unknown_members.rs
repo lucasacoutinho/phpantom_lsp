@@ -227,6 +227,19 @@ impl Backend {
         // AST instead of re-parsing the entire file from scratch.
         let _parse_guard = with_parse_cache(content);
 
+        // ── Inner resolution cache for chain bases ──────────────────────
+        // When resolving chain subjects like `$class->methods()` and
+        // `$class->properties()`, each one independently calls
+        // `resolve_target_classes("$class", …)` to resolve the base.
+        // The DIAG_SUBJECT_CACHE deduplicates these inner lookups.
+        //
+        // In production this cache is already active (activated by
+        // `publish_diagnostics_for_file` or `analyse::run`), so the
+        // guard here is a no-op.  For standalone calls (benchmarks,
+        // tests) it ensures chain bases are resolved once rather than
+        // once per unique chain expression.
+        let _subj_guard = crate::completion::resolver::with_diagnostic_subject_cache();
+
         // ── Subject resolution cache for this diagnostic pass ───────────
         let mut subject_cache: SubjectCache = HashMap::new();
 
