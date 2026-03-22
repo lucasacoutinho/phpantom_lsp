@@ -16789,3 +16789,102 @@ async fn test_completion_nullsafe_mid_chain_assignment() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── Cross-file null-safe method call chain ─────────────────────────────────
+
+/// When a variable is assigned from a cross-file null-safe method call chain
+/// like `$x = $obj?->getItems()->last()`, the type engine should resolve
+/// through the `?->` call across file boundaries.
+#[tokio::test]
+async fn test_completion_nullsafe_method_chain_cross_file() {
+    let composer = r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#;
+    let (backend, _dir) = create_psr4_workspace(
+        composer,
+        &[
+            (
+                "src/Subscription.php",
+                "<?php\nnamespace App;\nclass Subscription {\n    public function price(): float { return 0.0; }\n    public function isActive(): bool { return true; }\n}\n",
+            ),
+            (
+                "src/SubscriptionCollection.php",
+                "<?php\nnamespace App;\nclass SubscriptionCollection {\n    public function lastPeriod(): ?Subscription { return null; }\n}\n",
+            ),
+            (
+                "src/Agreement.php",
+                "<?php\nnamespace App;\nclass Agreement {\n    public function getPeriods(): SubscriptionCollection { return new SubscriptionCollection(); }\n}\n",
+            ),
+            (
+                "src/Customer.php",
+                "<?php\nnamespace App;\nclass Customer {\n    public function getLatestAgreement(): ?Agreement { return null; }\n}\n",
+            ),
+        ],
+    );
+
+    let uri = "file:///src/ProfileBuilder.php";
+    let content = concat!(
+        "<?php\n",
+        "namespace App;\n",
+        "class ProfileBuilder {\n",
+        "    public function build(Customer $customer): void {\n",
+        "        $agreement = $customer->getLatestAgreement();\n",
+        "        $lastPeriod = $agreement?->getPeriods()->lastPeriod();\n",
+        "        $lastPeriod->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(tower_lsp::lsp_types::DidOpenTextDocumentParams {
+            text_document: tower_lsp::lsp_types::TextDocumentItem {
+                uri: tower_lsp::lsp_types::Url::parse(uri).unwrap(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: content.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier {
+                    uri: tower_lsp::lsp_types::Url::parse(uri).unwrap(),
+                },
+                position: Position {
+                    line: 6,
+                    character: 21,
+                },
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_some(),
+        "Completion should return results for $lastPeriod-> after cross-file null-safe chain"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+            assert!(
+                names.contains(&"price"),
+                "Should include 'price' from Subscription, got: {:?}",
+                names
+            );
+            assert!(
+                names.contains(&"isActive"),
+                "Should include 'isActive' from Subscription, got: {:?}",
+                names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

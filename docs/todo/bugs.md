@@ -15,31 +15,39 @@ within the same impact tier.
 
 ---
 
-#### B1. Nullable type prefix not stripped during diagnostic class lookup
+#### B1. Nullable type not resolved to its base class
 
 | | |
 |---|---|
 | **Impact** | Medium-High |
 | **Effort** | Low |
 
-When a variable's resolved type is `?ClassName` (nullable shorthand),
-the diagnostic pipeline uses the full string including the `?` prefix
-as the class lookup key. The lookup fails, producing a spurious
-"subject type '?Foo' could not be resolved" warning even though `Foo`
-is a valid, loadable class.
+When a variable's type is `?ClassName`, the type engine fails to
+resolve it to `ClassName`. The `?` prefix is not stripped before class
+lookup, so the engine treats `?Foo` as an unknown type even though
+`Foo` is a valid, loadable class. This breaks completion, hover, and
+go-to-definition for any variable whose type includes the nullable
+shorthand.
 
-**Observed:** 3 diagnostics in `shared` for
+The completion pipeline's `type_hint_to_classes` already strips `?`
+(line 90 of `completion/types/resolution.rs`), but other entry points
+into the type engine (e.g. `resolve_variable_assignment_raw_type`,
+`resolve_variable_type_string`) can return `?ClassName` strings that
+are never cleaned before class lookup.
+
+**Observed:** 3 cases in `shared` for
 `?Luxplus\Core\Database\Model\Subscriptions\Subscription`. The class
-exists and loads fine without the `?` prefix.
+exists and loads fine as `Subscription`.
 
-**Fix:** Strip the leading `?` (and/or `null|` / `|null` union
-components) before class lookup in the diagnostic subject resolution
-path. The completion pipeline already handles this correctly via
-`clean_type()`, so the gap is specific to the diagnostic code path.
+**Fix:** Ensure all paths that convert a raw type string to a
+`ClassInfo` strip the nullable prefix before class lookup. This may
+mean normalising the return value of the raw type resolvers, or
+ensuring every consumer calls `strip_nullable` / `clean_type` before
+passing type strings to `class_loader`.
 
 ---
 
-#### B2. Generic type parameters not stripped during diagnostic class lookup
+#### B2. Generic type parameters prevent class resolution
 
 | | |
 |---|---|
@@ -47,47 +55,64 @@ path. The completion pipeline already handles this correctly via
 | **Effort** | Low |
 
 When a resolved type string includes generic parameters (e.g.
-`PaymentOptionLocaleCollection<PaymentOptionLocale>`), the diagnostic
-pipeline uses the full parameterised string as the class lookup key.
-The lookup fails because no class is registered under the name that
-includes `<...>`.
+`PaymentOptionLocaleCollection<PaymentOptionLocale>`), the type engine
+uses the full parameterised string as the class lookup key. The lookup
+fails because no class is registered under the name that includes
+`<...>`. This breaks completion and hover for any variable whose
+resolved type carries generic arguments.
 
-**Observed:** 3 diagnostics in `shared` for
+**Observed:** 3 cases in `shared` for
 `PaymentOptionLocaleCollection<Luxplus\Core\Database\Model\Payments\PaymentOptionLocale>`.
 Methods like `getTotalWeight()`, `isNotEmpty()`, and `first()` all
-exist on the class or its parent `Collection`.
+exist on the class or its parent `Collection`, but the type engine
+never reaches them.
 
 **Fix:** Strip everything from the first `<` onward before performing
-class lookup. `clean_type()` already does this for the completion
-pipeline; the diagnostic resolution path needs the same treatment.
+class lookup. The same raw-type-to-class conversion paths identified
+in B1 are affected. `base_class_name()` in `type_strings.rs` already
+combines `clean_type` + `strip_generics` and should be used
+consistently.
 
 ---
 
-#### B3. Trait static/self suppression not applied inside closures
+#### B3. Type engine does not resolve `$this`/`static` inside traits
 
 | | |
 |---|---|
 | **Impact** | Medium |
 | **Effort** | Low |
 
-The diagnostic pass suppresses `$this`/`self`/`static`/`parent` member
-access inside traits (since the host class provides those members). This
-works for direct method bodies but fails when the access is inside a
-closure nested within a trait method. The closure's byte offset is still
-within the trait's range, and `find_innermost_enclosing_class` returns
-the trait, but something in the suppression path doesn't fire.
+When a trait method (or a closure inside a trait method) accesses
+members via `$this`, `self`, `static`, or `parent`, the type engine
+resolves the subject to the trait itself rather than to the host class.
+Since the trait does not declare the members that the host class
+provides, the type engine reports the members as missing. This affects
+completion, hover, and go-to-definition for any trait that relies on
+host-class members.
 
-**Observed:** `SalesInfoGlobalTrait` has `static::where()` and
-`static::query()` inside `retry(3, function() { ... })`. These produce
-"Method 'where' not found on class 'SalesInfoGlobalTrait'" (2
-diagnostics). Direct trait method bodies are correctly suppressed.
+The diagnostic pass has a suppression heuristic for this case, but
+the underlying problem is in the type engine: it should resolve
+`$this`/`static`/`self` inside a trait to the using class (when known)
+or defer resolution (when the host class is not known). The
+suppression heuristic also fails when the access is inside a closure
+nested within a trait method.
 
-**Fix:** Investigate why the `subject_text == "static"` check on the
-`MemberAccess` span doesn't match when the call is inside a closure.
-The `expr_to_subject_text` function returns `"static"` for
-`Expression::Static`, so the span should have the right subject text.
-Possibly the closure introduces a scope boundary that changes how the
-span is emitted or how the enclosing class is resolved.
+**Observed:** 43 cases in `shared`. The largest cluster (41) is
+`BusinessCentralErrorHandlerTrait` where `$this->model`,
+`$this->eventType`, etc. are properties provided by the host class.
+`SalesInfoGlobalTrait` contributes 2 cases where `static::where()` and
+`static::query()` are called inside a closure within a trait method.
+
+**Fix:** When the type engine encounters `$this`/`static`/`self` inside
+a trait, it should attempt to resolve to the known host class(es). For
+the analyze pass where no specific host class is open, the engine
+should recognise that trait member accesses are inherently incomplete
+and avoid reporting members as missing. The closure nesting issue is a
+separate symptom: `find_innermost_enclosing_class` does find the trait
+at the closure's offset, but the suppression check does not fire,
+suggesting the `subject_text` on the `MemberAccess` span differs from
+the expected `"static"` / `"$this"` keywords when emitted from inside
+a closure.
 
 ---
 
@@ -136,25 +161,26 @@ matches a known class), do not prepend the file namespace.
 
 ---
 
-#### B6. Empty subject string in diagnostic messages
+#### B6. Empty subject string in type resolution
 
 | | |
 |---|---|
 | **Impact** | Low |
 | **Effort** | Low |
 
-Some diagnostics display "Cannot resolve type of ''" with an empty
-subject string. This happens when the subject extraction fails to
-produce a text representation for complex expressions but a diagnostic
-is still emitted.
+The subject extraction produces an empty string for complex expressions
+like `($a ?: $b)?->property`, meaning the type engine has no subject
+to resolve. This manifests as "Cannot resolve type of ''" in
+diagnostics, but the underlying issue is that `expr_to_subject_text`
+does not handle ternary-inside-nullable and similar compound patterns.
 
-**Observed:** 5 diagnostics in `shared` with empty subject strings,
-triggered by patterns like `($a ?: $b)?->property` (ternary inside
-nullable access) and similar compound expressions.
+**Observed:** 5 cases in `shared` with empty subject strings.
 
-**Fix:** Skip emitting the `unresolved_member_access` diagnostic when
-the extracted subject text is empty, or improve `expr_to_subject_text`
-to handle ternary-in-nullable and similar compound patterns.
+**Fix:** Extend `expr_to_subject_text` to handle parenthesised ternary
+expressions, short ternary (`?:`), and null-coalesce (`??`) as subject
+bases. When the expression is too complex to represent as a subject
+string, the type engine should skip the access rather than attempt
+resolution with an empty key.
 
 ---
 

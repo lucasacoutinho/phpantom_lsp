@@ -1105,8 +1105,7 @@ fn resolve_rhs_method_call_inner<'b>(
         _ => return vec![],
     };
     // Resolve the object expression to candidate owner classes.
-    let owner_classes: Vec<ClassInfo> = if let Expression::Variable(Variable::Direct(dv)) =
-        object
+    let owner_classes: Vec<ClassInfo> = if let Expression::Variable(Variable::Direct(dv)) = object
         && dv.name == "$this"
     {
         ctx.all_classes
@@ -1132,8 +1131,7 @@ fn resolve_rhs_method_call_inner<'b>(
         resolve_rhs_expression(object, ctx)
     };
 
-    let text_args =
-        super::raw_type_inference::extract_argument_text(argument_list, ctx.content);
+    let text_args = super::raw_type_inference::extract_argument_text(argument_list, ctx.content);
     let rctx = ctx.as_resolution_ctx();
     let var_resolver = build_var_resolver_from_ctx(ctx);
 
