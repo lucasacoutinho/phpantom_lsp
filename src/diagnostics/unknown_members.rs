@@ -21,6 +21,11 @@
 //! - The member name is `class` (the magic `::class` constant).
 //! - The subject is an enum and the member is a case name (enum cases
 //!   are accessed via `::` but stored as constants).
+//! - The subject is `$this`, `self`, `static`, or `parent` inside a
+//!   trait method.  Traits are incomplete by nature — they expect to
+//!   be mixed into classes that provide the missing members.  Flagging
+//!   accesses that only exist on host classes produces a high rate of
+//!   false positives.
 //!
 //! ## Performance: subject resolution cache
 //!
@@ -60,7 +65,7 @@ use crate::hover::variable_type::resolve_variable_type_string;
 use crate::inheritance::resolve_property_type_hint;
 use crate::subject_expr::SubjectExpr;
 use crate::symbol_map::SymbolKind;
-use crate::types::{AccessKind, ClassInfo};
+use crate::types::{AccessKind, ClassInfo, ClassLikeKind};
 use crate::virtual_members::{resolve_class_fully_cached, resolve_class_fully_maybe_cached};
 
 use super::helpers::{find_innermost_enclosing_class, make_diagnostic};
@@ -296,6 +301,22 @@ impl Backend {
             };
 
             let current_class = find_innermost_enclosing_class(&local_classes, span.start);
+
+            // ── Suppress inside traits for self-referencing subjects ────
+            // Traits are incomplete: they expect host classes to provide
+            // members accessed via $this/self/static/parent.  Flagging
+            // these produces false positives for every trait that relies
+            // on the host class's members.
+            if let Some(cc) = current_class
+                && cc.kind == ClassLikeKind::Trait
+                && matches!(
+                    subject_text.as_str(),
+                    "$this" | "self" | "static" | "parent"
+                )
+            {
+                continue;
+            }
+
             let fn_scope_start = symbol_map.find_enclosing_scope(span.start);
 
             // ── Look up or populate the subject cache ───────────────────
@@ -1130,6 +1151,132 @@ function test(): void {
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
     }
 
+    // ── Trait $this suppression (B2) ────────────────────────────────
+
+    #[test]
+    fn no_diagnostic_for_this_member_access_inside_trait() {
+        // Regression test for B2: $this-> inside a trait method should
+        // not produce false positives for members that exist on the
+        // host class but not on the trait itself.
+        let php = r#"<?php
+trait LogsErrors {
+    public function logError(): void {
+        $this->model;
+        $this->eventType;
+    }
+}
+
+class ImportJob {
+    use LogsErrors;
+    public string $model = 'Product';
+    public string $eventType = 'import';
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for $this-> inside trait, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_this_method_call_inside_trait() {
+        let php = r#"<?php
+trait Cacheable {
+    public function cache(): void {
+        $this->getCacheKey();
+    }
+}
+
+class Product {
+    use Cacheable;
+    public function getCacheKey(): string { return ''; }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for $this->method() inside trait, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_self_static_inside_trait() {
+        // self:: and static:: inside traits can reference members from
+        // the host class.
+        let php = r#"<?php
+trait HasDefaults {
+    public static function create(): void {
+        self::DEFAULT_NAME;
+        static::factory();
+    }
+}
+
+class User {
+    use HasDefaults;
+    const DEFAULT_NAME = 'admin';
+    public static function factory(): void {}
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for self::/static:: inside trait, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn trait_own_members_still_resolve_on_host_class() {
+        // When a class uses a trait, accessing the trait's own members
+        // from outside should still work (no false positive).
+        let php = r#"<?php
+trait Greetable {
+    public function greet(): string { return ''; }
+}
+class Person {
+    use Greetable;
+}
+function test(): void {
+    $p = new Person();
+    $p->greet();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for trait member on host class, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn variable_inside_trait_still_diagnosed() {
+        // Only $this/self/static/parent are suppressed inside traits.
+        // A typed variable like `$x` should still be diagnosed normally.
+        let php = r#"<?php
+class Foo {
+    public function bar(): void {}
+}
+
+trait MyTrait {
+    public function doStuff(Foo $x): void {
+        $x->nonexistent();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags
+                .iter()
+                .any(|d| d.message.contains("nonexistent") && d.message.contains("Foo")),
+            "expected diagnostic for unknown method on typed variable inside trait, got: {diags:?}"
+        );
+    }
+
     // ── PHPDoc virtual members ──────────────────────────────────────
 
     #[test]
@@ -1926,6 +2073,116 @@ class Test {
         let backend = Backend::new_test();
         let diags = collect(&backend, "file:///test.php", php);
         assert!(diags.is_empty(), "expected no diagnostics, got: {diags:?}");
+    }
+
+    // ── Inline && narrowing (B3) ────────────────────────────────────
+
+    #[test]
+    fn no_diagnostic_for_instanceof_and_chain() {
+        // Regression test for B3: instanceof checks in the LHS of &&
+        // should narrow the variable type for the RHS.
+        let php = r#"<?php
+class QueryException extends \Exception {
+    public array $errorInfo = [];
+}
+
+function test(\Throwable $e): void {
+    $e instanceof QueryException && $e->errorInfo;
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for && narrowing, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_instanceof_and_chain_in_catch() {
+        // B3 variant: variable comes from a catch block.
+        let php = r#"<?php
+class QueryException extends \Exception {
+    public array $errorInfo = [];
+}
+
+function test(): void {
+    try {
+        throw new \Exception('fail');
+    } catch (\Throwable $e) {
+        $e instanceof QueryException && $e->errorInfo;
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for && narrowing in catch, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_instanceof_and_chain_method_call() {
+        // B3 variant: method call instead of property access on RHS.
+        let php = r#"<?php
+class SpecialException extends \Exception {
+    public function getDetail(): string { return ''; }
+}
+
+function test(\Throwable $e): void {
+    $e instanceof SpecialException && $e->getDetail();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for && narrowing with method call, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_instanceof_and_chain_in_if_condition() {
+        // B3 variant: the && is the condition of an if statement.
+        let php = r#"<?php
+class QueryException extends \Exception {
+    public array $errorInfo = [];
+}
+
+function test(\Throwable $e): void {
+    if ($e instanceof QueryException && count($e->errorInfo) > 0) {
+        echo 'has errors';
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for && narrowing in if condition, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_chained_and_instanceof() {
+        // B3 variant: chained && with multiple instanceof checks.
+        let php = r#"<?php
+class DetailedException extends \Exception {
+    public string $detail = '';
+    public string $context = '';
+}
+
+function test(\Throwable $e): void {
+    $e instanceof DetailedException && $e->detail !== '' && $e->context !== '';
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for chained && narrowing, got: {diags:?}"
+        );
     }
 
     // ── Property chains ─────────────────────────────────────────────
