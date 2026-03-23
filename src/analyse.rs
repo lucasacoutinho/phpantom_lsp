@@ -238,65 +238,87 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         }
 
                         let mut raw = Vec::new();
-                        let file_start = std::time::Instant::now();
 
-                        macro_rules! timed_collect {
-                            ($name:expr, $call:expr) => {{
-                                let t0 = std::time::Instant::now();
-                                $call;
-                                (t0.elapsed(), $name)
-                            }};
+                        // In debug builds, time each collector and warn
+                        // about slow files.  In release builds, just call
+                        // the collectors directly.
+                        #[cfg(debug_assertions)]
+                        {
+                            macro_rules! timed_collect {
+                                ($name:expr, $call:expr) => {{
+                                    let t0 = std::time::Instant::now();
+                                    $call;
+                                    (t0.elapsed(), $name)
+                                }};
+                            }
+
+                            let file_start = std::time::Instant::now();
+                            let timings = [
+                                timed_collect!(
+                                    "fast",
+                                    backend.collect_fast_diagnostics(uri, content, &mut raw)
+                                ),
+                                timed_collect!(
+                                    "unknown_class",
+                                    backend
+                                        .collect_unknown_class_diagnostics(uri, content, &mut raw)
+                                ),
+                                timed_collect!(
+                                    "unknown_member",
+                                    backend
+                                        .collect_unknown_member_diagnostics(uri, content, &mut raw)
+                                ),
+                                timed_collect!(
+                                    "unknown_function",
+                                    backend.collect_unknown_function_diagnostics(
+                                        uri, content, &mut raw,
+                                    )
+                                ),
+                                timed_collect!(
+                                    "argument_count",
+                                    backend
+                                        .collect_argument_count_diagnostics(uri, content, &mut raw)
+                                ),
+                                timed_collect!(
+                                    "implementation",
+                                    backend.collect_implementation_error_diagnostics(
+                                        uri, content, &mut raw,
+                                    )
+                                ),
+                                timed_collect!(
+                                    "deprecated",
+                                    backend.collect_deprecated_diagnostics(uri, content, &mut raw)
+                                ),
+                            ];
+
+                            let file_elapsed = file_start.elapsed();
+                            if file_elapsed.as_secs() >= 5 {
+                                let display =
+                                    files[i].strip_prefix(root).unwrap_or(&files[i]).display();
+                                let breakdown: Vec<String> = timings
+                                    .iter()
+                                    .filter(|(d, _)| d.as_millis() > 0)
+                                    .map(|(d, name)| format!("{}={:.1}s", name, d.as_secs_f64()))
+                                    .collect();
+                                eprintln!(
+                                    "\n  \u{26a0} slow file ({:.1}s): {}\n    {}",
+                                    file_elapsed.as_secs_f64(),
+                                    display,
+                                    breakdown.join(", "),
+                                );
+                            }
                         }
 
-                        let timings = [
-                            timed_collect!(
-                                "fast",
-                                backend.collect_fast_diagnostics(uri, content, &mut raw)
-                            ),
-                            timed_collect!(
-                                "unknown_class",
-                                backend.collect_unknown_class_diagnostics(uri, content, &mut raw)
-                            ),
-                            timed_collect!(
-                                "unknown_member",
-                                backend.collect_unknown_member_diagnostics(uri, content, &mut raw)
-                            ),
-                            timed_collect!(
-                                "unknown_function",
-                                backend
-                                    .collect_unknown_function_diagnostics(uri, content, &mut raw)
-                            ),
-                            timed_collect!(
-                                "argument_count",
-                                backend.collect_argument_count_diagnostics(uri, content, &mut raw)
-                            ),
-                            timed_collect!(
-                                "implementation",
-                                backend.collect_implementation_error_diagnostics(
-                                    uri, content, &mut raw
-                                )
-                            ),
-                            timed_collect!(
-                                "deprecated",
-                                backend.collect_deprecated_diagnostics(uri, content, &mut raw)
-                            ),
-                        ];
-
-                        let file_elapsed = file_start.elapsed();
-                        if file_elapsed.as_secs() >= 5 {
-                            let display =
-                                files[i].strip_prefix(root).unwrap_or(&files[i]).display();
-                            let breakdown: Vec<String> = timings
-                                .iter()
-                                .filter(|(d, _)| d.as_millis() > 0)
-                                .map(|(d, name)| format!("{}={:.1}s", name, d.as_secs_f64()))
-                                .collect();
-                            eprintln!(
-                                "\n  ⚠ slow file ({:.1}s): {}\n    {}",
-                                file_elapsed.as_secs_f64(),
-                                display,
-                                breakdown.join(", "),
-                            );
+                        #[cfg(not(debug_assertions))]
+                        {
+                            backend.collect_fast_diagnostics(uri, content, &mut raw);
+                            backend.collect_unknown_class_diagnostics(uri, content, &mut raw);
+                            backend.collect_unknown_member_diagnostics(uri, content, &mut raw);
+                            backend.collect_unknown_function_diagnostics(uri, content, &mut raw);
+                            backend.collect_argument_count_diagnostics(uri, content, &mut raw);
+                            backend
+                                .collect_implementation_error_diagnostics(uri, content, &mut raw);
+                            backend.collect_deprecated_diagnostics(uri, content, &mut raw);
                         }
 
                         let mut filtered: Vec<FileDiagnostic> = raw

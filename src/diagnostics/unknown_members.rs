@@ -123,6 +123,13 @@ struct SubjectCacheKey {
     /// ensures that accesses before and after a reassignment get
     /// separate cache entries.
     var_def_offset: u32,
+    /// The span start offset for variable subjects (excluding `$this`),
+    /// or `0` for non-variable subjects.  This ensures that accesses
+    /// inside different instanceof-narrowing contexts (e.g. different
+    /// if-bodies) get independent cache entries.  Without this, the
+    /// first access caches a narrowed type and subsequent accesses in
+    /// a different narrowing context reuse the wrong result.
+    narrowing_offset: u32,
 }
 
 /// The outcome of resolving a subject for diagnostic purposes.
@@ -384,11 +391,22 @@ impl Backend {
                     0
                 };
 
+            // For variable subjects (excluding $this), include the
+            // span start offset so that accesses inside different
+            // instanceof-narrowing contexts get independent entries.
+            let narrowing_offset =
+                if subject_text.starts_with('$') && !subject_text.starts_with("$this") {
+                    span.start
+                } else {
+                    0
+                };
+
             let cache_key = SubjectCacheKey {
                 subject_text: subject_text.clone(),
                 access_kind,
                 scope: scope_key_for(current_class, fn_scope_start),
                 var_def_offset,
+                narrowing_offset,
             };
 
             let outcome = subject_cache
@@ -3698,6 +3716,93 @@ class Svc {
         assert!(
             bad_diags.is_empty(),
             "should not flag commit() or scalar null after foreach reassign, got: {bad_diags:?}"
+        );
+    }
+
+    // ── B10: Negative narrowing after early return ──────────────────
+
+    #[test]
+    fn no_false_positive_after_guard_clause_excludes_type() {
+        // After `if ($value instanceof Stringable) { return; }`, the
+        // variable should be narrowed to exclude Stringable.  Inside
+        // the subsequent `if ($value instanceof BackedEnum)` block,
+        // `$value` must resolve to BackedEnum (not Stringable).
+        let php = r#"<?php
+interface Stringable {
+    public function __toString(): string;
+}
+interface BackedEnum {
+    public readonly int|string $value;
+}
+
+class Svc {
+    public static function toString(mixed $value): string
+    {
+        if ($value instanceof Stringable) {
+            return $value->__toString();
+        }
+        if ($value instanceof BackedEnum) {
+            $value = $value->value;
+        }
+        return '';
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        // There should be no diagnostic about 'value' not found on
+        // 'Stringable'.  The guard clause return means $value cannot
+        // be Stringable in subsequent code.
+        let bad = diags
+            .iter()
+            .filter(|d| d.message.contains("value") && d.message.contains("Stringable"))
+            .collect::<Vec<_>>();
+        assert!(
+            bad.is_empty(),
+            "should not flag 'value' on Stringable after guard clause excludes it, got: {bad:?}"
+        );
+    }
+
+    #[test]
+    fn no_false_positive_sequential_instanceof_guards() {
+        // Multiple sequential guard clauses should each exclude their
+        // type from subsequent code.
+        let php = r#"<?php
+interface Alpha {
+    public function alphaMethod(): void;
+}
+interface Beta {
+    public function betaMethod(): void;
+}
+class Gamma {
+    public function gammaMethod(): void {}
+}
+
+class Svc {
+    public function test(Alpha|Beta|Gamma $x): void
+    {
+        if ($x instanceof Alpha) {
+            return;
+        }
+        if ($x instanceof Beta) {
+            return;
+        }
+        $x->gammaMethod();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        let bad = diags
+            .iter()
+            .filter(|d| {
+                d.message.contains("gammaMethod")
+                    && (d.message.contains("Alpha") || d.message.contains("Beta"))
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            bad.is_empty(),
+            "should not flag gammaMethod after two guard clauses exclude Alpha and Beta, got: {bad:?}"
         );
     }
 }

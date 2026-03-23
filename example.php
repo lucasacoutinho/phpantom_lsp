@@ -316,6 +316,18 @@ class GuardClauseDemo
         if (!$unknown instanceof Rock) return;    // single-statement guard (no braces)
         $unknown->crush();                        // narrowed to Rock
     }
+
+    /** Positive instanceof + early return on a mixed parameter. */
+    public function mixedGuard(mixed $value): void
+    {
+        if ($value instanceof Banana) {
+            return;                               // $value is Banana → exit
+        }
+        // After the guard, $value is NOT Banana.
+        if ($value instanceof Rock) {
+            $value->crush();                      // narrowed to Rock (not Banana)
+        }
+    }
 }
 
 
@@ -4936,7 +4948,19 @@ function runDemoAssertions(): void
         assert($guardSubject instanceof Rock, 'Guard: not Banana must be Rock');
     } else {
         assert($guardSubject instanceof Banana, 'Guard: else must be Banana');
-    }
+        }
+
+        // ── Guard clause: positive instanceof + early return on mixed ────
+        // After `if ($x instanceof Y) { return; }`, $x is NOT Y.
+        $mixedGuardVal = rand(0, 1) ? new Rock() : 'scalar';
+        if ($mixedGuardVal instanceof Banana) {
+            // would return in real code
+            assert(false, 'Guard: should not reach here (Banana branch)');
+        }
+        // $mixedGuardVal is NOT Banana after the guard
+        if ($mixedGuardVal instanceof Rock) {
+            assert(is_string($mixedGuardVal->crush()), 'Guard: mixed narrowed to Rock');
+        }
 
     // ── Ternary narrowing ───────────────────────────────────────────────
     $ternaryThing = pickRockOrBanana();

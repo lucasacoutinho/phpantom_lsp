@@ -167,7 +167,7 @@ impl<'a> VarResolutionCtx<'a> {
 ///
 /// Scope boundaries and variable definitions are stored alongside the
 /// cache and set by [`set_diagnostic_subject_cache_scopes`].
-type DiagSubjectCache = HashMap<(String, AccessKind, u32, u32), Vec<Arc<ClassInfo>>>;
+type DiagSubjectCache = HashMap<(String, AccessKind, u32, u32, u32), Vec<Arc<ClassInfo>>>;
 
 /// File-level data stored alongside the diagnostic subject cache so
 /// that [`resolve_target_classes`] can compute the enclosing scope and
@@ -351,11 +351,23 @@ pub(crate) fn resolve_target_classes(
     // ── Fast path: check the thread-local diagnostic cache ──────
     let scope_start = diag_cache_enclosing_scope(ctx.cursor_offset);
     let var_def_offset = diag_cache_var_def_offset(subject, ctx.cursor_offset);
+    // For variable subjects (excluding $this), include the cursor
+    // offset in the cache key so that accesses inside different
+    // instanceof-narrowing contexts (e.g. different if-bodies) get
+    // independent cache entries.  Without this, the first access
+    // caches a narrowed type and subsequent accesses in a different
+    // narrowing context reuse the wrong result.
+    let narrowing_offset = if subject.starts_with('$') && !subject.starts_with("$this") {
+        ctx.cursor_offset
+    } else {
+        0
+    };
     let cache_key = (
         subject.to_string(),
         access_kind,
         scope_start,
         var_def_offset,
+        narrowing_offset,
     );
     let cached = DIAG_SUBJECT_CACHE.with(|cell| {
         let borrow = cell.borrow();

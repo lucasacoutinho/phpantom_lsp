@@ -169,7 +169,7 @@ impl Backend {
                 out.push(Diagnostic {
                     range,
                     severity: Some(DiagnosticSeverity::HINT),
-                    code: None,
+                    code: Some(NumberOrString::String("unused_import".to_string())),
                     code_description: None,
                     source: Some("phpantom".to_string()),
                     message: format!("Unused import '{}'", fqn),
