@@ -82,10 +82,25 @@ pub(in crate::completion) fn resolve_rhs_expression<'b>(
             combined
         }
         Expression::Binary(binary) if binary.operator.is_null_coalesce() => {
-            let mut combined = Vec::new();
-            ClassInfo::extend_unique(&mut combined, resolve_rhs_expression(binary.lhs, ctx));
-            ClassInfo::extend_unique(&mut combined, resolve_rhs_expression(binary.rhs, ctx));
-            combined
+            // When the LHS is syntactically non-nullable (e.g. `new Foo()`,
+            // a literal, `clone $x`), the RHS is dead code — return only
+            // the LHS classes.  Otherwise union both sides.
+            let lhs_non_nullable = matches!(
+                binary.lhs,
+                Expression::Instantiation(_)
+                    | Expression::Literal(_)
+                    | Expression::Array(_)
+                    | Expression::LegacyArray(_)
+                    | Expression::Clone(_)
+            );
+            let lhs_classes = resolve_rhs_expression(binary.lhs, ctx);
+            if !lhs_classes.is_empty() && lhs_non_nullable {
+                lhs_classes
+            } else {
+                let mut combined = lhs_classes;
+                ClassInfo::extend_unique(&mut combined, resolve_rhs_expression(binary.rhs, ctx));
+                combined
+            }
         }
         Expression::Clone(clone_expr) => resolve_rhs_clone(clone_expr, ctx),
         // ── Pipe operator (PHP 8.5): `$expr |> callable(...)` ──

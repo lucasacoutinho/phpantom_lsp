@@ -501,6 +501,32 @@ class NullInitReassignDemo
 }
 
 
+// ── Null Coalesce (`??`) Refinement ─────────────────────────────────────────
+
+class NullCoalesceDemo
+{
+    /** @return ?Pen */
+    public function maybePen(): ?Pen { return rand(0, 1) ? new Pen() : null; }
+
+    public function demo(): void
+    {
+        // Non-nullable LHS: `new Foo()` can never be null, so the RHS
+        // is dead code and the result resolves to Pen only.
+        $a = new Pen() ?? new Marker();
+        $a->write();                              // Pen (RHS ignored)
+
+        // Nullable LHS: `?Pen` return strips null, unions with RHS.
+        $b = $this->maybePen() ?? new Marker();
+        $b->write();                              // Pen|Marker
+
+        // Clone is non-nullable — RHS is dead code.
+        $pen = new Pen();
+        $c = clone $pen ?? new Marker();
+        $c->write();                              // Pen (RHS ignored)
+    }
+}
+
+
 // ── Foreach & Array Access ──────────────────────────────────────────────────
 
 class ForeachArrayAccessDemo
@@ -4961,6 +4987,18 @@ function runDemoAssertions(): void
         if ($mixedGuardVal instanceof Rock) {
             assert(is_string($mixedGuardVal->crush()), 'Guard: mixed narrowed to Rock');
         }
+
+    // ── Null coalesce refinement ────────────────────────────────────────
+    $ncA = new Pen() ?? new Marker();
+    assert($ncA instanceof Pen, 'Null coalesce: non-nullable LHS must be Pen');
+
+    $ncNullable = rand(0, 1) ? new Pen() : null;
+    $ncB = $ncNullable ?? new Marker();
+    assert($ncB instanceof Pen || $ncB instanceof Marker,
+        'Null coalesce: nullable LHS must be Pen or Marker');
+
+    $ncClone = clone new Pen() ?? new Marker();
+    assert($ncClone instanceof Pen, 'Null coalesce: clone LHS must be Pen');
 
     // ── Ternary narrowing ───────────────────────────────────────────────
     $ternaryThing = pickRockOrBanana();

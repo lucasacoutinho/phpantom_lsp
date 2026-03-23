@@ -331,31 +331,7 @@ type:
 
 ---
 
-## T8. Null coalesce (`??`) type refinement
-**Impact: Low-Medium · Effort: Low**
 
-The `??` operator currently unions LHS and RHS unconditionally in both
-`raw_type_inference.rs` and `rhs_resolution.rs`. Two improvements:
-
-1. **Non-nullable LHS:** when the LHS type is provably non-nullable
-   (e.g. `new Foo()`, a non-nullable return type, a literal), the RHS
-   is dead code and the result should resolve to the LHS type only.
-2. **Nullable LHS via function return:** when a function returns
-   `?Foo`, `$x = getOptional() ?? $fallback` should strip `null` from
-   the LHS and union with the RHS. Today the function return type
-   doesn't flow through `??` in top-level variable contexts.
-
-**Fixtures to activate:**
-
-- `null_coalesce/non_nullable_lhs.fixture` — LHS is `new Foo()`, RHS
-  should be ignored
-- `null_coalesce/nullable_lhs.fixture` — LHS is `?Foo` from function
-  return, result is `Foo|Fallback`
-
-**phpactor ref:** `null-coalesce/null-coalesce_null.test`,
-`null-coalesce/null-coalesce_nullable.test`
-
----
 
 ## T9. Dead-code elimination after `never`-returning calls
 **Impact: Low · Effort: Low-Medium**

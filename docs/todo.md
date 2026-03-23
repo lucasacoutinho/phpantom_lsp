@@ -113,7 +113,6 @@ unlikely to move the needle for most users.
 |     | **[Type Inference](todo/type-inference.md)**                                                                                                                 |            |             |
 | T7  | [`key-of<T>` and `value-of<T>` resolution](todo/type-inference.md#t7-key-oft-and-value-oft-resolution)                                                       | Medium     | Medium      |
 | T6  | `Closure::bind()` / `Closure::fromCallable()` return type preservation                                                                                       | Low-Medium | Low-Medium  |
-| T8  | [Null coalesce (`??`) type refinement](todo/type-inference.md#t8-null-coalesce--type-refinement)                                                              | Low-Medium | Low         |
 | T4  | Non-empty-\* type narrowing and propagation                                                                                                                  | Low        | Low         |
 | T5  | Fiber type resolution                                                                                                                                        | Low        | Low         |
 | T9  | [Dead-code elimination after `never`-returning calls](todo/type-inference.md#t9-dead-code-elimination-after-never-returning-calls)                            | Low        | Low-Medium  |

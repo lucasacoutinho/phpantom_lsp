@@ -938,6 +938,8 @@ async fn test_completion_null_coalescing_both_new() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///coalesce_both_new.php").unwrap();
+    // `new ErrorHandler()` is non-nullable, so the RHS is dead code.
+    // The result should resolve to ErrorHandler only.
     let text = concat!(
         "<?php\n",
         "class ErrorHandler {\n",
@@ -993,9 +995,11 @@ async fn test_completion_null_coalescing_both_new() {
                 "Should include handleError from ErrorHandler, got: {:?}",
                 labels
             );
+            // `new ErrorHandler()` is non-nullable — the RHS is dead
+            // code and ExceptionHandler should NOT appear.
             assert!(
-                labels.iter().any(|l| l.starts_with("handleException")),
-                "Should include handleException from ExceptionHandler, got: {:?}",
+                !labels.iter().any(|l| l.starts_with("handleException")),
+                "Should NOT include handleException (RHS is dead code), got: {:?}",
                 labels
             );
         }

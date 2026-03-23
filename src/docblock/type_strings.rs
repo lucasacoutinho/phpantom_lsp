@@ -492,6 +492,53 @@ pub(crate) fn normalize_nullable(type_str: &str) -> String {
     parts.join("|")
 }
 
+/// Check whether a raw type string is nullable.
+///
+/// A type is nullable when it:
+/// - starts with `?` (e.g. `?Foo`)
+/// - contains `null` as a union member (e.g. `Foo|null`, `null|Foo`)
+/// - is literally `"null"` or `"mixed"`
+///
+/// Used by the null-coalesce (`??`) refinement to decide whether the
+/// LHS can actually be null (and therefore whether the RHS matters).
+pub(crate) fn raw_type_is_nullable(type_str: &str) -> bool {
+    if type_str == "null" || type_str == "mixed" {
+        return true;
+    }
+    if type_str.starts_with('?') {
+        return true;
+    }
+    type_str.split('|').any(|part| part.trim() == "null")
+}
+
+/// Remove `null` from a union type string.
+///
+/// - `?Foo` → `"Foo"`
+/// - `Foo|null` → `"Foo"`
+/// - `Foo|Bar|null` → `"Foo|Bar"`
+/// - `null` → `None`
+/// - `mixed` → `None` (stripping null from mixed is meaningless)
+///
+/// Returns `None` when the type collapses to nothing.
+pub(crate) fn strip_null_from_union(type_str: &str) -> Option<String> {
+    if type_str == "null" || type_str == "mixed" {
+        return None;
+    }
+    if let Some(inner) = type_str.strip_prefix('?') {
+        return Some(inner.to_string());
+    }
+    let parts: Vec<&str> = type_str
+        .split('|')
+        .map(|s| s.trim())
+        .filter(|s| *s != "null")
+        .collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("|"))
+    }
+}
+
 /// Check whether a type name is a built-in scalar (i.e. can never be an object).
 pub(crate) fn is_scalar(type_name: &str) -> bool {
     // Strip generic parameters and array shape braces before checking so

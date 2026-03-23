@@ -825,10 +825,29 @@ fn resolve_rhs_raw_type<'b>(rhs: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
             union_raw_types(then_type, else_type)
         }
         // ── Null coalesce: `$a ?? $b` ──
+        // When the LHS is provably non-nullable (e.g. `new Foo()`, a
+        // literal, a non-nullable return type), the RHS is dead code
+        // and the result is just the LHS type.  When the LHS is
+        // nullable (`?Foo`, `Foo|null`), strip `null` from the LHS
+        // and union with the RHS.
         Expression::Binary(binary) if binary.operator.is_null_coalesce() => {
             let lhs_type = resolve_rhs_raw_type(binary.lhs, ctx);
-            let rhs_type = resolve_rhs_raw_type(binary.rhs, ctx);
-            union_raw_types(lhs_type, rhs_type)
+            match &lhs_type {
+                Some(lhs) if !docblock::type_strings::raw_type_is_nullable(lhs) => {
+                    // LHS is non-nullable → RHS is unreachable
+                    lhs_type
+                }
+                Some(lhs) => {
+                    // LHS is nullable → strip null, union with RHS
+                    let stripped = docblock::type_strings::strip_null_from_union(lhs);
+                    let rhs_type = resolve_rhs_raw_type(binary.rhs, ctx);
+                    union_raw_types(stripped, rhs_type)
+                }
+                None => {
+                    // LHS type unknown → fall back to RHS
+                    resolve_rhs_raw_type(binary.rhs, ctx)
+                }
+            }
         }
         // ── Match expression: union all arm result types ──
         Expression::Match(match_expr) => {

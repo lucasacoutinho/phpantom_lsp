@@ -18066,3 +18066,294 @@ async fn test_null_init_foreach_reassign_cross_file() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ── Null coalesce (`??`) type refinement ────────────────────────────────────
+
+/// When the LHS of `??` is non-nullable (`new Foo()`), the RHS is dead
+/// code and the result should resolve to the LHS type only.
+#[tokio::test]
+async fn test_null_coalesce_non_nullable_lhs_ignores_rhs() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nc_non_nullable.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Alpha {\n",
+        "    public function alphaMethod(): void {}\n",
+        "}\n",
+        "class Beta {\n",
+        "    public function betaMethod(): void {}\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function test(): void {\n",
+        "        $x = new Alpha() ?? new Beta();\n",
+        "        $x->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 10,
+                    character: 12,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"alphaMethod"),
+                "Should include Alpha's method (non-nullable LHS), got: {:?}",
+                method_names
+            );
+            assert!(
+                !method_names.contains(&"betaMethod"),
+                "Should NOT include Beta's method (RHS is dead code), got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// When the LHS of `??` is nullable (`?Foo` return type), the result
+/// should be the non-null part of the LHS unioned with the RHS.
+#[tokio::test]
+async fn test_null_coalesce_nullable_lhs_unions_with_rhs() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nc_nullable.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Pen {\n",
+        "    public function write(): void {}\n",
+        "}\n",
+        "class Pencil {\n",
+        "    public function sketch(): void {}\n",
+        "}\n",
+        "class Svc {\n",
+        "    /** @return ?Pen */\n",
+        "    public function maybePen(): ?Pen { return null; }\n",
+        "    public function test(): void {\n",
+        "        $x = $this->maybePen() ?? new Pencil();\n",
+        "        $x->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 12,
+                    character: 12,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"write"),
+                "Should include Pen's write() (nullable LHS, null stripped), got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"sketch"),
+                "Should include Pencil's sketch() (RHS of ??), got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// When the LHS of `??` is a variable with unknown/mixed type, the RHS
+/// should still resolve.
+#[tokio::test]
+async fn test_null_coalesce_unknown_lhs_resolves_rhs() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nc_unknown.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Fallback {\n",
+        "    public function fallbackMethod(): void {}\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function test(mixed $input): void {\n",
+        "        $x = $input ?? new Fallback();\n",
+        "        $x->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 7,
+                    character: 12,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"fallbackMethod"),
+                "Should include Fallback's method when LHS is unknown, got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Non-nullable LHS via clone expression — RHS should be ignored.
+#[tokio::test]
+async fn test_null_coalesce_clone_lhs_ignores_rhs() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///nc_clone.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Original {\n",
+        "    public function origMethod(): void {}\n",
+        "}\n",
+        "class Other {\n",
+        "    public function otherMethod(): void {}\n",
+        "}\n",
+        "class Svc {\n",
+        "    public function test(Original $o): void {\n",
+        "        $x = clone $o ?? new Other();\n",
+        "        $x->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: text.to_string(),
+            },
+        })
+        .await;
+
+    let result = backend
+        .completion(CompletionParams {
+            text_document_position: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line: 10,
+                    character: 12,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+            context: None,
+        })
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Should return completions");
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap())
+                .collect();
+
+            assert!(
+                method_names.contains(&"origMethod"),
+                "Should include Original's method (clone is non-nullable), got: {:?}",
+                method_names
+            );
+            assert!(
+                !method_names.contains(&"otherMethod"),
+                "Should NOT include Other's method (RHS is dead code after clone), got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
