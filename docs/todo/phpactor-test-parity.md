@@ -426,7 +426,6 @@ Already ported and passing:
 | 16 | `int<min,max>` range types | `type/int-range.test` |
 | 17 | Parenthesized union narrowing | `type/parenthesized.test` |
 | 22 | `global` keyword | `global/global_keyword.test` |
-| 23 | `define()` constant type | `constant/constant.test` |
 
 ### Medium effort (new features needed)
 

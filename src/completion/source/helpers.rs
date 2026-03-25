@@ -28,7 +28,7 @@ use crate::docblock::{self, replace_self_in_type};
 use crate::types::{BracketSegment, ClassInfo};
 use crate::util::{find_semicolon_balanced, short_name};
 
-use crate::completion::resolver::ResolutionCtx;
+use crate::completion::resolver::{Loaders, ResolutionCtx};
 
 // ─── Source-text helpers ────────────────────────────────────────────────────
 
@@ -241,7 +241,7 @@ pub(in crate::completion) fn extract_first_class_callable_return_type(
                 content,
                 cursor_offset,
                 class_loader,
-                function_loader,
+                Loaders::with_function(function_loader),
             );
             crate::types::ResolvedType::into_classes(resolved)
                 .into_iter()

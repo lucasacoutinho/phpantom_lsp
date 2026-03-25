@@ -37,7 +37,7 @@ use crate::types::{ClassInfo, ResolvedType};
 use super::resolution::build_var_resolver_from_ctx;
 use crate::completion::call_resolution::MethodReturnCtx;
 use crate::completion::conditional_resolution::resolve_conditional_with_args;
-use crate::completion::resolver::VarResolutionCtx;
+use crate::completion::resolver::{Loaders, VarResolutionCtx};
 
 /// Resolve a right-hand-side expression to zero or more
 /// [`ResolvedType`] values.
@@ -221,12 +221,36 @@ pub(in crate::completion) fn resolve_rhs_expression<'b>(
                 ctx.content,
                 ctx.cursor_offset,
                 ctx.class_loader,
-                ctx.function_loader,
+                Loaders::with_function(ctx.function_loader()),
             )
         }
         // ── Concatenation: `"prefix" . $var` → string ───────────────
         Expression::Binary(binary) if binary.operator.is_concatenation() => {
             vec![ResolvedType::from_type_string("string".to_string())]
+        }
+        // ── Global constant access: `PHP_EOL`, `SORT_ASC`, etc. ────
+        Expression::ConstantAccess(ca) => {
+            let name = ca.name.value().to_string();
+            let name_clean = name.strip_prefix('\\').unwrap_or(&name);
+            // `true`, `false`, `null` are parsed as ConstantAccess by
+            // some AST variants — handle them the same as literals.
+            match name_clean.to_lowercase().as_str() {
+                "true" | "false" => {
+                    return vec![ResolvedType::from_type_string("bool".to_string())];
+                }
+                "null" => {
+                    return vec![ResolvedType::from_type_string("null".to_string())];
+                }
+                _ => {}
+            }
+            if let Some(loader) = ctx.constant_loader()
+                && let Some(maybe_value) = loader(name_clean)
+                && let Some(ref value) = maybe_value
+                && let Some(ts) = infer_type_from_constant_value(value)
+            {
+                return vec![ResolvedType::from_type_string(ts)];
+            }
+            vec![]
         }
         // ── Arithmetic: `$a + $b`, `$a * $b` etc. → numeric ────────
         // We can't distinguish int vs float without deeper analysis,
@@ -238,6 +262,101 @@ pub(in crate::completion) fn resolve_rhs_expression<'b>(
         // inference pipeline.
         _ => vec![],
     }
+}
+
+/// Infer a scalar type from a constant's initializer value string.
+///
+/// Recognises integer literals (`42`, `-1`, `0xFF`), float literals
+/// (`3.14`, `1e10`), string literals (`'hello'`, `"world"`), boolean
+/// keywords (`true`, `false`), `null`, and array literals (`[...]`,
+/// `array(...)`).  Returns `None` for expressions that cannot be
+/// trivially classified (e.g. concatenation, function calls).
+fn infer_type_from_constant_value(value: &str) -> Option<String> {
+    let v = value.trim();
+    if v.is_empty() {
+        return None;
+    }
+
+    // String literals: single or double quoted.
+    if (v.starts_with('\'') && v.ends_with('\'')) || (v.starts_with('"') && v.ends_with('"')) {
+        return Some("string".to_string());
+    }
+
+    // Array literals.
+    if v.starts_with('[') || v.starts_with("array(") || v.starts_with("array (") {
+        return Some("array".to_string());
+    }
+
+    let lower = v.to_lowercase();
+
+    // Boolean / null keywords.
+    if lower == "true" || lower == "false" {
+        return Some("bool".to_string());
+    }
+    if lower == "null" {
+        return Some("null".to_string());
+    }
+
+    // Numeric literals — try integer first, then float.
+    // Strip optional leading sign for parsing.
+    let numeric = v
+        .strip_prefix('-')
+        .or_else(|| v.strip_prefix('+'))
+        .unwrap_or(v);
+    if numeric.starts_with("0x") || numeric.starts_with("0X") {
+        // Hex integer.
+        if numeric[2..]
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() || c == '_')
+        {
+            return Some("int".to_string());
+        }
+    }
+    if numeric.starts_with("0b") || numeric.starts_with("0B") {
+        // Binary integer.
+        if numeric[2..]
+            .chars()
+            .all(|c| c == '0' || c == '1' || c == '_')
+        {
+            return Some("int".to_string());
+        }
+    }
+    if numeric.starts_with("0o") || numeric.starts_with("0O") {
+        // Octal integer (PHP 8.1+).
+        if numeric[2..]
+            .chars()
+            .all(|c| ('0'..='7').contains(&c) || c == '_')
+        {
+            return Some("int".to_string());
+        }
+    }
+    // Decimal integer (may contain underscores: 1_000_000).
+    if !numeric.is_empty()
+        && numeric.chars().all(|c| c.is_ascii_digit() || c == '_')
+        && numeric.chars().next().is_some_and(|c| c.is_ascii_digit())
+    {
+        return Some("int".to_string());
+    }
+    // Float: contains `.` or `e`/`E` among digits.
+    if !numeric.is_empty() {
+        let has_dot = numeric.contains('.');
+        let has_exp = numeric.contains('e') || numeric.contains('E');
+        if (has_dot || has_exp)
+            && numeric.chars().all(|c| {
+                c.is_ascii_digit()
+                    || c == '.'
+                    || c == 'e'
+                    || c == 'E'
+                    || c == '+'
+                    || c == '-'
+                    || c == '_'
+            })
+        {
+            return Some("float".to_string());
+        }
+    }
+
+    None
 }
 
 /// Resolve a pipe expression `$input |> callable(...)` to the callable's
@@ -259,7 +378,7 @@ fn resolve_rhs_pipe(pipe: &Pipe<'_>, ctx: &VarResolutionCtx<'_>) -> Vec<Resolved
                 Expression::Identifier(ident) => ident.value().to_string(),
                 _ => return vec![],
             };
-            if let Some(fl) = ctx.function_loader
+            if let Some(fl) = ctx.function_loader()
                 && let Some(func_info) = fl(&func_name)
                 && let Some(ref ret) = func_info.return_type
             {
@@ -632,7 +751,7 @@ fn resolve_rhs_array_access<'b>(
                     ctx.content,
                     access_offset as u32,
                     ctx.class_loader,
-                    ctx.function_loader,
+                    Loaders::with_function(ctx.function_loader()),
                 );
                 if resolved.is_empty() {
                     None
@@ -852,7 +971,7 @@ fn resolve_arg_variable_raw_type(
         rctx.content,
         rctx.cursor_offset,
         rctx.class_loader,
-        rctx.function_loader,
+        Loaders::with_function(rctx.function_loader),
     );
     if resolved.is_empty() {
         None
@@ -976,7 +1095,7 @@ fn resolve_rhs_function_call<'b>(
     let all_classes = ctx.all_classes;
     let content = ctx.content;
     let class_loader = ctx.class_loader;
-    let function_loader = ctx.function_loader;
+    let function_loader = ctx.function_loader();
 
     let func_name = match func_call.function {
         Expression::Identifier(ident) => Some(ident.value().to_string()),
@@ -1615,6 +1734,21 @@ fn resolve_rhs_property_access(
                             if !resolved.is_empty() {
                                 return ResolvedType::from_classes_with_hint(resolved, th);
                             }
+                        }
+                        // No type_hint — infer from the initializer value.
+                        if let Some(ref val) = c.value
+                            && let Some(ts) = infer_type_from_constant_value(val)
+                        {
+                            let resolved = crate::completion::type_resolution::type_hint_to_classes(
+                                &ts,
+                                current_class_name,
+                                all_classes,
+                                class_loader,
+                            );
+                            if !resolved.is_empty() {
+                                return ResolvedType::from_classes_with_hint(resolved, &ts);
+                            }
+                            return vec![ResolvedType::from_type_string(ts)];
                         }
                     }
                 }

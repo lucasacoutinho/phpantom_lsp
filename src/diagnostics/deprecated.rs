@@ -20,6 +20,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::completion::resolver::Loaders;
 use crate::completion::variable::resolution::resolve_variable_types;
 use crate::symbol_map::SymbolKind;
 use crate::types::{ClassInfo, ResolvedType};
@@ -427,7 +428,7 @@ fn resolve_variable_subject(
         content,
         access_offset,
         class_loader,
-        Some(function_loader),
+        Loaders::with_function(Some(function_loader)),
     ));
 
     results.into_iter().next()

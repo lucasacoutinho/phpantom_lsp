@@ -439,7 +439,7 @@ Deduplication uses the map key (FQN), so two functions with the same short name 
 
 ### Runtime Lookup — Constants
 
-The `stub_constant_index` (`HashMap<&'static str, &'static str>`) is built at construction time from `STUB_CONSTANT_MAP`, mapping constant names like `PHP_EOL`, `PHP_INT_MAX`, `SORT_ASC` to their stub file source. This infrastructure is in place for future use (e.g. constant value/type resolution, completion of standalone constants) but is not yet consulted by any resolution path.
+The `stub_constant_index` (`HashMap<&'static str, &'static str>`) is built at construction time from `STUB_CONSTANT_MAP`, mapping constant names like `PHP_EOL`, `PHP_INT_MAX`, `SORT_ASC` to their stub file source. It is consulted by the constant-value loader (`Backend::constant_loader`) during variable type resolution: when a variable is assigned from a global constant (e.g. `$eol = PHP_EOL`), the loader extracts the constant's initializer value from the stub source and the type is inferred from the literal (`string`, `int`, `float`, `bool`, `null`, or `array`). The same lookup chain also serves hover, completion of standalone constant names, and go-to-definition.
 
 ### Version-Aware Filtering
 

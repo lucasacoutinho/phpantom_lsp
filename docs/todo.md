@@ -226,7 +226,6 @@ unlikely to move the needle for most users.
 | Q15  | Parenthesized union types with narrowing                                                                                                                     | Low         | Low-Medium  |
 | Q16  | Variable-variable `${$bar}` resolution                                                                                                                       | Low         | Low-Medium  |
 | Q17  | `global` keyword variable access                                                                                                                             | Low         | Low-Medium  |
-| Q18  | `define()` constant type resolution                                                                                                                          | Low         | Low-Medium  |
 | Q19  | Array mutation tracking (`$arr[] = …`)                                                                                                                       | Low         | Medium      |
 | Q20  | Return statement body type inference                                                                                                                         | Low         | Medium      |
 | Q21  | Binary expression type inference (arithmetic, concat, …)                                                                                                     | Low         | High        |

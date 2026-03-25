@@ -21,7 +21,7 @@ use crate::parser::{extract_hint_string, with_parsed_program};
 use crate::types::{AccessKind, ClassInfo, ResolvedType};
 use crate::util::short_name;
 
-use crate::completion::resolver::FunctionLoaderFn;
+use crate::completion::resolver::Loaders;
 use crate::completion::variable::resolution::resolve_variable_types_branch_aware;
 
 /// Context for closure parameter type resolution in hover.
@@ -54,7 +54,7 @@ pub(crate) fn resolve_variable_type_string(
     current_class: Option<&ClassInfo>,
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-    function_loader: FunctionLoaderFn<'_>,
+    loaders: Loaders<'_>,
 ) -> Option<String> {
     // 1. Inline @var override: `/** @var Type $var */`
     if let Some(var_type) =
@@ -134,7 +134,7 @@ pub(crate) fn resolve_variable_type_string(
         content,
         cursor_offset,
         class_loader,
-        function_loader,
+        loaders,
     );
     if !resolved.is_empty() {
         let joined = ResolvedType::type_strings_joined(&resolved);
@@ -962,7 +962,7 @@ fn resolve_expression_to_classes(
                 content,
                 cursor_offset,
                 class_loader,
-                None,
+                Loaders::default(),
             ),
         );
         if !types.is_empty() {

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
-use crate::completion::resolver::ResolutionCtx;
+use crate::completion::resolver::{Loaders, ResolutionCtx};
 use crate::docblock::type_strings::is_scalar;
 use crate::hover::variable_type;
 use crate::symbol_map::SymbolKind;
@@ -295,7 +295,7 @@ fn resolve_variable_type_names(
         current_class,
         &ctx.classes,
         class_loader,
-        Some(function_loader),
+        crate::completion::resolver::Loaders::with_function(Some(function_loader)),
     ) {
         return extract_class_names_from_type_string(&type_str);
     }
@@ -318,7 +318,7 @@ fn resolve_variable_type_names(
             content,
             cursor_offset,
             class_loader,
-            Some(function_loader),
+            Loaders::with_function(Some(function_loader)),
         ),
     );
 

@@ -3,6 +3,7 @@ use std::sync::Arc;
 use super::enrich_builder_type_in_scope;
 use crate::test_fixtures::make_class;
 
+use crate::completion::resolver::Loaders;
 use crate::types::{ClassInfo, ResolvedType};
 
 fn make_model(name: &str) -> ClassInfo {
@@ -234,7 +235,7 @@ function test() {
         content,
         cursor_offset,
         &class_loader,
-        None,
+        Loaders::default(),
     ));
 
     let names: Vec<&str> = results.iter().map(|c| c.name.as_str()).collect();
@@ -369,7 +370,7 @@ function test() {
         content,
         cursor_offset,
         &class_loader,
-        None,
+        Loaders::default(),
     ));
 
     let names: Vec<&str> = results.iter().map(|c| c.name.as_str()).collect();
@@ -403,7 +404,7 @@ function test() {
         content,
         cursor_offset,
         &|_| None,
-        None,
+        Loaders::default(),
     );
 
     assert!(!results.is_empty(), "Should resolve $data to a type");
@@ -438,7 +439,7 @@ function test() {
         content,
         cursor_offset,
         &|_| None,
-        None,
+        Loaders::default(),
     );
 
     assert!(!results.is_empty(), "Should resolve $config to a type");
@@ -470,7 +471,7 @@ function test() {
         content,
         cursor_offset,
         &|_| None,
-        None,
+        Loaders::default(),
     );
 
     assert!(!results.is_empty(), "Should resolve $data to a type");
@@ -518,7 +519,7 @@ function test() {
         content,
         cursor_offset,
         &class_loader,
-        None,
+        Loaders::default(),
     );
 
     assert!(!results.is_empty(), "Should resolve $items to a type");
@@ -553,7 +554,7 @@ function test() {
         content,
         cursor_offset,
         &|_| None,
-        None,
+        Loaders::default(),
     );
 
     assert!(!results.is_empty(), "Should resolve $items to a type");
@@ -584,7 +585,7 @@ function test() {
         content,
         cursor_offset,
         &|_| None,
-        None,
+        Loaders::default(),
     );
 
     assert!(!results.is_empty(), "Should resolve $items to a type");
@@ -617,7 +618,7 @@ function test() {
         content,
         cursor_offset,
         &|_| None,
-        None,
+        Loaders::default(),
     );
 
     assert!(!results.is_empty(), "Should resolve $x to a type");
@@ -648,7 +649,7 @@ function test() {
         content,
         cursor_offset,
         &|_| None,
-        None,
+        Loaders::default(),
     );
 
     // Numeric keys are not shape entries, so the type should stay as

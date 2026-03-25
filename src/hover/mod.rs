@@ -883,6 +883,11 @@ impl Backend {
 
         let class_loader = self.class_loader(ctx);
         let function_loader = self.function_loader(ctx);
+        let constant_loader = self.constant_loader();
+        let loaders = crate::completion::resolver::Loaders {
+            function_loader: Some(&function_loader as &dyn Fn(&str) -> Option<FunctionInfo>),
+            constant_loader: Some(&constant_loader),
+        };
 
         // Use the dummy class approach same as completion for top-level code
         let dummy_class;
@@ -904,7 +909,7 @@ impl Backend {
             current_class,
             &ctx.classes,
             &class_loader,
-            Some(&function_loader as &dyn Fn(&str) -> Option<FunctionInfo>),
+            loaders,
         ) {
             // When the type is a template parameter, show its variance
             // and bound (e.g. "**template-covariant** `TNode` of `AstNode`")
@@ -930,7 +935,7 @@ impl Backend {
             content,
             cursor_offset,
             &class_loader,
-            Some(&function_loader as &dyn Fn(&str) -> Option<FunctionInfo>),
+            loaders,
         );
 
         if resolved.is_empty() {

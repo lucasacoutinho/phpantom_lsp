@@ -38,6 +38,38 @@ use crate::util::find_class_by_name;
 /// the resolution chain.  Reduces clippy `type_complexity` warnings.
 pub(crate) type FunctionLoaderFn<'a> = Option<&'a dyn Fn(&str) -> Option<FunctionInfo>>;
 
+/// Type alias for the optional constant-value-loader closure passed
+/// through the resolution chain.  Given a constant name, returns
+/// `Some(Some(value))` when the constant exists with a known value,
+/// `Some(None)` when it exists but the value is unknown, and `None`
+/// when the constant was not found.
+pub(crate) type ConstantLoaderFn<'a> = Option<&'a dyn Fn(&str) -> Option<Option<String>>>;
+
+/// Bundles optional cross-file loader callbacks so they can be threaded
+/// through the resolution chain as a single argument instead of one
+/// parameter per loader.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Loaders<'a> {
+    /// Cross-file function resolution callback (optional).
+    pub function_loader: FunctionLoaderFn<'a>,
+    /// Cross-file constant value resolution callback (optional).
+    ///
+    /// Given a global constant name (e.g. `"PHP_EOL"`), returns the
+    /// constant's value string so that the type can be inferred from
+    /// the literal value.
+    pub constant_loader: ConstantLoaderFn<'a>,
+}
+
+impl<'a> Loaders<'a> {
+    /// Create a `Loaders` with only a function loader.
+    pub fn with_function(fl: FunctionLoaderFn<'a>) -> Self {
+        Self {
+            function_loader: fl,
+            constant_loader: None,
+        }
+    }
+}
+
 /// Bundles the context needed by [`resolve_target_classes`] and
 /// the functions it delegates to.
 ///
@@ -80,7 +112,8 @@ pub(super) struct VarResolutionCtx<'a> {
     pub content: &'a str,
     pub cursor_offset: u32,
     pub class_loader: &'a dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-    pub function_loader: FunctionLoaderFn<'a>,
+    /// Cross-file loader callbacks (function loader, constant loader).
+    pub loaders: Loaders<'a>,
     /// Shared cache of fully-resolved classes, keyed by FQN.
     ///
     /// See [`ResolutionCtx::resolved_class_cache`] for details.
@@ -109,9 +142,19 @@ impl<'a> VarResolutionCtx<'a> {
             content: self.content,
             cursor_offset: self.cursor_offset,
             class_loader: self.class_loader,
-            function_loader: self.function_loader,
+            function_loader: self.loaders.function_loader,
             resolved_class_cache: self.resolved_class_cache,
         }
+    }
+
+    /// Convenience accessor for the function loader.
+    pub fn function_loader(&self) -> FunctionLoaderFn<'a> {
+        self.loaders.function_loader
+    }
+
+    /// Convenience accessor for the constant loader.
+    pub fn constant_loader(&self) -> ConstantLoaderFn<'a> {
+        self.loaders.constant_loader
     }
 
     /// Clone this context with a different `enclosing_return_type`.
@@ -130,7 +173,7 @@ impl<'a> VarResolutionCtx<'a> {
             content: self.content,
             cursor_offset: self.cursor_offset,
             class_loader: self.class_loader,
-            function_loader: self.function_loader,
+            loaders: self.loaders,
             resolved_class_cache: self.resolved_class_cache,
             enclosing_return_type,
             branch_aware: self.branch_aware,
@@ -151,7 +194,7 @@ impl<'a> VarResolutionCtx<'a> {
             content: self.content,
             cursor_offset,
             class_loader: self.class_loader,
-            function_loader: self.function_loader,
+            loaders: self.loaders,
             resolved_class_cache: self.resolved_class_cache,
             enclosing_return_type: self.enclosing_return_type.clone(),
             branch_aware: self.branch_aware,
@@ -688,7 +731,7 @@ pub(crate) fn resolve_target_classes_expr(
                     ctx.content,
                     ctx.cursor_offset,
                     class_loader,
-                    ctx.function_loader,
+                    Loaders::with_function(ctx.function_loader),
                 );
                 if resolved.is_empty() {
                     None
@@ -832,7 +875,7 @@ fn resolve_variable_fallback(
         ctx.content,
         ctx.cursor_offset,
         class_loader,
-        function_loader,
+        Loaders::with_function(function_loader),
     ))
     .into_iter()
     .map(Arc::new)
@@ -902,7 +945,7 @@ fn apply_property_narrowing(
                 content: rctx.content,
                 cursor_offset: rctx.cursor_offset,
                 class_loader: rctx.class_loader,
-                function_loader: rctx.function_loader,
+                loaders: Loaders::with_function(rctx.function_loader),
                 resolved_class_cache: None,
                 enclosing_return_type: None,
                 branch_aware: false,

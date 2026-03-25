@@ -2727,9 +2727,39 @@ class MixinGenericDemo
 }
 
 
+// ── Constant Type Inference ─────────────────────────────────────────────────
+// Hover over $timeout, $name, $rate, $enabled, or $hosts to see the type
+// inferred from the constant's initializer value.
+
+class ConstantTypeDemo
+{
+    const TIMEOUT = 30;
+    const NAME = 'app';
+    const RATE = 3.14;
+    const ENABLED = true;
+
+    public function demo(): void
+    {
+        // Class constants without type hints — type inferred from value:
+        $timeout = self::TIMEOUT;   // → int
+        $name    = self::NAME;      // → string
+        $rate    = self::RATE;      // → float
+        $enabled = self::ENABLED;   // → bool
+
+        // Global constants — type inferred from define()/const value:
+        $hosts   = CT_ALLOWED_HOSTS;  // → array
+        $version = CT_APP_VERSION;    // → string
+    }
+}
+
+
 // ═══════════════════════════════════════════════════════════════════════════
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
+
+// ── Constant Type Demo scaffolding ──────────────────────────────────────────
+define('CT_ALLOWED_HOSTS', ['localhost', '127.0.0.1']);
+const CT_APP_VERSION = '2.0.0';
 
 // StaticPropHolder — used by MixedAccessorDemo
 class StaticPropHolder
@@ -5124,6 +5154,14 @@ function runDemoAssertions(): void
     $orderLine = new ScaffoldingOrderLine();
     $productRel = $orderLine->product();
     assert($productRel instanceof ScaffoldingMixinBelongsTo, 'OrderLine::product() must return ScaffoldingMixinBelongsTo');
+
+    // ── Constant type inference ─────────────────────────────────────────
+    assert(ConstantTypeDemo::TIMEOUT === 30, 'ConstantTypeDemo::TIMEOUT must be 30');
+    assert(ConstantTypeDemo::NAME === 'app', 'ConstantTypeDemo::NAME must be "app"');
+    assert(ConstantTypeDemo::RATE === 3.14, 'ConstantTypeDemo::RATE must be 3.14');
+    assert(ConstantTypeDemo::ENABLED === true, 'ConstantTypeDemo::ENABLED must be true');
+    assert(CT_ALLOWED_HOSTS === ['localhost', '127.0.0.1'], 'CT_ALLOWED_HOSTS must match');
+    assert(CT_APP_VERSION === '2.0.0', 'CT_APP_VERSION must be "2.0.0"');
 
     echo "All assertions passed.\n";
 }

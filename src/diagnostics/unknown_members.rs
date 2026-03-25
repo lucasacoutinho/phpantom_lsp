@@ -57,7 +57,7 @@ use tower_lsp::lsp_types::*;
 
 use crate::Backend;
 use crate::completion::resolver::{
-    ResolutionCtx, resolve_target_classes, resolve_target_classes_expr,
+    Loaders, ResolutionCtx, resolve_target_classes, resolve_target_classes_expr,
 };
 use crate::completion::variable::resolution::resolve_variable_types;
 use crate::docblock::type_strings::{PHPDOC_TYPE_KEYWORDS, is_scalar, strip_generics};
@@ -825,7 +825,7 @@ fn resolve_scalar_subject_type(
                 rctx.content,
                 rctx.cursor_offset,
                 class_loader,
-                rctx.function_loader,
+                Loaders::with_function(rctx.function_loader),
             );
             if resolved.is_empty() {
                 return None;
@@ -951,7 +951,7 @@ fn resolve_unresolvable_class_subject(
                 rctx.content,
                 rctx.cursor_offset,
                 class_loader,
-                rctx.function_loader,
+                Loaders::with_function(rctx.function_loader),
             );
             if !resolved.is_empty() {
                 Some(ResolvedType::type_strings_joined(&resolved))
@@ -966,7 +966,7 @@ fn resolve_unresolvable_class_subject(
                     rctx.current_class,
                     rctx.all_classes,
                     class_loader,
-                    rctx.function_loader,
+                    Loaders::with_function(rctx.function_loader),
                 )
             }
         }

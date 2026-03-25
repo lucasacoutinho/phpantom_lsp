@@ -17,7 +17,7 @@ use crate::types::ClassInfo;
 use crate::util::short_name;
 
 use crate::completion::conditional_resolution::extract_class_string_from_expr;
-use crate::completion::resolver::VarResolutionCtx;
+use crate::completion::resolver::{Loaders, VarResolutionCtx};
 
 /// Resolve a `$variable` that holds a class-string (e.g. `$cls = User::class`)
 /// to the referenced class(es).
@@ -48,7 +48,7 @@ pub(in crate::completion) fn resolve_class_string_targets(
                 content,
                 cursor_offset,
                 class_loader,
-                function_loader: None,
+                loaders: Loaders::default(),
                 resolved_class_cache: None,
                 enclosing_return_type: None,
                 branch_aware: false,

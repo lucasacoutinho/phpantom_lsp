@@ -32,7 +32,7 @@ use super::conditional_resolution::{
     VarClassStringResolver, resolve_conditional_with_text_args, resolve_conditional_without_args,
     split_call_subject, split_text_args,
 };
-use super::resolver::ResolutionCtx;
+use super::resolver::{Loaders, ResolutionCtx};
 use crate::util::find_class_by_name;
 
 use crate::inheritance::apply_substitution;
@@ -1011,7 +1011,7 @@ impl Backend {
                 ctx.content,
                 ctx.cursor_offset,
                 class_loader,
-                ctx.function_loader,
+                Loaders::with_function(ctx.function_loader),
             );
             if !resolved.is_empty() {
                 return Some(ResolvedType::type_strings_joined(&resolved));

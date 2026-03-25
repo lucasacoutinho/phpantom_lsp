@@ -8608,3 +8608,218 @@ class Editor {
         text
     );
 }
+
+// ── Constant type inference ─────────────────────────────────────────────────
+
+#[test]
+fn hover_variable_assigned_from_global_constant() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+
+    // Register a file that defines a global constant via `define()`.
+    let const_file = r#"<?php
+define('MY_TIMEOUT', 30);
+"#;
+    backend.update_ast("file:///constants.php", const_file);
+
+    let content = r#"<?php
+function test() {
+    $timeout = MY_TIMEOUT;
+    echo $timeout;
+}
+"#;
+
+    // Hover on `$timeout` at line 3 (the `echo $timeout` usage).
+    let hover = hover_at(&backend, uri, content, 3, 10).expect("expected hover on $timeout");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("int"),
+        "variable assigned from integer constant should resolve to int, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_from_string_constant() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+
+    let const_file = r#"<?php
+define('APP_NAME', 'PHPantom');
+"#;
+    backend.update_ast("file:///constants.php", const_file);
+
+    let content = r#"<?php
+function test() {
+    $name = APP_NAME;
+    echo $name;
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 3, 10).expect("expected hover on $name");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("string"),
+        "variable assigned from string constant should resolve to string, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_from_top_level_const() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+
+    let const_file = r#"<?php
+const MAX_RETRIES = 5;
+"#;
+    backend.update_ast("file:///constants.php", const_file);
+
+    let content = r#"<?php
+function test() {
+    $retries = MAX_RETRIES;
+    echo $retries;
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 3, 10).expect("expected hover on $retries");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("int"),
+        "variable assigned from top-level const int should resolve to int, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_from_class_constant_without_type_hint() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Config {
+    const TIMEOUT = 30;
+    const NAME = 'app';
+    const RATE = 3.14;
+    const ENABLED = true;
+}
+function test() {
+    $a = Config::TIMEOUT;
+    $b = Config::NAME;
+    $c = Config::RATE;
+    $d = Config::ENABLED;
+    echo $a;
+    echo $b;
+    echo $c;
+    echo $d;
+}
+"#;
+
+    let hover_a = hover_at(&backend, uri, content, 12, 10).expect("expected hover on $a");
+    let text_a = hover_text(&hover_a);
+    assert!(
+        text_a.contains("int"),
+        "Config::TIMEOUT (int literal) should infer int, got: {}",
+        text_a
+    );
+
+    let hover_b = hover_at(&backend, uri, content, 13, 10).expect("expected hover on $b");
+    let text_b = hover_text(&hover_b);
+    assert!(
+        text_b.contains("string"),
+        "Config::NAME (string literal) should infer string, got: {}",
+        text_b
+    );
+
+    let hover_c = hover_at(&backend, uri, content, 14, 10).expect("expected hover on $c");
+    let text_c = hover_text(&hover_c);
+    assert!(
+        text_c.contains("float"),
+        "Config::RATE (float literal) should infer float, got: {}",
+        text_c
+    );
+
+    let hover_d = hover_at(&backend, uri, content, 15, 10).expect("expected hover on $d");
+    let text_d = hover_text(&hover_d);
+    assert!(
+        text_d.contains("bool"),
+        "Config::ENABLED (bool literal) should infer bool, got: {}",
+        text_d
+    );
+}
+
+#[test]
+fn hover_variable_assigned_from_class_constant_with_type_hint_takes_precedence() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+    let content = r#"<?php
+class Settings {
+    public const string VERSION = '1.0';
+}
+function test() {
+    $v = Settings::VERSION;
+    echo $v;
+}
+"#;
+
+    // When a typed class constant exists, the explicit type hint should
+    // be used (not the value-based inference).
+    let hover = hover_at(&backend, uri, content, 6, 10).expect("expected hover on $v");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("string"),
+        "typed class constant should use the type hint, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_from_bool_constant() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+
+    let const_file = r#"<?php
+define('DEBUG_MODE', false);
+"#;
+    backend.update_ast("file:///constants.php", const_file);
+
+    let content = r#"<?php
+function test() {
+    $debug = DEBUG_MODE;
+    echo $debug;
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 3, 10).expect("expected hover on $debug");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("bool"),
+        "variable assigned from bool constant should resolve to bool, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_variable_assigned_from_array_constant() {
+    let backend = create_test_backend();
+    let uri = "file:///test.php";
+
+    let const_file = r#"<?php
+define('ALLOWED_HOSTS', ['localhost', '127.0.0.1']);
+"#;
+    backend.update_ast("file:///constants.php", const_file);
+
+    let content = r#"<?php
+function test() {
+    $hosts = ALLOWED_HOSTS;
+    echo $hosts;
+}
+"#;
+
+    let hover = hover_at(&backend, uri, content, 3, 10).expect("expected hover on $hosts");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("array"),
+        "variable assigned from array constant should resolve to array, got: {}",
+        text
+    );
+}

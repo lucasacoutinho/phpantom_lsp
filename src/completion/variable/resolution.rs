@@ -39,7 +39,7 @@ use crate::docblock;
 use crate::parser::{extract_hint_string, with_parsed_program};
 use crate::types::{ClassInfo, ResolvedType};
 
-use crate::completion::resolver::{FunctionLoaderFn, VarResolutionCtx};
+use crate::completion::resolver::{Loaders, VarResolutionCtx};
 
 /// Build a [`VarClassStringResolver`] closure from a [`VarResolutionCtx`].
 ///
@@ -131,7 +131,7 @@ pub(crate) fn resolve_variable_types(
     content: &str,
     cursor_offset: u32,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-    function_loader: FunctionLoaderFn<'_>,
+    loaders: Loaders<'_>,
 ) -> Vec<ResolvedType> {
     with_parsed_program(content, "resolve_variable_types", |program, _content| {
         let ctx = VarResolutionCtx {
@@ -141,7 +141,7 @@ pub(crate) fn resolve_variable_types(
             content,
             cursor_offset,
             class_loader,
-            function_loader,
+            loaders,
             resolved_class_cache: None,
             enclosing_return_type: None,
             branch_aware: false,
@@ -167,7 +167,7 @@ pub(crate) fn resolve_variable_types_branch_aware(
     content: &str,
     cursor_offset: u32,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-    function_loader: FunctionLoaderFn<'_>,
+    loaders: Loaders<'_>,
 ) -> Vec<ResolvedType> {
     with_parsed_program(
         content,
@@ -180,7 +180,7 @@ pub(crate) fn resolve_variable_types_branch_aware(
                 content,
                 cursor_offset,
                 class_loader,
-                function_loader,
+                loaders,
                 resolved_class_cache: None,
                 enclosing_return_type: None,
                 branch_aware: true,
@@ -2098,7 +2098,7 @@ fn extract_native_type_from_rhs<'b>(
                     _ => None,
                 };
                 func_name.and_then(|name| {
-                    ctx.function_loader
+                    ctx.function_loader()
                         .and_then(|fl| fl(&name))
                         .and_then(|fi| fi.return_type)
                 })
@@ -2506,7 +2506,7 @@ pub(in crate::completion) fn resolve_arg_raw_type<'b>(
             ctx.content,
             offset as u32,
             ctx.class_loader,
-            ctx.function_loader,
+            Loaders::with_function(ctx.function_loader()),
         );
         if !resolved.is_empty() {
             let raw = crate::types::ResolvedType::type_strings_joined(&resolved);
@@ -2542,7 +2542,7 @@ fn try_apply_pass_by_reference_type(
                 Expression::Identifier(ident) => ident.value().to_string(),
                 _ => return,
             };
-            let fl = match ctx.function_loader {
+            let fl = match ctx.function_loader() {
                 Some(fl) => fl,
                 None => return,
             };

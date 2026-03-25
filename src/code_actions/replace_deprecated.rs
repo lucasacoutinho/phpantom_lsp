@@ -17,6 +17,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::completion::resolver::Loaders;
 use crate::diagnostics::offset_range_to_lsp_range;
 use crate::symbol_map::SymbolKind;
 use crate::types::{ClassInfo, ResolvedType};
@@ -567,7 +568,7 @@ fn resolve_subject_to_class(
                     content,
                     access_offset,
                     &class_loader,
-                    Some(&function_loader),
+                    Loaders::with_function(Some(&function_loader)),
                 ),
             );
 

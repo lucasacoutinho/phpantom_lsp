@@ -32,6 +32,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::completion::resolver::Loaders;
 use crate::docblock;
 use crate::types::{ClassInfo, FileContext, ResolvedType};
 use crate::util::{find_class_at_offset, position_to_offset};
@@ -534,7 +535,7 @@ impl Backend {
             content,
             cursor_offset as u32,
             &class_loader,
-            None,
+            Loaders::default(),
         );
         if resolved.is_empty() {
             None

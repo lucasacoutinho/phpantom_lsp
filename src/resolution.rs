@@ -723,4 +723,14 @@ impl Backend {
     ) -> impl Fn(&str) -> Option<FunctionInfo> + 'a {
         move |name: &str| self.resolve_function_name(name, use_map, namespace)
     }
+
+    /// Return a constant-value-loader closure.
+    ///
+    /// The returned closure looks up a global constant name and returns
+    /// `Some(Some(value))` when found with a known value,
+    /// `Some(None)` when found without a value, and `None` when not
+    /// found.
+    pub(crate) fn constant_loader(&self) -> impl Fn(&str) -> Option<Option<String>> + '_ {
+        move |name: &str| self.lookup_global_constant(name)
+    }
 }

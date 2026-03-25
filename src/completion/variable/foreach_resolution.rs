@@ -19,7 +19,7 @@ use crate::docblock;
 use crate::types::{ClassInfo, ResolvedType};
 use crate::util::short_name;
 
-use crate::completion::resolver::VarResolutionCtx;
+use crate::completion::resolver::{Loaders, VarResolutionCtx};
 
 /// Resolve an expression's type string via the unified pipeline.
 ///
@@ -150,7 +150,7 @@ pub(in crate::completion) fn try_resolve_foreach_value_type<'b>(
                 ctx.content,
                 foreach_offset,
                 ctx.class_loader,
-                ctx.function_loader,
+                Loaders::with_function(ctx.function_loader()),
             );
             if resolved.is_empty() {
                 None
@@ -310,7 +310,7 @@ pub(in crate::completion) fn try_resolve_foreach_key_type<'b>(
                 ctx.content,
                 foreach_offset,
                 ctx.class_loader,
-                ctx.function_loader,
+                Loaders::with_function(ctx.function_loader()),
             );
             if resolved.is_empty() {
                 None

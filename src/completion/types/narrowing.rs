@@ -679,7 +679,7 @@ fn extract_call_assertions<'a>(
                 Expression::Identifier(ident) => ident.value().to_string(),
                 _ => return None,
             };
-            let func_info = ctx.function_loader?(&func_name)?;
+            let func_info = ctx.function_loader()?(&func_name)?;
             if func_info.type_assertions.is_empty() {
                 return None;
             }

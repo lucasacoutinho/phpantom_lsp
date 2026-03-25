@@ -142,7 +142,7 @@ fn infer_element_type<'b>(value: &'b Expression<'b>, ctx: &VarResolutionCtx<'_>)
                 current_class,
                 ctx.all_classes,
                 ctx.class_loader,
-                ctx.function_loader,
+                crate::completion::resolver::Loaders::with_function(ctx.function_loader()),
             )
         }
         // ── Parenthesized ──
