@@ -2422,6 +2422,25 @@ class ArgumentCountDemo
 // }
 
 
+// ── Generate Constructor (Code Action) ──────────────────────────────────────
+// Place the cursor inside the class below and trigger "Code Action" to see
+// "Generate constructor".  The generated constructor includes a parameter
+// and assignment for each non-static property.  Readonly properties are
+// included because they must be initialized in the constructor.  Default
+// values are carried over and required parameters are placed before
+// optional ones.
+
+class GenerateConstructorDemo
+{
+    public string $name;
+    public int $age;
+    public string $status = 'active';
+    public ?string $email;
+    public readonly string $id;
+    public static int $instanceCount;     // excluded (static)
+}
+
+
 // ── Property-Level Narrowing ────────────────────────────────────────────────
 
 class PropertyNarrowingDemo

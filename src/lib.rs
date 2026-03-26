@@ -48,6 +48,8 @@
 //!     statement for unresolved class names)
 //!   - `code_actions::remove_unused_import` — Remove unused import quick-fix
 //!     (delete individual or all unused `use` statements)
+//!   - `code_actions::generate_constructor` — Generate a constructor from
+//!     non-static properties
 //! - [`diagnostics`] — Diagnostic collection and delivery.  Supports both
 //!   pull diagnostics (`textDocument/diagnostic`, LSP 3.17) and push
 //!   diagnostics (`textDocument/publishDiagnostics`) as a fallback.

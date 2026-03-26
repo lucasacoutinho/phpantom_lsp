@@ -553,7 +553,7 @@ fn shorten_single_type(
 ///
 /// Looks at the first method or property in the class to determine the
 /// indent string.  Falls back to four spaces.
-fn detect_class_indent(content: &str, class: &ClassInfo) -> String {
+pub(crate) fn detect_class_indent(content: &str, class: &ClassInfo) -> String {
     // Look at the line where the class opening brace is and use the
     // next non-empty line's indentation as the member indentation.
     let brace_offset = class.start_offset as usize;

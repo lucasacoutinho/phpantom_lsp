@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Promote constructor parameter.** Code action on a constructor parameter that has a matching property declaration and `$this->name = $name;` assignment offers to convert it into a constructor-promoted property. The property declaration and assignment are removed, and the parameter gains the original property's visibility modifier. Readonly properties, default values, and union/nullable types are preserved.
+- **Generate constructor.** When a class has properties but no constructor, a code action generates a `__construct` method with a parameter and assignment for each non-static property. Readonly properties are included because they must be initialized in the constructor. Native type hints and default values are carried over to the parameters. Properties with only a `@var` docblock type get a matching parameter hint when the type is a single, non-compound type. Required parameters are placed before optional ones.
 
 ## [0.6.0] - 2026-03-26
 

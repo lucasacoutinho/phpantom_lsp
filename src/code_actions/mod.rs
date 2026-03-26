@@ -29,9 +29,14 @@
 //!   constructor parameter that has a matching property declaration and
 //!   `$this->name = $name;` assignment, offer to convert it into a
 //!   constructor-promoted property.
+//! - **Generate constructor** — when the cursor is inside a class that
+//!   has non-static properties but no `__construct` method, offer to
+//!   generate a constructor that accepts each qualifying property as a
+//!   parameter and assigns it.
 
 mod change_visibility;
 pub(crate) mod cursor_context;
+mod generate_constructor;
 pub(crate) mod implement_methods;
 mod import_class;
 mod phpstan;
@@ -77,8 +82,11 @@ impl Backend {
         // ── Update docblock to match signature ──────────────────────────
         self.collect_update_docblock_actions(uri, content, params, &mut actions);
 
-        // ── Promote constructor parameter ───────────────────────────────
+        // ── Promote constructor parameter ───────────────────────────────────
         self.collect_promote_constructor_param_actions(uri, content, params, &mut actions);
+
+        // ── Generate constructor ────────────────────────────────────────────
+        self.collect_generate_constructor_actions(uri, content, params, &mut actions);
 
         actions
     }
