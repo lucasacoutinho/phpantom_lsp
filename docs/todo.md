@@ -26,6 +26,8 @@ within the same impact tier.
 | M3  | [Migrate to mago-names](todo/mago.md#m3-mago-names)                                                 | High     | Medium-High |
 | M4  | [Migrate to mago-type-syntax](todo/mago.md#m4-mago-type-syntax)                                     | Critical | Very High   |
 | A2  | [Extract function](todo/actions.md#a2-extract-function-refactoring)                                 | High     | High        |
+| A1  | [Simplify with null coalescing / null-safe operator](todo/actions.md#a1-simplify-with-null-coalescing--null-safe-operator) | Medium | Medium |
+| A7  | [Extract constant](todo/actions.md#a7-extract-constant)                                             | Medium   | Medium      |
 | A15 | [Generate property hooks (PHP 8.4+)](todo/actions.md#a15-generate-property-hooks-php-84)            | Medium   | Low-Medium  |
 |     | **Release 0.7.0**                                                                                   |          |             |
 
@@ -108,8 +110,6 @@ unlikely to move the needle for most users.
 | D6   | [Unreachable code diagnostic](todo/diagnostics.md#d6-unreachable-code-diagnostic)                                                                            | Low-Medium  | Low         |
 | D10  | PHPMD diagnostic proxy                                                                                                                                       | Low         | Medium      |
 |      | **[Code Actions](todo/actions.md)**                                                                                                                          |             |             |
-| A1   | [Simplify with null coalescing / null-safe operator](todo/actions.md#a1-simplify-with-null-coalescing--null-safe-operator)                                    | Medium      | Medium      |
-| A7   | [Extract constant](todo/actions.md#a7-extract-constant)                                                                                                      | Medium      | Medium      |
 | A8   | [Update docblock to match signature](todo/actions.md#a8-update-docblock-to-match-signature)                                                                  | Medium      | Medium      |
 | A6   | [Inline function/method](todo/actions.md#a6-inline-functionmethod)                                                                                           | Medium      | High        |
 | A16  | [Snippet placeholder for extracted method name](todo/actions.md#a16-snippet-placeholder-for-extracted-method-name) (lets the user type over the generated name immediately) | Medium      | Low-Medium  |
