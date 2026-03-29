@@ -233,6 +233,9 @@ impl Backend {
             "phpstan.addReturnTypeWillChange" => {
                 self.resolve_add_return_type_will_change(&data, &content)
             }
+            "phpstan.fixPhpDocType.update" | "phpstan.fixPhpDocType.remove" => {
+                self.resolve_fix_phpdoc_type(&data, &content)
+            }
             "phpstan.newStatic.addTag"
             | "phpstan.newStatic.finalClass"
             | "phpstan.newStatic.finalConstructor" => self.resolve_new_static(&data, &content),

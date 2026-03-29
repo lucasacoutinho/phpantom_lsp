@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Remove `#[Override]` code action.** When PHPStan reports `method.override`, `property.override`, or `property.overrideAttribute` (the attribute is present but the member does not actually override anything, or `#[Override]` on properties is not supported in the current PHP version), a quickfix removes the `#[Override]` attribute. If the attribute shares a line with other attributes, only the `Override` token is removed. The diagnostic is eagerly cleared once the attribute is gone.
 - **Add `#[\ReturnTypeWillChange]` code action.** When PHPStan reports `method.tentativeReturnType`, a quickfix inserts `#[\ReturnTypeWillChange]` above the method declaration with correct indentation. The diagnostic is eagerly cleared once the attribute is present.
 - **Simplify with null coalescing / null-safe operator.** Ternary expressions that guard against `null` are detected and a code action offers to rewrite them. `isset($x) ? $x : $default` and `$x !== null ? $x : $default` become `$x ?? $default`. `$x !== null ? $x->foo() : null` becomes `$x?->foo()` (PHP 8.0+ only).
+- **Fix PHPDoc type mismatch code actions.** When PHPStan reports that a `@return`, `@param`, or `@var` tag has a type incompatible with the native type hint (`return.phpDocType`, `parameter.phpDocType`, `property.phpDocType`), two quickfixes are offered: update the tag type to match the native type, or remove the tag entirely. The diagnostic is eagerly cleared after applying either fix.
 
 ### Changed
 
