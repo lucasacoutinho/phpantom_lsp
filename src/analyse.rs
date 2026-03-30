@@ -109,7 +109,7 @@ pub async fn run(options: AnalyseOptions) -> i32 {
     // Create a headless Backend (no LSP client) and run the same init
     // pipeline as the LSP server.  With client=None the log/progress
     // calls are no-ops.
-    let backend = Backend::new_test();
+    let backend = Backend::new_headless();
     *backend.workspace_root().write() = Some(root.to_path_buf());
     *backend.config.lock() = cfg.clone();
 

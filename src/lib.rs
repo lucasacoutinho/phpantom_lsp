@@ -645,6 +645,16 @@ impl Backend {
         }
     }
 
+    /// Create a `Backend` without an LSP client but with full embedded
+    /// stub indices.
+    ///
+    /// Use this for headless / CLI operation (e.g. the `analyze` command)
+    /// where there is no LSP client but the backend still needs access to
+    /// the PHP standard library stubs.
+    pub fn new_headless() -> Self {
+        Self::defaults()
+    }
+
     /// Create a `Backend` without an LSP client (for unit / integration tests).
     ///
     /// Uses empty stub indices for fast construction.  Tests that need
