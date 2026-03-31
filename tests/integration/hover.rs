@@ -8916,3 +8916,135 @@ class Svc {
         text
     );
 }
+
+// ─── B15: Inline @var cast should not override variable type in RHS ──────────
+
+#[test]
+fn hover_inline_var_cast_does_not_override_rhs_without_varname() {
+    let backend = create_test_backend();
+    let uri = "file:///b15_hover_no_varname.php";
+    let content = r#"<?php
+class Data {
+    public function toArray(): array { return []; }
+    public function count(): int { return 0; }
+}
+class Test {
+    public function run(Data $data): array {
+        /** @var array<string, mixed> */
+        $data = $data->toArray();
+        return $data;
+    }
+}
+"#;
+
+    // Hover on `$data` in the RHS (line 8, the second $data after `= `)
+    // `        $data = $data->toArray();`
+    //                  ^~~~~ cursor here (character 16)
+    let hover = hover_at(&backend, uri, content, 8, 17).expect("expected hover on RHS $data");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Data"),
+        "RHS $data should resolve to Data (the previous type), got: {}",
+        text
+    );
+    assert!(
+        !text.contains("array<string, mixed>"),
+        "RHS $data should NOT show the @var cast type, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_inline_var_cast_does_not_override_rhs_with_varname() {
+    let backend = create_test_backend();
+    let uri = "file:///b15_hover_varname.php";
+    let content = r#"<?php
+class ApiResponse {
+    public function getBody(): string { return ''; }
+    public function json(): array { return []; }
+}
+class Test {
+    public function handle(ApiResponse $response): array {
+        /** @var array<string, mixed> $response */
+        $response = $response->json();
+        return $response;
+    }
+}
+"#;
+
+    // Hover on `$response` in the RHS (line 8, the second $response after `= `)
+    // `        $response = $response->json();`
+    //                      ^~~~~~~~~ cursor here (character 20)
+    let hover = hover_at(&backend, uri, content, 8, 21).expect("expected hover on RHS $response");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("ApiResponse"),
+        "RHS $response should resolve to ApiResponse (the previous type), got: {}",
+        text
+    );
+    assert!(
+        !text.contains("array<string, mixed>"),
+        "RHS $response should NOT show the @var cast type, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_inline_var_cast_applies_after_assignment() {
+    let backend = create_test_backend();
+    let uri = "file:///b15_hover_after.php";
+    let content = r#"<?php
+class Data {
+    public function toArray(): array { return []; }
+}
+class Wrapper {
+    public string $name;
+}
+class Test {
+    public function run(Data $data): void {
+        /** @var Wrapper */
+        $data = $data->toArray();
+        $data->name;
+    }
+}
+"#;
+
+    // Hover on `$data` on line 11 (after the assignment) — @var should apply
+    let hover =
+        hover_at(&backend, uri, content, 11, 9).expect("expected hover on $data after assignment");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Wrapper"),
+        "@var override should apply after the assignment, got: {}",
+        text
+    );
+}
+
+#[test]
+fn hover_standalone_var_annotation_still_applies() {
+    let backend = create_test_backend();
+    let uri = "file:///b15_hover_standalone.php";
+    let content = r#"<?php
+class Formatter {
+    public function format(string $s): string { return $s; }
+}
+class Test {
+    public function run(): void {
+        $data = get_data();
+        /** @var Formatter $data */
+        $data->format('hello');
+    }
+}
+"#;
+
+    // Hover on `$data` on line 8 (after standalone @var annotation)
+    // The @var annotation is standalone (no assignment), so it should apply.
+    let hover = hover_at(&backend, uri, content, 8, 9)
+        .expect("expected hover on $data after standalone @var");
+    let text = hover_text(&hover);
+    assert!(
+        text.contains("Formatter"),
+        "standalone @var annotation should apply, got: {}",
+        text
+    );
+}

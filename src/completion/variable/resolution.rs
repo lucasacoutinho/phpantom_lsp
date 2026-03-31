@@ -2109,6 +2109,17 @@ pub(in crate::completion) fn try_inline_var_override<'b>(
         return false;
     }
 
+    // ── B15 / B13: Skip when cursor is inside the RHS ─────────
+    // When the cursor falls within the RHS of this assignment
+    // (e.g. `/** @var array<string, mixed> */ $data = $data->toArray()`),
+    // the `@var` cast should only apply *after* the assignment
+    // completes.  The RHS `$data` still has its previous type.
+    let rhs_start = assignment.rhs.span().start.offset;
+    let assign_end = assignment.span().end.offset;
+    if ctx.cursor_offset >= rhs_start && ctx.cursor_offset <= assign_end {
+        return false;
+    }
+
     // Look for a `/** @var … */` docblock right before this statement.
     let (var_type, var_name) = match docblock::find_inline_var_docblock(ctx.content, stmt_start) {
         Some(pair) => pair,

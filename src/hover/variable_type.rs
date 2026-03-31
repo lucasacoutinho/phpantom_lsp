@@ -37,6 +37,35 @@ struct HoverClosureCtx<'a> {
     content: &'a str,
 }
 
+/// Check whether `cursor_offset` falls inside the RHS of an assignment
+/// like `$var = $var->…` on the same line.  Used by hover to avoid
+/// applying an inline `@var` cast to the RHS reference (B15).
+fn is_cursor_in_self_assignment_rhs(content: &str, cursor_offset: usize, var_name: &str) -> bool {
+    // Find the line containing the cursor.
+    let line_start = content[..cursor_offset]
+        .rfind('\n')
+        .map_or(0, |pos| pos + 1);
+    let line_end = content[cursor_offset..]
+        .find('\n')
+        .map_or(content.len(), |pos| cursor_offset + pos);
+    let line = &content[line_start..line_end];
+
+    // Look for `$var = ` (plain assignment) on this line.
+    let needle = format!("{} = ", var_name);
+    if let Some(assign_pos) = line.find(&needle) {
+        // The RHS starts right after `$var = `.
+        let rhs_start_in_line = assign_pos + needle.len();
+        let cursor_in_line = cursor_offset - line_start;
+        // Cursor must be in the RHS portion and the RHS must mention
+        // the same variable (self-referential assignment).
+        let rhs = &line[rhs_start_in_line..];
+        if cursor_in_line >= rhs_start_in_line && rhs.contains(var_name) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Resolve the type string for a variable at `cursor_offset` for hover.
 ///
 /// Tries, in order:
@@ -57,8 +86,15 @@ pub(crate) fn resolve_variable_type_string(
     loaders: Loaders<'_>,
 ) -> Option<String> {
     // 1. Inline @var override: `/** @var Type $var */`
+    //
+    // Skip when the cursor is inside the RHS of an assignment whose
+    // LHS is the same variable (B15).  The `@var` cast applies only
+    // *after* the assignment completes, so hovering over `$data` in
+    // `/** @var T */ $data = $data->toArray()` should show the
+    // previous type, not the cast.
     if let Some(var_type) =
         docblock::find_var_raw_type_in_source(content, cursor_offset as usize, var_name)
+        && !is_cursor_in_self_assignment_rhs(content, cursor_offset as usize, var_name)
     {
         return Some(var_type);
     }

@@ -18619,3 +18619,159 @@ async fn test_completion_var_inside_reassignment_rhs_sees_old_type() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+// ─── B15: Inline @var cast should not override variable type in RHS ─────────
+
+/// When `/** @var array<string, mixed> */ $data = $data->toArray()`, the
+/// `$data` on the RHS should still resolve to the *previous* type (Data),
+/// not the `@var` cast type.  The `@var` annotation only applies after
+/// the assignment completes.
+#[tokio::test]
+async fn test_completion_inline_var_cast_does_not_override_rhs() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b15_inline_var_rhs.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Data {\n",                                        // 1
+        "    public function toArray(): array { return []; }\n", // 2
+        "    public function count(): int { return 0; }\n",      // 3
+        "}\n",                                                   // 4
+        "class Test {\n",                                        // 5
+        "    public function run(Data $data): array {\n",        // 6
+        "        /** @var array<string, mixed> */\n",            // 7
+        "        $data = $data->toArray();\n",                   // 8
+        "    }\n",                                               // 9
+        "}\n",                                                   // 10
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor after `$data->` on line 8, inside the RHS of the assignment.
+    // Character 23 is right after `$data->` (8 indent + "$data = $data->" = 23).
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 8,
+                character: 23,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for $data-> inside RHS"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            // Should include Data's members (the original param type)
+            assert!(
+                labels.iter().any(|l| l.starts_with("toArray")),
+                "Should include Data's toArray method inside reassignment RHS, got: {:?}",
+                labels
+            );
+            assert!(
+                labels.iter().any(|l| l.starts_with("count")),
+                "Should include Data's count method inside reassignment RHS, got: {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}
+
+/// Variant of B15: ensure the `@var` cast still applies *after* the
+/// assignment (i.e. on the next line) so we don't break the normal
+/// inline `@var` override behaviour.
+#[tokio::test]
+async fn test_completion_inline_var_cast_applies_after_assignment() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///b15_inline_var_after.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class Data {\n",
+        "    public function toArray(): array { return []; }\n",
+        "}\n",
+        "class Wrapper {\n",
+        "    public string $name;\n",
+        "    public function getLabel(): string { return ''; }\n",
+        "}\n",
+        "class Test {\n",
+        "    public function run(Data $data): void {\n",
+        "        /** @var Wrapper */\n",
+        "        $data = $data->toArray();\n",
+        "        $data->\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Cursor after `$data->` on line 12 (after the assignment)
+    let params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 12,
+                character: 15,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for $data-> after @var assignment"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+            // Should include Wrapper's members (the @var override type)
+            assert!(
+                labels.iter().any(|l| l.starts_with("name")),
+                "Should include Wrapper's name property after @var assignment, got: {:?}",
+                labels
+            );
+            assert!(
+                labels.iter().any(|l| l.starts_with("getLabel")),
+                "Should include Wrapper's getLabel method after @var assignment, got: {:?}",
+                labels
+            );
+            // Should NOT include Data's members
+            assert!(
+                !labels.iter().any(|l| l.starts_with("toArray")),
+                "Should NOT include Data's toArray after @var override, got: {:?}",
+                labels
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

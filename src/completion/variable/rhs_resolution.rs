@@ -1234,13 +1234,14 @@ fn resolve_rhs_function_call<'b>(
             // type-string-only entry so that consumers reading
             // `.type_string` still get the information.
             //
-            // Skip non-informative types like `array`, `mixed`, `void`
-            // — returning these would mask more precise type info from
-            // the raw-type pipeline's specialised handlers (e.g.
-            // `resolve_array_func_raw_type` for `array_filter`).
-            if ret.is_informative() {
-                return vec![ResolvedType::from_type_string(ret.clone())];
+            // When the return type is `void`, PHP yields `null` at
+            // runtime — mirror that so the variable type is correct.
+            if *ret == PhpType::Named("void".into()) {
+                return vec![ResolvedType::from_type_string(PhpType::Named(
+                    "null".into(),
+                ))];
             }
+            return vec![ResolvedType::from_type_string(ret.clone())];
         }
     }
 
@@ -1264,9 +1265,12 @@ fn resolve_rhs_function_call<'b>(
         if !resolved.is_empty() {
             return ResolvedType::from_classes_with_hint(resolved, parsed_ret);
         }
-        if parsed_ret.is_informative() {
-            return vec![ResolvedType::from_type_string(parsed_ret)];
+        if parsed_ret == PhpType::Named("void".into()) {
+            return vec![ResolvedType::from_type_string(PhpType::Named(
+                "null".into(),
+            ))];
         }
+        return vec![ResolvedType::from_type_string(parsed_ret)];
     }
 
     // ── Variable invocation: $fn() ──────────────────
@@ -1531,13 +1535,14 @@ fn resolve_rhs_method_call_inner<'b>(
         // that consumers reading `.type_string` (hover, foreach
         // resolution, null-coalesce stripping) still get the information.
         //
-        // Skip non-informative types (`array`, `mixed`, `void`, etc.)
-        // so that downstream handlers can provide more precise
-        // information.  Also expand type aliases before the check so
-        // that `@phpstan-type UserList array<int, User>` with
-        // `@return UserList` is recognized as informative.
+        // Return the type string even for non-informative types like
+        // `array` or `mixed` — a correct-but-vague type is better
+        // than keeping the previous (wrong) type after reassignment.
+        // Skip only `void` (void methods don't produce a value).
+        // Also expand type aliases before returning so that
+        // `@phpstan-type UserList array<int, User>` with
+        // `@return UserList` is expanded to its concrete type.
         if let Some(ref hint) = ret_type_string {
-            // Try expanding type aliases (e.g. `UserList` → `array<int, User>`).
             let expanded = crate::completion::type_resolution::resolve_type_alias(
                 hint,
                 &owner.name,
@@ -1546,9 +1551,12 @@ fn resolve_rhs_method_call_inner<'b>(
             );
             let effective = expanded.as_deref().unwrap_or(hint);
             let parsed_effective = PhpType::parse(effective);
-            if parsed_effective.is_informative() {
-                return vec![ResolvedType::from_type_string(parsed_effective)];
+            if parsed_effective == PhpType::Named("void".into()) {
+                return vec![ResolvedType::from_type_string(PhpType::Named(
+                    "null".into(),
+                ))];
             }
+            return vec![ResolvedType::from_type_string(parsed_effective)];
         }
     }
     vec![]
@@ -1658,9 +1666,12 @@ fn resolve_rhs_static_call(
             // pipeline, null-coalesce stripping) still get the information.
             if let Some(ref hint) = ret_type_string {
                 let parsed_hint = PhpType::parse(hint);
-                if parsed_hint.is_informative() {
-                    return vec![ResolvedType::from_type_string(parsed_hint)];
+                if parsed_hint == PhpType::Named("void".into()) {
+                    return vec![ResolvedType::from_type_string(PhpType::Named(
+                        "null".into(),
+                    ))];
                 }
+                return vec![ResolvedType::from_type_string(parsed_hint)];
             }
         }
     }
@@ -1706,12 +1717,7 @@ fn resolve_rhs_property_access(
             // shapes, or names a non-scalar class).
             return match type_hint {
                 Some(hint) => {
-                    let parsed_hint = PhpType::parse(&hint);
-                    if parsed_hint.is_informative() {
-                        vec![ResolvedType::from_type_string(parsed_hint)]
-                    } else {
-                        vec![]
-                    }
+                    vec![ResolvedType::from_type_string(PhpType::parse(&hint))]
                 }
                 _ => vec![],
             };
