@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                       | Impact | Effort     |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---------- |
-| T16 | [Closure parameter type inference from generic host method](todo/type-inference.md#t16-closure-parameter-type-inference-from-generic-host-method) | High   | Medium     |
 | T18 | [Method-level template parameter resolution at call sites](todo/type-inference.md#t18-method-level-template-parameter-resolution-at-call-sites) | Medium | Medium     |
 | B17 | [`&&` short-circuit narrowing for null-initialized variables](todo/bugs.md#b17-short-circuit-narrowing-does-not-eliminate-null-for-null-initialized-variables) | Low    | Low        |
 |     | **Release 0.7.0**                                                                                                                          |        |            |

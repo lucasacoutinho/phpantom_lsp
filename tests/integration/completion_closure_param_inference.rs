@@ -2275,3 +2275,97 @@ async fn test_explicit_subclass_still_wins_over_inferred_parent() {
         names,
     );
 }
+
+// ─── T16 reproducer: @var annotated generic collection ──────────────────────
+
+/// When a variable is annotated with `@var Collection<int, CustomerDocument>`,
+/// passing it to `Collection::each(callable(TValue): void)` should infer the
+/// closure parameter as `CustomerDocument`.
+#[tokio::test]
+async fn test_closure_param_inferred_from_var_annotated_generic_collection() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_infer_var_annotation.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class CustomerDocument {\n",
+        "    public function getCustomerId(): int { return 0; }\n",
+        "    public function getDocumentPath(): string { return ''; }\n",
+        "}\n",
+        "/**\n",
+        " * @template TKey\n",
+        " * @template TValue\n",
+        " */\n",
+        "class Collection {\n",
+        "    /**\n",
+        "     * @param callable(TValue): void $callback\n",
+        "     * @return static\n",
+        "     */\n",
+        "    public function each(callable $callback): static {}\n",
+        "}\n",
+        "/** @var Collection<int, CustomerDocument> $collection */\n",
+        "$collection = new Collection();\n",
+        "$collection->each(function ($class) {\n",
+        "    $class->\n",
+        "});\n",
+    );
+
+    // Line 19: `    $class->`  cursor after `->`
+    let items = complete_at(&backend, &uri, src, 19, 12).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"getCustomerId"),
+        "Expected getCustomerId from @var Collection<int, CustomerDocument>, got: {:?}",
+        names,
+    );
+    assert!(
+        names.contains(&"getDocumentPath"),
+        "Expected getDocumentPath from @var Collection<int, CustomerDocument>, got: {:?}",
+        names,
+    );
+}
+
+/// Same as above but with a standalone `@var` (no assignment on the same line).
+#[tokio::test]
+async fn test_closure_param_inferred_from_standalone_var_generic() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///test/closure_infer_standalone_var.php").unwrap();
+
+    let src = concat!(
+        "<?php\n",
+        "class Item {\n",
+        "    public function getName(): string { return ''; }\n",
+        "}\n",
+        "/**\n",
+        " * @template TKey\n",
+        " * @template TValue\n",
+        " */\n",
+        "class Collection {\n",
+        "    /**\n",
+        "     * @param callable(TValue, TKey): void $callback\n",
+        "     * @return static\n",
+        "     */\n",
+        "    public function each(callable $callback): static {}\n",
+        "    /**\n",
+        "     * @param callable(TValue): mixed $callback\n",
+        "     * @return static\n",
+        "     */\n",
+        "    public function map(callable $callback): static {}\n",
+        "}\n",
+        "function processItems(): void {\n",
+        "    /** @var Collection<int, Item> $items */\n",
+        "    $items = getItems();\n",
+        "    $items->map(fn($item) => $item->);\n",
+        "}\n",
+    );
+
+    // Line 23: `    $items->map(fn($item) => $item->);`
+    //                                              ^--- cursor after `->`
+    let items = complete_at(&backend, &uri, src, 23, 36).await;
+    let names = method_names(&items);
+    assert!(
+        names.contains(&"getName"),
+        "Expected getName from @var Collection<int, Item> via map(), got: {:?}",
+        names,
+    );
+}

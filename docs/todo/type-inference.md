@@ -412,48 +412,6 @@ emits the concrete callable signature in the `@param` tag.
 
 ---
 
-## T16. Closure parameter type inference from generic host method
-**Impact: High · Effort: Medium**
-
-When a closure is passed to a method like
-`Collection::each(callable(TValue): void)`, PHPantom should infer
-the closure parameter type from the host method's template-bound
-parameter type.  Currently, untyped closure parameters remain
-unresolved.
-
-This is the single largest source of remaining diagnostics. It
-directly causes ~20 `unresolved_member_access` errors (variables like
-`$item`, `$data`, `$q`, `$connection` in closures passed to
-`Collection::each`, `Collection::map`, `Builder::where`, etc.) and
-indirectly causes ~15 `unknown_member` chain-resolution failures
-downstream (when the closure parameter type is unknown, any method
-called on it also returns an unknown type, breaking the rest of the
-chain).
-
-**Reproducer:**
-
-```php
-/** @var Collection<int, CustomerDocument> $collection */
-$collection->each(function ($class) {
-    $class->someMethod();  // "Cannot resolve type of '$class'"
-});
-```
-
-**What should work:** The `each` method's `@param` says the callable
-receives `TValue`.  If `TValue` is bound to `CustomerDocument`, the
-closure's `$class` should be typed `CustomerDocument`.
-
-**Where to fix:**
-- `src/completion/variable/resolution.rs` — closure parameter inference.
-- `src/completion/variable/rhs_resolution.rs` — resolve the host
-  method's parameter type and map template arguments to the closure's
-  parameter positions.
-
-**Impact in shared codebase:** ~35 diagnostics (direct + downstream
-chain failures).
-
----
-
 ## T18. Method-level template parameter resolution at call sites
 **Impact: Medium · Effort: Medium**
 
@@ -514,6 +472,3 @@ with the concrete argument type.
 **Impact in shared codebase:** ~2 diagnostics.
 
 ---
-
-
-
