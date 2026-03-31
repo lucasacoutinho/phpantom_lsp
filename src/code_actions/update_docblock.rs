@@ -557,10 +557,7 @@ fn check_needs_update(
         }) {
             // If the doc type already carries generic params or a callable
             // signature, it is already enriched — no update needed.
-            if doc_param.type_str.contains('<')
-                || doc_param.type_str.contains('(')
-                || doc_param.type_str.contains('{')
-            {
+            if PhpType::parse(&doc_param.type_str).has_type_structure() {
                 continue;
             }
             if let Some(enriched) = enrichment_plain(&sig_param.type_hint, class_loader)
@@ -687,15 +684,21 @@ fn is_type_contradiction(doc_type: &str, native_type: &str) -> bool {
 /// Normalize a type string for comparison: strip leading `\`, lowercase,
 /// normalize nullable.
 fn normalize_type_for_comparison(t: &str) -> String {
-    let t = t.strip_prefix('\\').unwrap_or(t);
-    let t = t.strip_prefix('?').map_or_else(
-        || t.to_lowercase(),
-        |rest| format!("{}|null", rest.to_lowercase()),
-    );
-    // Sort union components.
-    let parsed = PhpType::parse(&t);
-    let members = parsed.union_members();
-    let mut parts: Vec<String> = members.iter().map(|m| m.to_string()).collect();
+    let parsed = PhpType::parse(t).shorten();
+    // Expand `?T` → `T|null` so that `?Foo` and `Foo|null` normalise
+    // to the same string.
+    let expanded = match &parsed {
+        PhpType::Nullable(inner) => {
+            PhpType::Union(vec![inner.as_ref().clone(), PhpType::Named("null".into())])
+        }
+        other => other.clone(),
+    };
+    // Sort union components for order-independent comparison.
+    let members = expanded.union_members();
+    let mut parts: Vec<String> = members
+        .iter()
+        .map(|m| m.to_string().to_lowercase())
+        .collect();
     parts.sort();
     parts.join("|")
 }
@@ -759,10 +762,7 @@ fn build_updated_docblock(
                         // back to the raw native hint.
                         enrichment_plain(&sig.type_hint, class_loader)
                             .unwrap_or_else(|| native.clone())
-                    } else if existing.type_str.contains('<')
-                        || existing.type_str.contains('(')
-                        || existing.type_str.contains('{')
-                    {
+                    } else if PhpType::parse(&existing.type_str).has_type_structure() {
                         // Doc already has generics / callable / shape — keep it.
                         existing.type_str.clone()
                     } else {

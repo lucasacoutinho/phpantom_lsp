@@ -36,8 +36,6 @@ use super::conditional_resolution::{
 use super::resolver::{Loaders, ResolutionCtx};
 use crate::util::find_class_by_name;
 
-use crate::inheritance::apply_substitution;
-
 use tower_lsp::lsp_types::Position;
 
 /// Bundled parameters for [`Backend::resolve_method_return_types_with_args`].
@@ -737,14 +735,15 @@ impl Backend {
                     // Apply method-level template substitutions to the
                     // resolved conditional type (e.g. `TModel` → concrete
                     // class when TModel is a method-level @template param).
-                    let effective_ty = if !template_subs.is_empty() {
-                        apply_substitution(ty, template_subs).into_owned()
+                    let parsed = PhpType::parse(ty);
+                    let effective = if !template_subs.is_empty() {
+                        parsed.substitute(template_subs)
                     } else {
-                        ty.clone()
+                        parsed
                     };
                     let classes: Vec<Arc<ClassInfo>> =
-                        super::type_resolution::type_hint_to_classes(
-                            &effective_ty,
+                        super::type_resolution::type_hint_to_classes_typed(
+                            &effective,
                             &class_info.name,
                             all_classes,
                             class_loader,
@@ -792,12 +791,14 @@ impl Backend {
                 // in the current file's use-map or local classes.
                 // Returning class_info preserves any generic substitutions
                 // already applied (e.g. Builder<User> stays Builder<User>).
-                let ret_str = ret.to_string();
-                let trimmed = ret_str.trim();
                 // Match bare `self`/`static`/`$this` as well as generic
                 // forms like `self<RuleError>`, `static<T>`, etc.
-                let base = trimmed.split('<').next().unwrap_or(trimmed);
-                if base == "static" || base == "self" || base == "$this" {
+                let is_self_like = match ret {
+                    PhpType::Named(n) => n == "static" || n == "self" || n == "$this",
+                    PhpType::Generic(n, _) => n == "static" || n == "self" || n == "$this",
+                    _ => false,
+                };
+                if is_self_like {
                     return vec![Arc::new(class_info.clone())];
                 }
                 return super::type_resolution::type_hint_to_classes_typed(

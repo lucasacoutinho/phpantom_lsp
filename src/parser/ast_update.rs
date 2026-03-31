@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use crate::php_type::PhpType;
 use crate::symbol_map::extract_symbol_map;
+use crate::types::TypeAliasDef;
 
 use bumpalo::Bump;
 
@@ -753,21 +754,20 @@ impl Backend {
             // Also resolve class-like names inside type alias definitions
             // so that `@phpstan-type ActiveUser User` where `User` is
             // imported via `use App\Models\User` becomes `App\Models\User`.
-            // Skip imported aliases (`from:ClassName:OriginalName`) — those
-            // are internal references, not type strings.
             for def in class.type_aliases.values_mut() {
-                if let Some(rest) = def.strip_prefix("from:")
-                    && let Some((class_name, original)) = rest.split_once(':')
-                {
-                    // Imported alias — resolve the class name portion.
-                    // Format: `from:ClassName:OriginalName`
-                    let resolved_class = Self::resolve_name(class_name, use_map, namespace);
-                    *def = format!("from:{}:{}", resolved_class, original);
-                    continue;
-                }
-                let resolved = Self::resolve_type_string_via_php_type(def, &resolver);
-                if resolved != *def {
-                    *def = resolved;
+                match def {
+                    TypeAliasDef::Import { source_class, .. } => {
+                        // Imported alias — resolve the source class name.
+                        let resolved_class = Self::resolve_name(source_class, use_map, namespace);
+                        if resolved_class != *source_class {
+                            *source_class = resolved_class;
+                        }
+                    }
+                    TypeAliasDef::Local(php_type) => {
+                        // Local alias — resolve class names within the type.
+                        let resolved = php_type.resolve_names(&resolver);
+                        *php_type = resolved;
+                    }
                 }
             }
 

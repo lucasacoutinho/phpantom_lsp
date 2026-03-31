@@ -235,7 +235,6 @@ fn inject_model_virtual_methods(
 ) {
     use std::collections::HashMap;
 
-    use crate::inheritance::apply_substitution;
     use crate::php_type::PhpType;
 
     let model_class = match class_loader(model_name) {
@@ -292,9 +291,7 @@ fn inject_model_virtual_methods(
 
         // Substitute self-referencing return types.
         if let Some(ref mut ret) = forwarded.return_type {
-            let ret_str = ret.to_string();
-            let substituted = apply_substitution(&ret_str, &subs);
-            *ret = PhpType::parse(&substituted);
+            *ret = ret.substitute(&subs);
         }
 
         builder.methods.push(forwarded);

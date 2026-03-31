@@ -13,7 +13,7 @@ use mago_docblock::document::TagKind;
 use super::parser::{DocblockInfo, collapse_newlines, parse_docblock_for_tags};
 use super::types::split_type_token;
 use crate::php_type::PhpType;
-use crate::types::TemplateVariance;
+use crate::types::{TemplateVariance, TypeAliasDef};
 
 // ─── Template Parameters ────────────────────────────────────────────────────
 
@@ -397,10 +397,10 @@ fn parse_generics_from_description(desc: &str) -> Option<(String, Vec<String>)> 
 /// `@phpstan-import-type` / `@psalm-import-type` imported aliases from a
 /// docblock.
 ///
-/// Returns a map from alias name to definition string.  For imported
-/// aliases the definition has the form `"from:ClassName:OriginalName"` so
-/// that the resolver can look up the alias in the source class.
-pub fn extract_type_aliases(docblock: &str) -> HashMap<String, String> {
+/// Returns a map from alias name to [`TypeAliasDef`].  Local aliases are
+/// parsed into a `PhpType` at construction time; imported aliases store
+/// the source class and original alias name for cross-file resolution.
+pub fn extract_type_aliases(docblock: &str) -> HashMap<String, TypeAliasDef> {
     let Some(info) = parse_docblock_for_tags(docblock) else {
         return HashMap::new();
     };
@@ -409,7 +409,7 @@ pub fn extract_type_aliases(docblock: &str) -> HashMap<String, String> {
 }
 
 /// Like [`extract_type_aliases`], but operates on a pre-parsed [`DocblockInfo`].
-pub fn extract_type_aliases_from_info(info: &DocblockInfo) -> HashMap<String, String> {
+pub fn extract_type_aliases_from_info(info: &DocblockInfo) -> HashMap<String, TypeAliasDef> {
     let mut aliases = HashMap::new();
 
     // ── Local type alias: @phpstan-type / @psalm-type ──
@@ -428,7 +428,7 @@ pub fn extract_type_aliases_from_info(info: &DocblockInfo) -> HashMap<String, St
             && !name.is_empty()
             && !def.is_empty()
         {
-            aliases.insert(name.to_string(), def.to_string());
+            aliases.insert(name.to_string(), TypeAliasDef::Local(PhpType::parse(def)));
         }
     }
 
@@ -444,10 +444,7 @@ pub fn extract_type_aliases_from_info(info: &DocblockInfo) -> HashMap<String, St
         }
 
         // Format: `TypeName from ClassName` or `TypeName from ClassName as LocalAlias`
-        if let Some((alias_name, definition)) = parse_import_type_alias(desc)
-            && !alias_name.is_empty()
-            && !definition.is_empty()
-        {
+        if let Some((alias_name, definition)) = parse_import_type_alias(desc) {
             aliases.insert(alias_name, definition);
         }
     }
@@ -494,9 +491,9 @@ fn parse_local_type_alias(rest: &str) -> Option<(&str, &str)> {
 ///
 /// Format: `TypeName from ClassName` or `TypeName from ClassName as LocalAlias`
 ///
-/// Returns `(local_alias_name, "from:ClassName:OriginalName")` so the
+/// Returns `(local_alias_name, TypeAliasDef::Import { … })` so the
 /// resolver can look up the alias in the source class.
-fn parse_import_type_alias(rest: &str) -> Option<(String, String)> {
+fn parse_import_type_alias(rest: &str) -> Option<(String, TypeAliasDef)> {
     // Split: TypeName from ClassName [as LocalAlias]
     let parts: Vec<&str> = rest.split_whitespace().collect();
 
@@ -515,7 +512,10 @@ fn parse_import_type_alias(rest: &str) -> Option<(String, String)> {
         original_name.to_string()
     };
 
-    let definition = format!("from:{}:{}", source_class, original_name);
+    let definition = TypeAliasDef::Import {
+        source_class: source_class.to_string(),
+        original_name: original_name.to_string(),
+    };
 
     Some((alias_name, definition))
 }
@@ -641,8 +641,6 @@ fn find_class_string_param_name_from_info(
     info: &DocblockInfo,
     template_name: &str,
 ) -> Option<String> {
-    let pattern = format!("class-string<{}>", template_name);
-
     for tag in info.tags_by_kinds(&[TagKind::PhpstanParam, TagKind::Param]) {
         let desc = tag.description.trim();
         if desc.is_empty() {
@@ -652,14 +650,12 @@ fn find_class_string_param_name_from_info(
         // Extract the full type token (respects `<…>` nesting).
         let (type_token, remainder) = split_type_token(desc);
 
-        // Check if the type token contains `class-string<T>`.
-        // We strip `?` prefix and check for the pattern.
-        let check = type_token.strip_prefix('?').unwrap_or(type_token);
-        // Also handle `class-string<T>|null` — split on `|` and
-        // check each part.
-        let matches = check.split('|').any(|part| part.trim() == pattern);
-
-        if !matches {
+        // Parse the type token into a structured PhpType and check
+        // whether it contains `class-string<T>` for the given template
+        // name, naturally handling nullable, union-with-null, and other
+        // wrappings without manual string splitting.
+        let parsed = PhpType::parse(type_token);
+        if !contains_class_string_of(&parsed, template_name) {
             continue;
         }
 
@@ -686,4 +682,26 @@ fn find_class_string_param_name_from_info(
     }
 
     None
+}
+
+/// Check whether a [`PhpType`] contains `class-string<T>` where the inner
+/// type parameter matches `template_name`.
+///
+/// Recursively unwraps nullable and union types so that `?class-string<T>`,
+/// `class-string<T>|null`, and `class-string<T>|string` are all matched.
+fn contains_class_string_of(ty: &PhpType, template_name: &str) -> bool {
+    match ty {
+        PhpType::ClassString(Some(inner)) => {
+            // Check if the inner type is exactly the template name.
+            matches!(inner.as_ref(), PhpType::Named(name) if name == template_name)
+        }
+        PhpType::Nullable(inner) => contains_class_string_of(inner, template_name),
+        PhpType::Union(members) => members
+            .iter()
+            .any(|m| contains_class_string_of(m, template_name)),
+        PhpType::Intersection(members) => members
+            .iter()
+            .any(|m| contains_class_string_of(m, template_name)),
+        _ => false,
+    }
 }

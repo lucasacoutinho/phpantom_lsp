@@ -9,7 +9,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::inheritance::apply_substitution;
 use crate::php_type::PhpType;
 use crate::types::{ClassInfo, MethodInfo};
 
@@ -160,10 +159,11 @@ pub fn build_scope_methods_for_builder(
     // The default scope return type is `\...\Builder<static>` where
     // `static` means the model, so substituting `static` → `User`
     // produces `\...\Builder<User>`, keeping the chain on the builder.
+    let model_type = PhpType::Named(model_name.to_string());
     let mut subs = HashMap::new();
-    subs.insert("static".to_string(), PhpType::parse(model_name));
-    subs.insert("$this".to_string(), PhpType::parse(model_name));
-    subs.insert("self".to_string(), PhpType::parse(model_name));
+    subs.insert("static".to_string(), model_type.clone());
+    subs.insert("$this".to_string(), model_type.clone());
+    subs.insert("self".to_string(), model_type);
 
     let mut methods = Vec::new();
 
@@ -182,9 +182,7 @@ pub fn build_scope_methods_for_builder(
 
         // Apply substitutions to the return type.
         if let Some(ref mut ret) = m.return_type {
-            let ret_str = ret.to_string();
-            let substituted = apply_substitution(&ret_str, &subs);
-            *ret = PhpType::parse(&substituted);
+            *ret = ret.substitute(&subs);
         }
 
         methods.push(m);

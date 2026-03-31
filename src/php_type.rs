@@ -1365,6 +1365,65 @@ impl PhpType {
     /// fully-qualified class name (e.g. `App\Models\User`) while the
     /// other uses the short name (`User`). Handles unions, intersections,
     /// nullable types, and generic parameters.
+    /// Whether this type carries structural information beyond a bare
+    /// class name or scalar keyword.
+    ///
+    /// Returns `true` for generics, shapes, arrays, callables,
+    /// class-string, key-of, value-of, conditionals, index access,
+    /// int ranges, and literals.  Returns `false` for plain `Named`,
+    /// `Raw`, and `Nullable(Named(_))`.
+    ///
+    /// This replaces the `has_type_structure` helper in
+    /// `foreach_resolution.rs` and the string-based checks like
+    /// `.contains('<')` scattered across the codebase.
+    pub fn has_type_structure(&self) -> bool {
+        match self {
+            PhpType::Named(_) | PhpType::Raw(_) => false,
+            PhpType::Nullable(inner) => inner.has_type_structure(),
+            PhpType::Union(members) => members.iter().any(|m| m.has_type_structure()),
+            PhpType::Intersection(members) => members.iter().any(|m| m.has_type_structure()),
+            _ => true,
+        }
+    }
+
+    /// Whether this type is "informative" — i.e. carries enough detail
+    /// to be worth preserving as a resolved type string.
+    ///
+    /// Returns `true` for generics, shapes, arrays, callables,
+    /// class-string, key-of/value-of, conditionals, index access, int
+    /// ranges, literals, and named types that are not vague keywords
+    /// like `array`, `mixed`, `object`, `void`, `null`, `self`,
+    /// `static`, or `$this`.
+    ///
+    /// Returns `false` for those vague keywords and for `Raw` types
+    /// that lack structural markers.
+    ///
+    /// This replaces `is_informative_type_string()` in
+    /// `rhs_resolution.rs`, avoiding a parse→check round-trip when the
+    /// caller already has a `PhpType`.
+    pub fn is_informative(&self) -> bool {
+        match self {
+            PhpType::Generic(..) => true,
+            PhpType::ArrayShape(..) | PhpType::ObjectShape(..) => true,
+            PhpType::Array(..) => true,
+            PhpType::Union(members) => members.iter().any(|m| m.is_informative()),
+            PhpType::Nullable(inner) => inner.is_informative(),
+            PhpType::Intersection(members) => members.iter().any(|m| m.is_informative()),
+            PhpType::Named(n) => !matches!(
+                n.as_str(),
+                "array" | "mixed" | "object" | "void" | "null" | "self" | "static" | "$this"
+            ),
+            PhpType::Callable { .. } => true,
+            PhpType::ClassString(..) | PhpType::InterfaceString(..) => true,
+            PhpType::KeyOf(..) | PhpType::ValueOf(..) => true,
+            PhpType::IndexAccess(..) => true,
+            PhpType::Conditional { .. } => true,
+            PhpType::IntRange(..) => true,
+            PhpType::Literal(..) => true,
+            PhpType::Raw(s) => s.contains('<') || s.contains('{') || s.ends_with("[]"),
+        }
+    }
+
     pub fn equivalent(&self, other: &PhpType) -> bool {
         if self == other {
             return true;

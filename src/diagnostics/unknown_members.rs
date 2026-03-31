@@ -829,12 +829,11 @@ fn resolve_scalar_subject_type(
             if resolved.is_empty() {
                 return None;
             }
-            let raw_type = ResolvedType::type_strings_joined(&resolved);
-            let parsed = crate::php_type::PhpType::parse(&raw_type);
-            if parsed.all_members_primitive_scalar() {
-                let display = parsed
+            let joined = ResolvedType::types_joined(&resolved);
+            if joined.all_members_primitive_scalar() {
+                let display = joined
                     .non_null_type()
-                    .map_or_else(|| parsed.to_string(), |t| t.to_string());
+                    .map_or_else(|| joined.to_string(), |t| t.to_string());
                 Some(display)
             } else {
                 None

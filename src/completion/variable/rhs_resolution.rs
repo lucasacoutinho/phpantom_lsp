@@ -1180,7 +1180,6 @@ fn resolve_rhs_function_call<'b>(
         }
 
         if let Some(ref ret) = func_info.return_type {
-            let ret_str = ret.to_string();
             let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
                 ret,
                 current_class_name,
@@ -1200,7 +1199,7 @@ fn resolve_rhs_function_call<'b>(
             // — returning these would mask more precise type info from
             // the raw-type pipeline's specialised handlers (e.g.
             // `resolve_array_func_raw_type` for `array_filter`).
-            if is_informative_type_string(&ret_str) {
+            if ret.is_informative() {
                 return vec![ResolvedType::from_type_string(ret.clone())];
             }
         }
@@ -1216,17 +1215,18 @@ fn resolve_rhs_function_call<'b>(
         && let Some(ret) =
             crate::completion::source::helpers::extract_function_return_from_source(name, content)
     {
-        let resolved = crate::completion::type_resolution::type_hint_to_classes(
-            &ret,
+        let parsed_ret = PhpType::parse(&ret);
+        let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
+            &parsed_ret,
             current_class_name,
             all_classes,
             class_loader,
         );
         if !resolved.is_empty() {
-            return ResolvedType::from_classes_with_hint(resolved, PhpType::parse(&ret));
+            return ResolvedType::from_classes_with_hint(resolved, parsed_ret);
         }
-        if is_informative_type_string(&ret) {
-            return vec![ResolvedType::from_type_string(PhpType::parse(&ret))];
+        if parsed_ret.is_informative() {
+            return vec![ResolvedType::from_type_string(parsed_ret)];
         }
     }
 
@@ -1505,8 +1505,9 @@ fn resolve_rhs_method_call_inner<'b>(
                 ctx.class_loader,
             );
             let effective = expanded.as_deref().unwrap_or(hint);
-            if is_informative_type_string(effective) {
-                return vec![ResolvedType::from_type_string(PhpType::parse(effective))];
+            let parsed_effective = PhpType::parse(effective);
+            if parsed_effective.is_informative() {
+                return vec![ResolvedType::from_type_string(parsed_effective)];
             }
         }
     }
@@ -1613,10 +1614,11 @@ fn resolve_rhs_static_call(
             // `array{name: string}`).  Return a type-string-only entry so
             // that consumers reading `.type_string` (hover, raw-type
             // pipeline, null-coalesce stripping) still get the information.
-            if let Some(ref hint) = ret_type_string
-                && is_informative_type_string(hint)
-            {
-                return vec![ResolvedType::from_type_string(PhpType::parse(hint))];
+            if let Some(ref hint) = ret_type_string {
+                let parsed_hint = PhpType::parse(hint);
+                if parsed_hint.is_informative() {
+                    return vec![ResolvedType::from_type_string(parsed_hint)];
+                }
             }
         }
     }
@@ -1661,8 +1663,13 @@ fn resolve_rhs_property_access(
             // entry when the type is informative (carries generics,
             // shapes, or names a non-scalar class).
             return match type_hint {
-                Some(hint) if is_informative_type_string(&hint) => {
-                    vec![ResolvedType::from_type_string(PhpType::parse(&hint))]
+                Some(hint) => {
+                    let parsed_hint = PhpType::parse(&hint);
+                    if parsed_hint.is_informative() {
+                        vec![ResolvedType::from_type_string(parsed_hint)]
+                    } else {
+                        vec![]
+                    }
                 }
                 _ => vec![],
             };
@@ -1798,47 +1805,6 @@ fn resolve_rhs_property_access(
         }
     }
     vec![]
-}
-
-/// Whether a type string carries enough information to be worth
-/// returning as a type-string-only `ResolvedType`.
-///
-/// Bare scalars (`int`, `string`, `bool`, etc.) and uninformative
-/// base types (`array`, `mixed`, `void`, `object`, `iterable`) are
-/// considered **not** informative — returning them from the unified
-/// resolver would mask more precise results from the raw-type
-/// pipeline's specialised handlers (e.g. `resolve_array_func_raw_type`
-/// which tracks element types through `array_filter`).
-///
-/// Types that carry generic or shape information (`list<User>`,
-/// `array{name: string}`, `Collection<int, Foo>`) ARE informative
-/// because the raw-type pipeline cannot reconstruct the parametric
-/// detail.
-pub(in crate::completion) fn is_informative_type_string(ts: &str) -> bool {
-    fn is_informative(ty: &PhpType) -> bool {
-        match ty {
-            PhpType::Generic(..) => true,
-            PhpType::ArrayShape(..) | PhpType::ObjectShape(..) => true,
-            PhpType::Array(..) => true,
-            PhpType::Union(members) => members.iter().any(is_informative),
-            PhpType::Nullable(inner) => is_informative(inner),
-            PhpType::Intersection(members) => members.iter().any(is_informative),
-            PhpType::Named(n) => !matches!(
-                n.as_str(),
-                "array" | "mixed" | "object" | "void" | "null" | "self" | "static" | "$this"
-            ),
-            PhpType::Callable { .. } => true,
-            PhpType::ClassString(..) | PhpType::InterfaceString(..) => true,
-            PhpType::KeyOf(..) | PhpType::ValueOf(..) => true,
-            PhpType::IndexAccess(..) => true,
-            PhpType::Conditional { .. } => true,
-            PhpType::IntRange(..) => true,
-            PhpType::Literal(..) => true,
-            PhpType::Raw(s) => s.contains('<') || s.contains('{') || s.ends_with("[]"),
-        }
-    }
-
-    is_informative(&PhpType::parse(ts))
 }
 
 /// Resolve `clone $expr` — preserves the cloned expression's type.

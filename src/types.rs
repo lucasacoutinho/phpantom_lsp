@@ -299,6 +299,35 @@ pub struct ArrayShapeEntry {
     pub optional: bool,
 }
 
+/// A type alias definition, either locally defined or imported from another class.
+///
+/// Local aliases are parsed into a [`PhpType`] at construction time, eliminating
+/// repeated parsing during type resolution. Imported aliases store the source
+/// class and original alias name so the resolver can look them up cross-file.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeAliasDef {
+    /// A locally defined type alias (via `@phpstan-type` / `@psalm-type`).
+    ///
+    /// The `PhpType` is the fully parsed definition. For example,
+    /// `@phpstan-type UserData array{name: string, email: string}` produces
+    /// `Local(PhpType::parse("array{name: string, email: string}"))`.
+    Local(PhpType),
+
+    /// An imported type alias (via `@phpstan-import-type` / `@psalm-import-type`).
+    ///
+    /// `source_class` is the fully-qualified class name that defines the alias,
+    /// and `original_name` is the alias name in that source class.
+    ///
+    /// For example, `@phpstan-import-type UserData from App\Models\User as UD`
+    /// produces `Import { source_class: "App\\Models\\User", original_name: "UserData" }`.
+    Import {
+        /// Fully-qualified name of the class that defines the alias.
+        source_class: String,
+        /// The alias name in the source class.
+        original_name: String,
+    },
+}
+
 /// Variance of a `@template` parameter.
 ///
 /// PHPStan and Psalm support `@template-covariant` and
@@ -1396,7 +1425,7 @@ pub struct ClassInfo {
     ///
     /// These are consulted during type resolution so that a method returning
     /// `UserData` resolves to the underlying `array{name: string, email: string}`.
-    pub type_aliases: HashMap<String, String>,
+    pub type_aliases: HashMap<String, TypeAliasDef>,
     /// Trait `insteadof` precedence adaptations.
     ///
     /// When a class uses multiple traits with conflicting method names,
@@ -1837,6 +1866,28 @@ impl ResolvedType {
             .map(|rt| rt.type_string.to_string())
             .collect::<Vec<_>>()
             .join("|")
+    }
+
+    /// Combine the type strings of all entries into a single [`PhpType`].
+    ///
+    /// When there is exactly one entry, returns its `type_string` directly.
+    /// When there are multiple entries, wraps them in a [`PhpType::Union`].
+    /// When the slice is empty, returns `PhpType::Named("mixed")` as a
+    /// safe fallback (callers should check emptiness beforehand).
+    ///
+    /// This is the structured counterpart of [`type_strings_joined`] and
+    /// avoids the `PhpType → String → PhpType` round-trip that occurs
+    /// when callers join types into a string and then re-parse them.
+    pub(crate) fn types_joined(resolved: &[ResolvedType]) -> PhpType {
+        match resolved.len() {
+            0 => PhpType::Named("mixed".to_owned()),
+            1 => resolved[0].type_string.clone(),
+            _ => {
+                let members: Vec<PhpType> =
+                    resolved.iter().map(|rt| rt.type_string.clone()).collect();
+                PhpType::Union(members)
+            }
+        }
     }
 }
 

@@ -1040,7 +1040,7 @@ fn build_docblock_for_extraction(
             continue;
         }
         // Prefer the raw resolved type when it carries concrete generics.
-        if raw.contains('<') {
+        if PhpType::parse(raw).has_type_structure() {
             tags.push(format!("@param {} {}", raw, name));
             continue;
         }
@@ -1053,7 +1053,7 @@ fn build_docblock_for_extraction(
 
     // Collect @return tag if the return type needs enrichment.
     if !return_type_hint.is_empty() || !raw_return_type.is_empty() {
-        if raw_return_type.contains('<') {
+        if PhpType::parse(raw_return_type).has_type_structure() {
             tags.push(format!("@return {}", raw_return_type));
         } else {
             let hint = if return_type_hint.is_empty() {

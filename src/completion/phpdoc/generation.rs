@@ -1003,7 +1003,7 @@ pub(crate) fn enrichment_snippet(
     }
 
     // Intersection types (&), nullable (?Type) — skip.
-    if th.contains('&') || th.starts_with('?') {
+    if matches!(parsed, PhpType::Intersection(_) | PhpType::Nullable(_)) {
         return None;
     }
 
@@ -1084,7 +1084,7 @@ pub(crate) fn enrichment_plain(
         return None;
     }
 
-    if th.contains('&') || th.starts_with('?') {
+    if matches!(parsed, PhpType::Intersection(_) | PhpType::Nullable(_)) {
         return None;
     }
 
@@ -1649,12 +1649,13 @@ fn property_var_type_snippet(
                 *tab_stop += 1;
                 return s;
             }
-            if !th.contains('|')
-                && !th.contains('&')
-                && !th.starts_with('?')
-                && !NON_CLASS_TYPES
-                    .iter()
-                    .any(|s| s.eq_ignore_ascii_case(clean))
+            let parsed = PhpType::parse(th);
+            if !matches!(
+                parsed,
+                PhpType::Union(_) | PhpType::Intersection(_) | PhpType::Nullable(_)
+            ) && !NON_CLASS_TYPES
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(clean))
                 && let Some(cls) = class_loader(clean)
                 && !cls.template_params.is_empty()
             {
@@ -1683,12 +1684,13 @@ fn property_var_type_plain(
             if CALLABLE_TYPES.iter().any(|s| s.eq_ignore_ascii_case(clean)) {
                 return format!("({}())", clean);
             }
-            if !th.contains('|')
-                && !th.contains('&')
-                && !th.starts_with('?')
-                && !NON_CLASS_TYPES
-                    .iter()
-                    .any(|s| s.eq_ignore_ascii_case(clean))
+            let parsed = PhpType::parse(th);
+            if !matches!(
+                parsed,
+                PhpType::Union(_) | PhpType::Intersection(_) | PhpType::Nullable(_)
+            ) && !NON_CLASS_TYPES
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(clean))
                 && let Some(cls) = class_loader(clean)
                 && !cls.template_params.is_empty()
             {

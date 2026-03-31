@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::php_type::PhpType;
+use crate::types::TypeAliasDef;
 use mago_span::HasSpan;
 use mago_syntax::ast::attribute::AttributeList;
 use mago_syntax::ast::class_like::enum_case::EnumCaseItem;
@@ -173,7 +174,7 @@ struct ClassDocblockInfo {
     /// Generic arguments from `@use` / `@phpstan-use`.
     use_generics: Vec<(String, Vec<PhpType>)>,
     /// Type aliases from `@phpstan-type` / `@psalm-type`.
-    type_aliases: HashMap<String, String>,
+    type_aliases: HashMap<String, TypeAliasDef>,
     /// Mixin class names from `@mixin` tags.
     mixins: Vec<String>,
     /// Generic type arguments from `@mixin` tags.

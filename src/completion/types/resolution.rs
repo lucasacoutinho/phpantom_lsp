@@ -16,7 +16,7 @@
 /// - [`resolve_property_types`]: resolves a property's type hint
 ///   on a class to all candidate `ClassInfo` values.
 /// - [`resolve_imported_type_alias`]: resolves a single imported
-///   type alias reference (`from:ClassName:OriginalName`).
+///   type alias reference.
 use std::sync::Arc;
 
 use crate::inheritance::apply_generic_args;
@@ -420,9 +420,8 @@ fn resolve_named_type(
 /// known alias, or `None` if it is not. Follows up to 10 levels of
 /// alias indirection to handle aliases that reference other aliases.
 ///
-/// For imported aliases (`from:ClassName:OriginalName`), the source
-/// class is loaded and the original alias is resolved from its
-/// `type_aliases` map.
+/// For imported aliases, the source class is loaded and the original
+/// alias is resolved from its `type_aliases` map.
 ///
 /// Pass an empty `owning_class_name` to search all classes without
 /// priority (used by the array-key completion path).
@@ -470,11 +469,7 @@ fn resolve_type_alias_once(
     if let Some(cls) = owning_class
         && let Some(def) = cls.type_aliases.get(hint)
     {
-        // Handle imported type aliases: `from:ClassName:OriginalName`
-        if let Some(import_ref) = def.strip_prefix("from:") {
-            return resolve_imported_type_alias(import_ref, all_classes, class_loader);
-        }
-        return Some(def.clone());
+        return expand_type_alias_def(def, all_classes, class_loader);
     }
 
     // Also check all classes in the file — the type alias might be
@@ -488,28 +483,42 @@ fn resolve_type_alias_once(
             continue; // Already checked above.
         }
         if let Some(def) = cls.type_aliases.get(hint) {
-            if let Some(import_ref) = def.strip_prefix("from:") {
-                return resolve_imported_type_alias(import_ref, all_classes, class_loader);
-            }
-            return Some(def.clone());
+            return expand_type_alias_def(def, all_classes, class_loader);
         }
     }
 
     None
 }
 
-/// Resolve an imported type alias reference.
+/// Expand a [`TypeAliasDef`] into a type definition string.
 ///
-/// The `import_ref` string has the format `ClassName:OriginalName`
-/// (the `from:` prefix has already been stripped by the caller).
-/// Loads the source class and returns the original alias definition.
-pub(crate) fn resolve_imported_type_alias(
-    import_ref: &str,
+/// For local aliases, returns the `PhpType`'s string representation.
+/// For imports, loads the source class and returns the original alias
+/// definition.
+fn expand_type_alias_def(
+    def: &TypeAliasDef,
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> Option<String> {
-    let (source_class_name, original_name) = import_ref.split_once(':')?;
+    match def {
+        TypeAliasDef::Local(php_type) => Some(php_type.to_string()),
+        TypeAliasDef::Import {
+            source_class,
+            original_name,
+        } => resolve_imported_type_alias(source_class, original_name, all_classes, class_loader),
+    }
+}
 
+/// Resolve an imported type alias reference.
+///
+/// Loads the source class by `source_class_name` and looks up
+/// `original_name` in its `type_aliases` map.
+pub(crate) fn resolve_imported_type_alias(
+    source_class_name: &str,
+    original_name: &str,
+    all_classes: &[Arc<ClassInfo>],
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) -> Option<String> {
     // Try to find the source class.
     let lookup = source_class_name
         .rsplit('\\')
@@ -524,10 +533,9 @@ pub(crate) fn resolve_imported_type_alias(
     let source_class = source_class?;
     let def = source_class.type_aliases.get(original_name)?;
 
-    // Don't follow nested imports — just return the definition.
-    if def.starts_with("from:") {
-        return None;
+    // Don't follow nested imports — just return the local definition.
+    match def {
+        TypeAliasDef::Local(php_type) => Some(php_type.to_string()),
+        TypeAliasDef::Import { .. } => None,
     }
-
-    Some(def.clone())
 }

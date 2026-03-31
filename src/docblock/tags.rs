@@ -1179,8 +1179,7 @@ pub fn should_override_type(docblock_type: &str, native_type: &str) -> bool {
     // *compatible refinement*.  For example `string` → `class-string<Foo>`
     // is valid, but `string` → `array<int>` is not.
     if native_inner.is_scalar() {
-        let doc_inner_str = doc_inner.to_string();
-        return is_compatible_refinement(&doc_inner_str, &native_lower);
+        return is_compatible_refinement_typed(doc_inner, &native_lower);
     }
 
     // If the docblock type carries generic parameters or shape braces,
@@ -1193,8 +1192,7 @@ pub fn should_override_type(docblock_type: &str, native_type: &str) -> bool {
     // `positive-int`, `literal-string`, etc. refine their native
     // scalar counterparts.  These contain hyphens which never appear
     // in native PHP types.
-    let doc_inner_str = doc_inner.to_string();
-    if doc_inner_str.contains('-') {
+    if extract_base_name_lower(doc_inner).contains('-') {
         return true;
     }
 
@@ -1282,19 +1280,19 @@ fn is_bare_primitive_name(name: &str) -> bool {
 /// is used by both `should_override_type` and the update-docblock
 /// contradiction checker.
 pub(crate) fn is_compatible_refinement(docblock_type: &str, native_lower: &str) -> bool {
-    // Extract the outermost type name from the docblock via `PhpType::parse()`,
-    // stripping generic parameters, shape braces, and callable signatures.
-    // Unlike `base_name()` this includes scalar names (`array`, `int`, …)
-    // which are needed for the refinement checks below.
-    let doc_base = match PhpType::parse(docblock_type) {
-        PhpType::Named(name) => name.to_ascii_lowercase(),
-        PhpType::Generic(name, _) => name.to_ascii_lowercase(),
-        PhpType::Nullable(inner) => match inner.as_ref() {
-            PhpType::Named(name) | PhpType::Generic(name, _) => name.to_ascii_lowercase(),
-            _ => docblock_type.to_ascii_lowercase(),
-        },
-        _ => docblock_type.to_ascii_lowercase(),
-    };
+    is_compatible_refinement_typed(&PhpType::parse(docblock_type), native_lower)
+}
+
+/// Like [`is_compatible_refinement`] but accepts a pre-parsed [`PhpType`]
+/// to avoid a parse→stringify→reparse round-trip when the caller already
+/// has a structured type.
+///
+/// Extracts the outermost type name from the docblock type, stripping
+/// generic parameters, shape braces, and callable signatures.  Unlike
+/// `base_name()` this includes scalar names (`array`, `int`, …) which
+/// are needed for the refinement checks.
+pub(crate) fn is_compatible_refinement_typed(doc_type: &PhpType, native_lower: &str) -> bool {
+    let doc_base = extract_base_name_lower(doc_type);
 
     match native_lower {
         // `string` is refined by `class-string`, `non-empty-string`,
@@ -1326,19 +1324,36 @@ pub(crate) fn is_compatible_refinement(docblock_type: &str, native_lower: &str) 
         "closure" => true,
         // `object` is refined by any class name, `callable-object`,
         // or an object shape like `object{name: string, age: int}`.
-        "object" => !PhpType::parse(&doc_base).is_scalar() || docblock_type.contains('{'),
+        "object" => !doc_type.is_scalar() || matches!(doc_type, PhpType::ObjectShape(_)),
         // `mixed` can be refined by anything.
         "mixed" => true,
         // `resource` is refined by `closed-resource`, `open-resource`.
         "resource" => doc_base.contains("resource"),
         // `self`, `static`, `parent`, `$this` — these are late-bound
         // type references that any concrete class name refines.
-        "self" | "static" | "parent" | "$this" => !PhpType::parse(&doc_base).is_scalar(),
+        "self" | "static" | "parent" | "$this" => !doc_type.is_scalar(),
         // `void`, `never`, `null`, `true`, `false` — these are so narrow
         // that docblock refinement is never meaningful.
         "void" | "never" | "null" | "true" | "false" => false,
         // For any other type, be conservative — don't override.
         _ => false,
+    }
+}
+
+/// Extract the outermost type name from a `PhpType` as a lowercased string.
+///
+/// Strips generic parameters, shape braces, callable signatures, and
+/// nullable wrappers.  Returns the base identifier lowercased (e.g.
+/// `Generic("Collection", _)` → `"collection"`, `Named("int")` → `"int"`).
+///
+/// For types that don't have a simple base name (e.g. unions, literals),
+/// falls back to the full `Display` output lowercased.
+fn extract_base_name_lower(ty: &PhpType) -> String {
+    match ty {
+        PhpType::Named(name) => name.to_ascii_lowercase(),
+        PhpType::Generic(name, _) => name.to_ascii_lowercase(),
+        PhpType::Nullable(inner) => extract_base_name_lower(inner),
+        _ => ty.to_string().to_ascii_lowercase(),
     }
 }
 

@@ -345,60 +345,51 @@ fn walk_array_segments_and_resolve(
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> Option<Vec<ClassInfo>> {
-    let mut current_type = raw_type.to_string();
+    let mut current_str = raw_type.to_string();
 
     // Expand type aliases before walking segments.  The raw type may
     // be an alias name like `UserData` that resolves to
     // `array{name: string, pen: Pen}`.  Without expansion the
     // segment walk would fail to extract shape values.
     if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
-        &current_type,
+        &current_str,
         current_class_name,
         all_classes,
         class_loader,
     ) {
-        current_type = expanded;
+        current_str = expanded;
     }
 
+    let mut current = PhpType::parse(&current_str);
+
     for seg in segments {
-        match seg {
-            BracketSegment::StringKey(key) => {
-                current_type = PhpType::parse(&current_type)
-                    .shape_value_type(key)
-                    .map(|t| t.to_string())?;
-            }
-            BracketSegment::ElementAccess => {
-                current_type = PhpType::parse(&current_type)
-                    .extract_value_type(true)
-                    .map(|t| t.to_string())?;
-            }
-        }
+        current = match seg {
+            BracketSegment::StringKey(key) => current.shape_value_type(key)?.clone(),
+            BracketSegment::ElementAccess => current.extract_value_type(true)?.clone(),
+        };
 
         // After each segment, the resulting type might itself be an
         // alias (e.g. a shape value defined as another alias).
-        // Expand again so the next segment (or the final resolution)
-        // sees the concrete type.
+        // Convert to string only for alias resolution.
+        let type_str = current.to_string();
         if let Some(expanded) = crate::completion::type_resolution::resolve_type_alias(
-            &current_type,
+            &type_str,
             current_class_name,
             all_classes,
             class_loader,
         ) {
-            current_type = expanded;
+            current = PhpType::parse(&expanded);
         }
     }
 
     // Check whether the type has any class-like (non-scalar) component
-    // worth resolving.  `type_hint_to_classes` handles unions,
-    // intersections, generics, nullable, etc. — so we pass the full
-    // type string and only bail out when the entire type is scalar.
-    let parsed = PhpType::parse(&current_type);
-    if parsed.is_scalar() {
+    // worth resolving.
+    if current.is_scalar() {
         return None;
     }
 
-    let classes = crate::completion::type_resolution::type_hint_to_classes(
-        &current_type,
+    let classes = crate::completion::type_resolution::type_hint_to_classes_typed(
+        &current,
         current_class_name,
         all_classes,
         class_loader,

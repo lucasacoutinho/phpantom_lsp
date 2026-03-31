@@ -135,7 +135,7 @@ fn enrich_builder_type_in_scope(
     // imports).  If the type already has generic args (e.g.
     // `Builder<User>`), do not enrich — the user-supplied generics
     // should be used as-is.
-    if type_str.contains('<') {
+    if PhpType::parse(type_str).has_type_structure() {
         return None;
     }
     let is_eloquent_builder = type_str == ELOQUENT_BUILDER_FQN || type_str == "Builder";
@@ -2096,7 +2096,6 @@ pub(in crate::completion) fn try_inline_var_override<'b>(
         None => return false,
     };
 
-    let eff_type_str = eff_type.to_string();
     let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
         &eff_type,
         &ctx.current_class.name,
@@ -2112,10 +2111,8 @@ pub(in crate::completion) fn try_inline_var_override<'b>(
         // `PhpType::extract_value_type`.  Skip non-informative types
         // (`array`, `mixed`, etc.) so normal resolution can provide
         // more precise information.
-        if crate::completion::variable::rhs_resolution::is_informative_type_string(&eff_type_str) {
-            let resolved_types = vec![ResolvedType::from_type_string(PhpType::parse(
-                &eff_type_str,
-            ))];
+        if eff_type.is_informative() {
+            let resolved_types = vec![ResolvedType::from_type_string(eff_type.clone())];
             if !conditional {
                 results.clear();
             }
@@ -2125,8 +2122,7 @@ pub(in crate::completion) fn try_inline_var_override<'b>(
         return false;
     }
 
-    let resolved_types =
-        ResolvedType::from_classes_with_hint(resolved, PhpType::parse(&eff_type_str));
+    let resolved_types = ResolvedType::from_classes_with_hint(resolved, eff_type.clone());
 
     // Apply the resolved type(s) with the same conditional semantics
     // used by `check_expression_for_assignment`.
@@ -2581,12 +2577,9 @@ pub(in crate::completion) fn resolve_arg_raw_type<'b>(
             Loaders::with_function(ctx.function_loader()),
         );
         if !resolved.is_empty() {
-            let raw = crate::types::ResolvedType::type_strings_joined(&resolved);
-            if crate::php_type::PhpType::parse(&raw)
-                .extract_value_type(true)
-                .is_some()
-            {
-                return Some(raw);
+            let joined = crate::types::ResolvedType::types_joined(&resolved);
+            if joined.extract_value_type(true).is_some() {
+                return Some(joined.to_string());
             }
         }
     }

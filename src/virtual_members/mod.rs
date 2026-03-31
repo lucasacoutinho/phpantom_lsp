@@ -452,17 +452,10 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
 fn type_specificity(hint: &Option<PhpType>) -> u8 {
     match hint {
         None => 0,
-        Some(t) => {
-            let s = t.to_string();
-            let trimmed = s.trim();
-            if trimmed.is_empty() || trimmed == "mixed" {
-                0
-            } else if trimmed.contains('<') {
-                2
-            } else {
-                1
-            }
-        }
+        Some(PhpType::Named(n)) if n == "mixed" => 0,
+        Some(PhpType::Raw(s)) if s.trim().is_empty() => 0,
+        Some(t) if t.has_type_structure() => 2,
+        Some(_) => 1,
     }
 }
 

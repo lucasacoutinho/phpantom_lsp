@@ -1016,16 +1016,63 @@ async fn test_phpstan_type_alias_in_var_annotation() {
 #[cfg(test)]
 mod docblock_parsing {
     use phpantom_lsp::docblock::extract_type_aliases;
+    use phpantom_lsp::types::TypeAliasDef;
+
+    /// Helper: assert a local alias has the expected type string representation.
+    fn assert_local_alias(
+        aliases: &std::collections::HashMap<String, TypeAliasDef>,
+        name: &str,
+        expected: &str,
+    ) {
+        match aliases.get(name) {
+            Some(TypeAliasDef::Local(php_type)) => {
+                assert_eq!(
+                    php_type.to_string(),
+                    expected,
+                    "alias '{name}' type mismatch"
+                );
+            }
+            Some(TypeAliasDef::Import { .. }) => {
+                panic!("expected Local alias for '{name}', got Import");
+            }
+            None => panic!("alias '{name}' not found"),
+        }
+    }
+
+    /// Helper: assert an imported alias has the expected source class and original name.
+    fn assert_import_alias(
+        aliases: &std::collections::HashMap<String, TypeAliasDef>,
+        name: &str,
+        expected_source: &str,
+        expected_original: &str,
+    ) {
+        match aliases.get(name) {
+            Some(TypeAliasDef::Import {
+                source_class,
+                original_name,
+            }) => {
+                assert_eq!(
+                    source_class, expected_source,
+                    "alias '{name}' source_class mismatch"
+                );
+                assert_eq!(
+                    original_name, expected_original,
+                    "alias '{name}' original_name mismatch"
+                );
+            }
+            Some(TypeAliasDef::Local(_)) => {
+                panic!("expected Import alias for '{name}', got Local");
+            }
+            None => panic!("alias '{name}' not found"),
+        }
+    }
 
     #[test]
     fn test_extract_phpstan_type_basic() {
         let doc = "/**\n * @phpstan-type UserData array{name: string, email: string}\n */";
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 1);
-        assert_eq!(
-            aliases.get("UserData").unwrap(),
-            "array{name: string, email: string}"
-        );
+        assert_local_alias(&aliases, "UserData", "array{name: string, email: string}");
     }
 
     #[test]
@@ -1033,10 +1080,7 @@ mod docblock_parsing {
         let doc = "/**\n * @phpstan-type Config = array{host: string, port: int}\n */";
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 1);
-        assert_eq!(
-            aliases.get("Config").unwrap(),
-            "array{host: string, port: int}"
-        );
+        assert_local_alias(&aliases, "Config", "array{host: string, port: int}");
     }
 
     #[test]
@@ -1044,7 +1088,7 @@ mod docblock_parsing {
         let doc = "/**\n * @psalm-type StatusCode int\n */";
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 1);
-        assert_eq!(aliases.get("StatusCode").unwrap(), "int");
+        assert_local_alias(&aliases, "StatusCode", "int");
     }
 
     #[test]
@@ -1057,8 +1101,8 @@ mod docblock_parsing {
         );
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 2);
-        assert_eq!(aliases.get("Foo").unwrap(), "array{a: int}");
-        assert_eq!(aliases.get("Bar").unwrap(), "array{b: string}");
+        assert_local_alias(&aliases, "Foo", "array{a: int}");
+        assert_local_alias(&aliases, "Bar", "array{b: string}");
     }
 
     #[test]
@@ -1066,10 +1110,7 @@ mod docblock_parsing {
         let doc = "/**\n * @phpstan-import-type UserData from UserService\n */";
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 1);
-        assert_eq!(
-            aliases.get("UserData").unwrap(),
-            "from:UserService:UserData"
-        );
+        assert_import_alias(&aliases, "UserData", "UserService", "UserData");
     }
 
     #[test]
@@ -1079,10 +1120,7 @@ mod docblock_parsing {
         assert_eq!(aliases.len(), 1);
         // The local alias is "UserRecord", not "UserData"
         assert!(!aliases.contains_key("UserData"));
-        assert_eq!(
-            aliases.get("UserRecord").unwrap(),
-            "from:UserService:UserData"
-        );
+        assert_import_alias(&aliases, "UserRecord", "UserService", "UserData");
     }
 
     #[test]
@@ -1090,7 +1128,7 @@ mod docblock_parsing {
         let doc = "/**\n * @psalm-import-type Config from AppConfig\n */";
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 1);
-        assert_eq!(aliases.get("Config").unwrap(), "from:AppConfig:Config");
+        assert_import_alias(&aliases, "Config", "AppConfig", "Config");
     }
 
     #[test]
@@ -1103,11 +1141,8 @@ mod docblock_parsing {
         );
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 2);
-        assert_eq!(aliases.get("LocalAlias").unwrap(), "array{x: int}");
-        assert_eq!(
-            aliases.get("RemoteAlias").unwrap(),
-            "from:OtherClass:RemoteAlias"
-        );
+        assert_local_alias(&aliases, "LocalAlias", "array{x: int}");
+        assert_import_alias(&aliases, "RemoteAlias", "OtherClass", "RemoteAlias");
     }
 
     #[test]
@@ -1115,10 +1150,7 @@ mod docblock_parsing {
         let doc = "/**\n * @phpstan-type Callback callable(string, int): bool\n */";
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 1);
-        assert_eq!(
-            aliases.get("Callback").unwrap(),
-            "callable(string, int): bool"
-        );
+        assert_local_alias(&aliases, "Callback", "callable(string, int): bool");
     }
 
     #[test]
@@ -1126,7 +1158,7 @@ mod docblock_parsing {
         let doc = "/**\n * @phpstan-type StringOrInt string|int\n */";
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 1);
-        assert_eq!(aliases.get("StringOrInt").unwrap(), "string|int");
+        assert_local_alias(&aliases, "StringOrInt", "string|int");
     }
 
     #[test]
@@ -1163,6 +1195,6 @@ mod docblock_parsing {
         let doc = "/**\n * @phpstan-type Point object{x: float, y: float}\n */";
         let aliases = extract_type_aliases(doc);
         assert_eq!(aliases.len(), 1);
-        assert_eq!(aliases.get("Point").unwrap(), "object{x: float, y: float}");
+        assert_local_alias(&aliases, "Point", "object{x: float, y: float}");
     }
 }
