@@ -494,3 +494,81 @@ emits the concrete callable signature in the `@param` tag.
 
 ---
 
+## T14. Mixin generic substitution through multi-level inheritance
+**Impact: High · Effort: Medium**
+
+When a `@mixin` tag with generic arguments is declared on an ancestor
+class and the descendant binds the template parameter via `@extends`,
+the mixin's generic arguments are not substituted with the concrete
+types from the descendant.
+
+**Example (Laravel relationship chains):**
+
+```php
+// Relation (grandparent) declares:
+//   @template TRelatedModel of Model
+//   @mixin \Illuminate\Database\Eloquent\Builder<TRelatedModel>
+
+// HasOneOrMany extends Relation<TRelatedModel, ...>
+// HasMany extends HasOneOrMany<TRelatedModel, ...>
+
+// Product model:
+/** @return HasMany<ProductTranslation, $this> */
+public function translations(): HasMany { ... }
+
+// ProductTranslation defines a scope:
+/** @param Builder<self> $query  @return Builder<self> */
+public function scopeLanguage(Builder $query, Country $code): Builder { ... }
+
+// Call site — language() is unreachable:
+$product->translations()->language($code)->first();
+//                         ^^^^^^^^ no completion, no hover
+//                                         ^^^^^^^ "subject type could not be resolved"
+```
+
+**Step-by-step failure:**
+
+1. `translations()` → `HasMany<ProductTranslation, Product>` — works.
+
+2. `->language()` — PHPantom must follow `@mixin Builder<TRelatedModel>`
+   on the grandparent `Relation`, substitute
+   `TRelatedModel=ProductTranslation` through the `@extends` chain, resolve
+   `Builder<ProductTranslation>`, then inject scopes from
+   `ProductTranslation` (via `try_inject_builder_scopes`).  **This fails**
+   because the mixin generic argument `TRelatedModel` is not substituted
+   when the mixin is inherited through multiple levels — it stays as an
+   unbound template parameter.
+
+3. `->first()` — cascades: the chain is already unresolvable.
+
+**Inconsistency:** PHPantom doesn't *flag* `language()` as an
+`unknown_member` diagnostic (the diagnostic checker likely finds the
+`@mixin` and gives benefit of the doubt), but can't *resolve* it
+either (no completion, no hover, no return type).
+
+**Root cause:** `collect_mixin_members` in `src/virtual_members/phpdoc.rs`
+and `try_inject_builder_scopes` in `src/virtual_members/laravel/mod.rs`
+expand `@mixin` declarations without applying the template substitution
+map accumulated from the descendant's `@extends` generics.  When
+`HasMany<ProductTranslation>` is resolved, the `@mixin Builder<TRelatedModel>`
+from the grandparent `Relation` should have `TRelatedModel` replaced
+with `ProductTranslation` before the mixin is expanded — but the
+substitution map isn't threaded through.
+
+**Where to fix:**
+- `src/virtual_members/phpdoc.rs` — `collect_mixin_members`: accept and
+  apply a template substitution map to `mixin_generics` before expanding.
+- `src/virtual_members/laravel/mod.rs` — `try_inject_builder_scopes`:
+  ensure the model type argument is the concrete class, not an unbound
+  template parameter.
+- `src/completion/types/resolution.rs` — when resolving mixin members
+  inherited through the parent chain, propagate the accumulated
+  `@extends` template bindings into the mixin's generic arguments.
+
+**Impact if fixed:** ~125 diagnostics eliminated in luxplus/shared
+(the majority of remaining false positives).  Every Eloquent
+relationship chain through `HasMany`, `HasOne`, `BelongsTo`,
+`BelongsToMany`, etc. hits this pattern.
+
+---
+

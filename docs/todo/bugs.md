@@ -54,3 +54,45 @@ RHS is evaluated, so the check does not catch it.
 **Impact in shared codebase:** 2 false positives (Klarna.php and
 GoogleTagManagerClient.php, both using `/** @var array<string, mixed> */
 $data = $data->toArray()`).
+
+---
+
+#### B17. Static property access subject resolves to containing class instead of property type
+
+| | |
+|---|---|
+| **Impact** | Low |
+| **Effort** | Low |
+
+When a static property is accessed via `self::$prop->method()`,
+PHPantom resolves the member-access subject to the class containing
+the static property instead of the property's declared type.
+
+**Reproducer:**
+
+```php
+class Connection {
+    public function setConfig(Config $config): void {}
+}
+
+class ConnectionManager {
+    private static Connection $instance;
+
+    public static function getInstance(): Connection {
+        self::$instance->setConfig($config);
+        //              ^^^^^^^^^ "Method 'setConfig' not found on class 'ConnectionManager'"
+        return self::$instance;
+    }
+}
+```
+
+PHPantom reports `setConfig` not found on `ConnectionManager` instead
+of looking it up on `Connection` (the declared type of `$instance`).
+
+**Root cause:** The diagnostic subject resolution in
+`src/diagnostics/unknown_members.rs` — the `StaticAccess` →
+`PropertyChain` path returns the class that owns the static property
+rather than the property's type hint.
+
+**Impact in shared codebase:** 1 false positive
+(`MobilePayConnectionManager::$instance->setMobilePayConnectionConfiguration()`).

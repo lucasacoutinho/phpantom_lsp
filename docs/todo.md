@@ -23,6 +23,7 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                       | Impact | Effort |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ------ |
+| T14 | [Mixin generic substitution through multi-level inheritance](todo/type-inference.md#t14-mixin-generic-substitution-through-multi-level-inheritance) | High | Medium |
 | H6  | [`return.type` / `return.void` / `missingType.return` — fix return type](todo/phpstan-actions.md#h6-returntype--update-return-type-to-match-actual-returns) | Medium | Low    |
 |     | **Release 0.7.0**                                                                                                                          |        |        |
 
