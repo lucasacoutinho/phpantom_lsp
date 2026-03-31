@@ -8137,6 +8137,112 @@ class Task extends Model {
 }
 
 #[tokio::test]
+async fn test_scope_static_call_starts_chain() {
+    // Brand::isActive()-> should resolve builder methods.
+    // This is the pattern that causes ~39 anonymous-chain errors in the
+    // analyzer: a static scope call as the FIRST call in the chain
+    // (not preceded by ::where()).
+    let brand_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Brand extends Model {
+    public function scopeIsActive(Builder $query): void {}
+    public function test() {
+        Brand::isActive()->
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[("src/Models/Brand.php", brand_php)]);
+
+    // "Brand::isActive()->" at line 7, character 27
+    let items = complete_at(&backend, &dir, "src/Models/Brand.php", brand_php, 7, 27).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"get"),
+        "Brand::isActive()-> should offer get(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "Brand::isActive()-> should offer first(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"isActive"),
+        "Brand::isActive()-> should offer scope isActive(), got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
+async fn test_scope_static_chain_inside_closure() {
+    // Real-world pattern from the analyzer triage: scope chain inside a
+    // closure body spanning multiple lines.  This is the dominant source
+    // of anonymous-chain errors (~39 of 83).
+    let repo_php = "\
+<?php
+namespace App\\Models;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Database\\Eloquent\\Builder;
+class Article extends Model {
+    public function scopeWhereIsPublished(Builder $query): void {}
+    public function scopeWhereLangCode(Builder $query, string $code): void {}
+    public function scopeOrderByPublishDate(Builder $query): void {}
+}
+";
+    let service_php = "\
+<?php
+namespace App\\Services;
+use App\\Models\\Article;
+class ArticleService {
+    public function getLatest(int $limit): mixed {
+        return Article::whereIsPublished()
+            ->whereLangCode('en')
+            ->orderByPublishDate()
+            ->take($limit)
+            ->get();
+    }
+}
+";
+    let (backend, dir) = make_workspace(&[
+        ("src/Models/Article.php", repo_php),
+        ("src/Services/ArticleService.php", service_php),
+    ]);
+
+    // "->orderByPublishDate()" at line 7, character 15  (the -> before orderByPublishDate)
+    // The subject is Article::whereIsPublished()->whereLangCode('en')
+    let items = complete_at(
+        &backend,
+        &dir,
+        "src/Services/ArticleService.php",
+        service_php,
+        7,
+        15,
+    )
+    .await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"orderByPublishDate"),
+        "Chain inside closure should offer scope orderByPublishDate(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"get"),
+        "Chain inside closure should offer Builder get(), got: {:?}",
+        methods
+    );
+    assert!(
+        methods.contains(&"first"),
+        "Chain inside closure should offer Builder first(), got: {:?}",
+        methods
+    );
+}
+
+#[tokio::test]
 async fn test_scope_on_builder_indirect_model_subclass() {
     // Scopes on indirect model subclasses should also appear on Builder
     let base_php = "\
