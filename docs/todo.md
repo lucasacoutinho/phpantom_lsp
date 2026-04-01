@@ -25,7 +25,6 @@ within the same impact tier.
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ---------- |
 | T18 | [Method-level template parameter resolution at call sites](todo/type-inference.md#t18-method-level-template-parameter-resolution-at-call-sites) | Medium | Medium     |
 | B21 | [Builder `__call` return type drops chain type for dynamic `where{Column}` calls](todo/bugs.md#b21-builder-__call-return-type-drops-chain-type-for-dynamic-wherecolumn-calls) | Medium | Medium     |
-| L12 | [`App::make` / `App::makeWith` class-string return type dispatch](todo/laravel.md#l12-appmake--appmakewith-class-string-return-type-dispatch) | Medium | Low        |
 |     | **Release 0.7.0**                                                                                                                          |        |            |
 
 ## Sprint 5 — Polish for office adoption
