@@ -1188,7 +1188,8 @@ impl Backend {
         self.log(
             MessageType::INFO,
             format!(
-                "PHPantom: PHP {}, {} symbols from {}, stubs {}",
+                "PHPantom v{}: PHP {}, {} symbols from {}, stubs {}",
+                self.version,
                 php_version,
                 symbol_count,
                 source_label,
@@ -1341,7 +1342,8 @@ impl Backend {
         self.log(
             MessageType::INFO,
             format!(
-                "PHPantom: PHP {}, {} symbols from {} subprojects, stubs {}",
+                "PHPantom v{}: PHP {}, {} symbols from {} subprojects, stubs {}",
+                self.version,
                 php_version,
                 symbol_count,
                 subprojects.len(),
@@ -1388,7 +1390,8 @@ impl Backend {
         self.log(
             MessageType::INFO,
             format!(
-                "PHPantom: PHP {}, {} symbols from workspace scan, stubs {}",
+                "PHPantom v{}: PHP {}, {} symbols from workspace scan, stubs {}",
+                self.version,
                 php_version,
                 symbol_count,
                 crate::stubs::STUBS_VERSION
