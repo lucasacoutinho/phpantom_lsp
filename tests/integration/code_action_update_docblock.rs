@@ -97,7 +97,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 7, 20);
+    let actions = get_code_actions(&backend, uri, content, 5, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -134,7 +134,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 6, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -168,7 +168,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 6, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -210,7 +210,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 6, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions);
     assert!(
         action.is_none(),
@@ -234,7 +234,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -315,7 +315,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 7, 20);
+    let actions = get_code_actions(&backend, uri, content, 5, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -348,7 +348,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 7, 20);
+    let actions = get_code_actions(&backend, uri, content, 5, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -401,7 +401,7 @@ function bar(string $a, int $b, bool $c): void {}
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 5, 10);
+    let actions = get_code_actions(&backend, uri, content, 2, 5);
     let action = find_update_docblock_action(&actions)
         .expect("should offer Update docblock action for standalone function");
 
@@ -433,7 +433,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 9, 20);
+    let actions = get_code_actions(&backend, uri, content, 6, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -475,7 +475,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 6, 20);
+    let actions = get_code_actions(&backend, uri, content, 4, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -508,7 +508,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions);
     assert!(
         action.is_none(),
@@ -532,7 +532,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 7, 20);
+    let actions = get_code_actions(&backend, uri, content, 5, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -567,7 +567,7 @@ class UserService {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 7, 20);
+    let actions = get_code_actions(&backend, uri, content, 5, 5);
     let action = find_update_docblock_action(&actions)
         .expect("should offer Update docblock action inside namespace");
 
@@ -598,7 +598,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 8, 20);
+    let actions = get_code_actions(&backend, uri, content, 5, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -639,7 +639,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 8, 20);
+    let actions = get_code_actions(&backend, uri, content, 6, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -682,7 +682,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -715,7 +715,7 @@ interface Transformer {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions)
         .expect("should offer Update docblock action on interface method");
 
@@ -743,7 +743,7 @@ trait HasName {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions)
         .expect("should offer Update docblock action on trait method");
 
@@ -771,7 +771,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions);
     // string|null and ?string are semantically equivalent — no update needed.
     assert!(
@@ -798,7 +798,7 @@ class Foo {
 
     // The docblock has zero @param tags and the native type is sufficient,
     // so no update should be offered (matches generate-docblock behaviour).
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions);
     assert!(
         action.is_none(),
@@ -822,7 +822,7 @@ class Foo {
 
     // The param has no native type, so enrichment produces `mixed` and
     // the update should be offered.
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock action");
 
@@ -914,7 +914,7 @@ class Foo {
     // The existing @param $name (no type) should be recognised as covering
     // the $name parameter.  The action will be offered to add `mixed` as
     // the explicit type, but the result must not contain a duplicate $name.
-    let actions = get_code_actions(&backend, uri, content, 6, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions);
 
     if let Some(action) = action {
@@ -948,7 +948,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 7, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions);
 
     // The action may or may not be offered (depends on whether the missing
@@ -979,7 +979,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 5, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action =
         find_update_docblock_action(&actions).expect("should offer Update docblock for missing $b");
 
@@ -1010,7 +1010,7 @@ class Foo {
 "#;
     backend.update_ast(uri, content);
 
-    let actions = get_code_actions(&backend, uri, content, 6, 20);
+    let actions = get_code_actions(&backend, uri, content, 3, 5);
     let action = find_update_docblock_action(&actions);
 
     // The action may be offered to add `mixed` as the explicit type, but

@@ -262,6 +262,7 @@ impl Backend {
                     position,
                     &ctx.use_map,
                     &ctx.namespace,
+                    &ctx.classes,
                     &class_loader,
                     Some(&function_loader),
                 ) {

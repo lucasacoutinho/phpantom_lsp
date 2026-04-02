@@ -21,12 +21,11 @@ within the same impact tier.
 
 ## Sprint 4 — Refactoring toolkit & type inference
 
-| #   | Item                                                                                                                                                                       | Impact | Effort |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
-| H17 | [`missingType.iterableValue` — add `@return` with inferred element type](todo/phpstan-actions.md#h17-missingtype-iterablevalue-return-type--add-return-with-iterable-type) | Medium | High   |
-| H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union)                           | Medium | Medium |
-| H6  | `return.type` — update return type to match actual returns                                                                                                                 | Medium | Medium |
-|     | **Release 0.7.0**                                                                                                                                                          |        |        |
+| #   | Item                                                                                                                                             | Impact | Effort |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ------ |
+| H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union) | Medium | Medium |
+| H6  | `return.type` — update return type to match actual returns                                                                                       | Medium | Medium |
+|     | **Release 0.7.0**                                                                                                                                |        |        |
 
 ## Sprint 5 — Polish for office adoption
 
@@ -122,7 +121,6 @@ unlikely to move the needle for most users.
 | H13  | `property.notFound` — declare missing property (same-class)                                                                                                                 | Medium      | Medium         |
 | H15  | Template bound from tip — add `@template T of X`                                                                                                                            | Medium      | Medium         |
 | H16  | `match.unhandled` — add missing match arms                                                                                                                                  | Medium      | Medium         |
-| H17  | `missingType.iterableValue` — add `@return` with inferred element type                                                                                                      | Medium      | High           |
 | H19  | `property.unused` / `method.unused` — remove unused member                                                                                                                  | Low         | Low            |
 | H20  | `generics.callSiteVarianceRedundant` — remove redundant variance annotation                                                                                                 | Low         | Low            |
 | H23  | `instanceof.alwaysTrue` — remove redundant instanceof check                                                                                                                 | Low         | Low            |

@@ -32,11 +32,14 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::Backend;
+use crate::code_actions::phpstan::add_iterable_type::{
+    find_function_docblock, find_function_keyword_line as find_func_keyword_line,
+};
 use crate::code_actions::{CodeActionData, make_code_action_data};
 use crate::completion::resolver::Loaders;
 use crate::completion::variable::resolution::resolve_variable_types;
 use crate::php_type::PhpType;
-use crate::types::{ClassInfo, ResolvedType};
+use crate::types::{ClassInfo, FunctionLoader, ResolvedType};
 use crate::util::{find_brace_match_line, find_semicolon_balanced, ranges_overlap};
 
 // ── Return type inference result ────────────────────────────────────────────
@@ -46,12 +49,12 @@ use crate::util::{find_brace_match_line, find_semicolon_balanced, ranges_overlap
 /// Separates the native PHP type hint (for the `: type` declaration)
 /// from the effective PHPStan type (for a `@return` docblock tag).
 /// When the two are identical, no docblock is needed.
-struct InferredReturnType {
+pub(crate) struct InferredReturnType {
     /// Valid native PHP type hint (e.g. `array`, `int`, `Foo`).
-    native: String,
+    pub(crate) native: String,
     /// Full effective type including generics/shapes (e.g. `list<string>`).
     /// `None` when the native type already captures the full type.
-    effective: Option<String>,
+    pub(crate) effective: Option<String>,
 }
 
 // ── PHPStan identifiers ─────────────────────────────────────────────────────
@@ -314,24 +317,13 @@ impl Backend {
     /// Returns an [`InferredReturnType`] that separates the native PHP
     /// type hint from the richer effective type.  When they differ (e.g.
     /// `list<string>` vs `array`), the caller should add a `@return` tag.
-    fn infer_return_type_for_function(
+    pub(crate) fn infer_return_type_for_function(
         &self,
         uri: &str,
         content: &str,
         func_line: usize,
     ) -> Option<InferredReturnType> {
-        let lines: Vec<&str> = content.lines().collect();
-        if func_line >= lines.len() {
-            return None;
-        }
-
-        // Find the function body boundaries.
-        let brace_line = find_open_brace_from_declaration(&lines, func_line)?;
-
-        // Find the closing `}` that matches the `{` on `brace_line`.
-        let body_end = find_brace_match_line(&lines, brace_line, |d| d == 0)?;
-
-        // Set up the resolution infrastructure.
+        // Set up the resolution infrastructure from Backend state.
         let local_classes: Vec<Arc<ClassInfo>> =
             self.ast_map.read().get(uri).cloned().unwrap_or_default();
         let file_use_map: HashMap<String, String> = self.file_use_map(uri);
@@ -339,152 +331,237 @@ impl Backend {
         let class_loader = self.class_loader_with(&local_classes, &file_use_map, &file_namespace);
         let function_loader = self.function_loader_with(&file_use_map, &file_namespace);
 
-        // Find the enclosing class at the function line offset.
-        let func_offset = content
-            .lines()
-            .take(func_line)
-            .map(|l| l.len() + 1)
-            .sum::<usize>() as u32;
-        let enclosing_class = local_classes
-            .iter()
-            .find(|c| {
-                !c.name.starts_with("__anonymous@")
-                    && func_offset >= c.start_offset
-                    && func_offset <= c.end_offset
-            })
-            .map(|c| ClassInfo::clone(c))
-            .unwrap_or_default();
+        infer_return_type(
+            content,
+            func_line,
+            &local_classes,
+            &class_loader,
+            Some(&function_loader),
+        )
+    }
+}
 
-        // Scan return statements and resolve their types.
-        let mut return_types: Vec<String> = Vec::new();
-        let mut has_bare_return = false;
-        let mut has_return_with_value = false;
+// ── Shared return-type inference ────────────────────────────────────────────
 
-        let mut brace_depth: i32 = 1;
+/// Infer the return type of a function by scanning all `return`
+/// statements in the body.
+///
+/// For simple literals (`return 1;`, `return 'hello';`, `return new Foo()`)
+/// the type is inferred syntactically.  For `$variable` returns, the
+/// full variable-resolution pipeline is used.  All other expressions
+/// (method calls, function calls, complex expressions) produce `mixed`.
+///
+/// Returns an [`InferredReturnType`] that separates the native PHP
+/// type hint from the richer effective type.  When they differ (e.g.
+/// `list<string>` vs `array`), the caller should add a `@return` tag.
+///
+/// This is the shared core used by:
+/// - `Backend::infer_return_type_for_function` (PHPStan code actions)
+/// - `enrichment_return_type` (Generate / Update PHPDoc)
+pub(crate) fn infer_return_type(
+    content: &str,
+    func_line: usize,
+    local_classes: &[Arc<ClassInfo>],
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    function_loader: FunctionLoader<'_>,
+) -> Option<InferredReturnType> {
+    let lines: Vec<&str> = content.lines().collect();
+    if func_line >= lines.len() {
+        return None;
+    }
 
-        for (line_idx, line) in lines.iter().enumerate().take(body_end).skip(brace_line + 1) {
-            let trimmed = line.trim();
+    // Find the function body boundaries.
+    let brace_line = find_open_brace_from_declaration(&lines, func_line)?;
 
-            // Track brace depth to ignore return statements inside
-            // nested closures, anonymous functions, and match blocks.
-            for ch in line.chars() {
-                match ch {
-                    '{' => brace_depth += 1,
-                    '}' => brace_depth -= 1,
-                    _ => {}
-                }
+    // Find the closing `}` that matches the `{` on `brace_line`.
+    let body_end = find_brace_match_line(&lines, brace_line, |d| d == 0)?;
+
+    // Find the enclosing class at the function line offset.
+    let func_offset = content
+        .lines()
+        .take(func_line)
+        .map(|l| l.len() + 1)
+        .sum::<usize>() as u32;
+    let enclosing_class = local_classes
+        .iter()
+        .find(|c| {
+            !c.name.starts_with("__anonymous@")
+                && func_offset >= c.start_offset
+                && func_offset <= c.end_offset
+        })
+        .map(|c| ClassInfo::clone(c))
+        .unwrap_or_default();
+
+    // Scan return statements and resolve their types.
+    let mut return_types: Vec<String> = Vec::new();
+    let mut has_bare_return = false;
+    let mut has_return_with_value = false;
+
+    let mut brace_depth: i32 = 1;
+
+    for (line_idx, line) in lines.iter().enumerate().take(body_end).skip(brace_line + 1) {
+        let trimmed = line.trim();
+
+        // Track brace depth to ignore return statements inside
+        // nested closures, anonymous functions, and match blocks.
+        for ch in line.chars() {
+            match ch {
+                '{' => brace_depth += 1,
+                '}' => brace_depth -= 1,
+                _ => {}
             }
+        }
 
-            // Only inspect return statements at the outermost function level.
-            if brace_depth != 1 {
-                continue;
-            }
+        // Only inspect return statements at the outermost function level.
+        if brace_depth != 1 {
+            continue;
+        }
 
-            // Skip comments.
-            if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
-                continue;
-            }
+        // Skip comments.
+        if trimmed.starts_with("//") || trimmed.starts_with('*') || trimmed.starts_with("/*") {
+            continue;
+        }
 
-            if trimmed == "return;" {
+        if trimmed == "return;" {
+            has_bare_return = true;
+            continue;
+        }
+
+        if let Some(rest) = trimmed.strip_prefix("return ") {
+            let rest = rest.trim();
+            if rest == ";" {
                 has_bare_return = true;
                 continue;
             }
+            has_return_with_value = true;
 
-            if let Some(rest) = trimmed.strip_prefix("return ") {
-                let rest = rest.trim();
-                if rest == ";" {
-                    has_bare_return = true;
-                    continue;
-                }
-                has_return_with_value = true;
+            // Strip trailing `;`
+            let expr = rest.strip_suffix(';').unwrap_or(rest).trim();
 
-                // Strip trailing `;`
-                let expr = rest.strip_suffix(';').unwrap_or(rest).trim();
-
-                // Try syntax-level inference first (cheap).
-                if let Some(t) = infer_type_from_literal(expr) {
-                    return_types.push(t);
-                    continue;
-                }
-
-                // Fall back to the variable/expression resolver.
-                // Compute byte offset of the expression for resolution.
-                let line_start: usize = content.lines().take(line_idx).map(|l| l.len() + 1).sum();
-                let expr_offset_in_line = line.find("return ").unwrap_or(0) + "return ".len();
-                let expr_offset = (line_start + expr_offset_in_line) as u32;
-
-                // Try variable resolution for `$var` expressions.
-                if expr.starts_with('$') && !expr.contains(' ') {
-                    let results = resolve_variable_types(
-                        expr,
-                        &enclosing_class,
-                        &local_classes,
-                        content,
-                        expr_offset,
-                        &class_loader,
-                        Loaders::with_function(Some(&function_loader)),
-                    );
-                    let type_str = ResolvedType::type_strings_joined(&results);
-                    if !type_str.is_empty() {
-                        return_types.push(type_str);
-                        continue;
-                    }
-                }
-
-                // For other expressions, fall back to `mixed`.
-                return_types.push("mixed".to_string());
+            // Try syntax-level inference first (cheap).
+            if let Some(t) = infer_type_from_literal(expr) {
+                return_types.push(t);
+                continue;
             }
+
+            // Fall back to the variable/expression resolver.
+            // Compute byte offset of the expression for resolution.
+            let line_start: usize = content.lines().take(line_idx).map(|l| l.len() + 1).sum();
+            let expr_offset_in_line = line.find("return ").unwrap_or(0) + "return ".len();
+            let expr_offset = (line_start + expr_offset_in_line) as u32;
+
+            // Try variable resolution for `$var` expressions.
+            if expr.starts_with('$') && !expr.contains(' ') {
+                let results = resolve_variable_types(
+                    expr,
+                    &enclosing_class,
+                    local_classes,
+                    content,
+                    expr_offset,
+                    class_loader,
+                    Loaders::with_function(function_loader),
+                );
+                let type_str = ResolvedType::type_strings_joined(&results);
+                if !type_str.is_empty() {
+                    return_types.push(type_str);
+                    continue;
+                }
+            }
+
+            // For other expressions, fall back to `mixed`.
+            return_types.push("mixed".to_string());
         }
-
-        if !has_return_with_value && !has_bare_return {
-            return Some(InferredReturnType {
-                native: "void".to_string(),
-                effective: None,
-            });
-        }
-
-        if return_types.is_empty() && has_bare_return {
-            return Some(InferredReturnType {
-                native: "void".to_string(),
-                effective: None,
-            });
-        }
-
-        // Deduplicate types.
-        return_types.sort();
-        return_types.dedup();
-
-        if has_bare_return {
-            return_types.push("null".to_string());
-            return_types.sort();
-            return_types.dedup();
-        }
-
-        let effective = if return_types.len() == 1 {
-            return_types.into_iter().next().unwrap()
-        } else if return_types.len() <= 3 {
-            return_types.join("|")
-        } else {
-            return None;
-        };
-
-        // Convert effective type → native PHP type hint.
-        let parsed = PhpType::parse(&effective);
-        let native = parsed
-            .to_native_hint()
-            .unwrap_or_else(|| "mixed".to_string());
-
-        let needs_docblock = native != effective;
-        Some(InferredReturnType {
-            native,
-            effective: if needs_docblock {
-                Some(effective)
-            } else {
-                None
-            },
-        })
     }
 
+    if !has_return_with_value && !has_bare_return {
+        return Some(InferredReturnType {
+            native: "void".to_string(),
+            effective: None,
+        });
+    }
+
+    if return_types.is_empty() && has_bare_return {
+        return Some(InferredReturnType {
+            native: "void".to_string(),
+            effective: None,
+        });
+    }
+
+    // Deduplicate types.
+    return_types.sort();
+    return_types.dedup();
+
+    if has_bare_return {
+        return_types.push("null".to_string());
+        return_types.sort();
+        return_types.dedup();
+    }
+
+    let effective = if return_types.len() == 1 {
+        return_types.into_iter().next().unwrap()
+    } else if return_types.len() <= 3 {
+        return_types.join("|")
+    } else {
+        return None;
+    };
+
+    // Convert effective type → native PHP type hint.
+    let parsed = PhpType::parse(&effective);
+    let native = parsed
+        .to_native_hint()
+        .unwrap_or_else(|| "mixed".to_string());
+
+    let needs_docblock = native != effective;
+    Some(InferredReturnType {
+        native,
+        effective: if needs_docblock {
+            Some(effective)
+        } else {
+            None
+        },
+    })
+}
+
+/// Infer a `@return` type string for a function whose signature is
+/// at `position` in `content`.
+///
+/// Returns `Some("list<string>")` when the body analysis produces a
+/// type richer than the native hint, or `None` when inference fails
+/// or the native type already captures the full information.
+///
+/// This is the entry point for docblock generation (`enrichment_plain`
+/// replacement for `@return`) — it finds the function line from the
+/// position and delegates to [`infer_return_type`].
+pub(crate) fn enrichment_return_type(
+    content: &str,
+    position: Position,
+    local_classes: &[Arc<ClassInfo>],
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    function_loader: FunctionLoader<'_>,
+) -> Option<String> {
+    // The position is on or near the docblock / function signature.
+    // Search forward from that line to find the `function` keyword.
+    let lines: Vec<&str> = content.lines().collect();
+    let start = position.line as usize;
+    let end = (start + 10).min(lines.len());
+    let func_line =
+        (start..end).find(|&i| lines[i].contains("function ") || lines[i].contains("function("))?;
+
+    let inferred = infer_return_type(
+        content,
+        func_line,
+        local_classes,
+        class_loader,
+        function_loader,
+    )?;
+
+    // Return the effective type if it's richer than the native hint,
+    // otherwise return the native type (which may still be useful for
+    // callers that want any inferred type, e.g. `void`).
+    Some(inferred.effective.unwrap_or(inferred.native))
+}
+
+impl Backend {
     /// Resolve a "Fix return type" code action by computing the full
     /// workspace edit.  Dispatches on the `action_kind` stored in the
     /// data payload.
@@ -553,25 +630,88 @@ impl Backend {
                 // When the effective type is richer than the native hint,
                 // add a `@return` docblock tag.
                 if let Some(ref eff) = inferred.effective {
-                    let func_line =
-                        find_function_keyword_line(&lines, paren_line).unwrap_or(diag_line);
-                    let indent = lines[func_line]
-                        .chars()
-                        .take_while(|c| c.is_whitespace())
-                        .collect::<String>();
+                    let func_line = find_func_keyword_line(&lines, paren_line).unwrap_or(diag_line);
+                    let docblock_info = find_function_docblock(&lines, func_line);
 
-                    // Insert a single-line docblock above the function.
-                    let docblock = format!(
-                        "{}/**\n{} * @return {}\n{} */\n",
-                        indent, indent, eff, indent
-                    );
-                    edits.push(TextEdit {
-                        range: Range {
-                            start: Position::new(func_line as u32, 0),
-                            end: Position::new(func_line as u32, 0),
-                        },
-                        new_text: docblock,
-                    });
+                    if docblock_info.has_docblock {
+                        if !docblock_info.has_return_tag {
+                            // Insert @return into the existing docblock.
+                            let doc_end = docblock_info.doc_end_line;
+                            let close_line = lines[doc_end];
+
+                            if docblock_info.doc_start_line == doc_end {
+                                // Single-line docblock: convert to multi-line.
+                                let trimmed = close_line.trim();
+                                let inner = trimmed
+                                    .strip_prefix("/**")
+                                    .and_then(|s| s.strip_suffix("*/"))
+                                    .map(|s| s.trim())
+                                    .unwrap_or("");
+
+                                let indent = &docblock_info.indent;
+                                let mut new_doc = format!("{}/**\n", indent);
+                                if !inner.is_empty() {
+                                    new_doc.push_str(&format!("{} * {}\n", indent, inner));
+                                    new_doc.push_str(&format!("{} *\n", indent));
+                                }
+                                new_doc.push_str(&format!("{} * @return {}\n", indent, eff));
+                                new_doc.push_str(&format!("{} */", indent));
+
+                                edits.push(TextEdit {
+                                    range: Range {
+                                        start: Position::new(doc_end as u32, 0),
+                                        end: Position::new(doc_end as u32, close_line.len() as u32),
+                                    },
+                                    new_text: new_doc,
+                                });
+                            } else {
+                                // Multi-line docblock: insert @return before `*/`.
+                                let indent = &docblock_info.indent;
+
+                                let prev_line = if doc_end > docblock_info.doc_start_line {
+                                    lines[doc_end - 1].trim()
+                                } else {
+                                    ""
+                                };
+                                let prev_trimmed = prev_line.trim_start_matches('*').trim();
+                                let needs_separator = !prev_trimmed.is_empty()
+                                    && !prev_trimmed.starts_with("@return")
+                                    && !prev_trimmed.starts_with("@throws")
+                                    && prev_trimmed.starts_with('@');
+
+                                let mut insert_text = String::new();
+                                if needs_separator {
+                                    insert_text.push_str(&format!("{} *\n", indent));
+                                }
+                                insert_text.push_str(&format!("{} * @return {}\n", indent, eff));
+
+                                edits.push(TextEdit {
+                                    range: Range {
+                                        start: Position::new(doc_end as u32, 0),
+                                        end: Position::new(doc_end as u32, 0),
+                                    },
+                                    new_text: insert_text,
+                                });
+                            }
+                        }
+                        // If the docblock already has a @return tag, we
+                        // don't overwrite it — the user intentionally
+                        // wrote it.
+                    } else {
+                        // No existing docblock — create one.
+                        let indent = &docblock_info.indent;
+                        let new_doc = format!(
+                            "{}/**\n{} * @return {}\n{} */\n",
+                            indent, indent, eff, indent
+                        );
+                        edits.push(TextEdit {
+                            range: Range {
+                                start: Position::new(func_line as u32, 0),
+                                end: Position::new(func_line as u32, 0),
+                            },
+                            new_text: new_doc,
+                        });
+                    }
                 }
 
                 let mut changes = HashMap::new();
@@ -722,7 +862,7 @@ fn build_change_return_type_edits_to(
     edits.push(type_edit);
 
     // ── Step 4: Find the function signature line ────────────────────
-    let func_line = find_function_keyword_line(&lines, paren_line)?;
+    let func_line = find_func_keyword_line(&lines, paren_line)?;
 
     // ── Step 5: Remove @return from docblock when target is void ────
     if target_type == "void"
@@ -808,8 +948,14 @@ fn infer_type_from_literal(expr: &str) -> Option<String> {
     }
 
     // Array literal.
-    if expr == "[]" || expr.starts_with("array(") {
+    if expr == "[]" {
         return Some("array".to_string());
+    }
+    if expr.starts_with('[') && expr.ends_with(']') {
+        return infer_array_literal_type(&expr[1..expr.len() - 1]);
+    }
+    if expr.starts_with("array(") && expr.ends_with(')') {
+        return infer_array_literal_type(&expr[6..expr.len() - 1]);
     }
 
     // `new ClassName(...)` — extract the class name.
@@ -825,6 +971,158 @@ fn infer_type_from_literal(expr: &str) -> Option<String> {
     }
 
     // Not a literal — caller should use the full resolver.
+    None
+}
+
+/// Infer a type from the comma-separated contents of an array literal.
+///
+/// Handles simple cases where all elements are the same scalar type
+/// (e.g. `['a', 'b']` → `list<string>`, `[1, 2, 3]` → `list<int>`).
+/// Key-value pairs with string keys produce `array<string, V>`.
+/// Falls back to `array` when elements are mixed or too complex.
+fn infer_array_literal_type(inner: &str) -> Option<String> {
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return Some("array".to_string());
+    }
+
+    // Split on commas at the top level (not inside nested brackets,
+    // parens, or strings).
+    let elements = split_array_elements(inner);
+    if elements.is_empty() {
+        return Some("array".to_string());
+    }
+
+    let mut value_types: Vec<String> = Vec::new();
+    let mut has_string_keys = false;
+    let mut has_int_keys = false;
+
+    for elem in &elements {
+        let elem = elem.trim();
+        if elem.is_empty() {
+            continue;
+        }
+
+        // Check for key => value syntax.
+        if let Some(arrow_pos) = find_top_level_arrow(elem) {
+            let key = elem[..arrow_pos].trim();
+            let value = elem[arrow_pos + 2..].trim();
+
+            if (key.starts_with('\'') && key.ends_with('\''))
+                || (key.starts_with('"') && key.ends_with('"'))
+            {
+                has_string_keys = true;
+            } else if key.parse::<i64>().is_ok() {
+                has_int_keys = true;
+            } else {
+                // Complex key expression — bail.
+                return Some("array".to_string());
+            }
+
+            match infer_type_from_literal(value) {
+                Some(t) => value_types.push(t),
+                None => return Some("array".to_string()),
+            }
+        } else {
+            // Sequential element (no key).
+            match infer_type_from_literal(elem) {
+                Some(t) => value_types.push(t),
+                None => return Some("array".to_string()),
+            }
+        }
+    }
+
+    if value_types.is_empty() {
+        return Some("array".to_string());
+    }
+
+    // Deduplicate value types.
+    value_types.sort();
+    value_types.dedup();
+
+    let value_union = if value_types.len() <= 3 {
+        value_types.join("|")
+    } else {
+        "mixed".to_string()
+    };
+
+    if has_string_keys && !has_int_keys {
+        Some(format!("array<string, {}>", value_union))
+    } else if has_string_keys {
+        // Mixed key types — just use array with value type.
+        Some(format!("array<{}>", value_union))
+    } else {
+        Some(format!("list<{}>", value_union))
+    }
+}
+
+/// Split array element text on top-level commas (not inside nested
+/// brackets, parentheses, or string literals).
+fn split_array_elements(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut start = 0;
+
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match ch {
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            '[' | '(' if !in_single_quote && !in_double_quote => depth += 1,
+            ']' | ')' if !in_single_quote && !in_double_quote => depth -= 1,
+            ',' if depth == 0 && !in_single_quote && !in_double_quote => {
+                parts.push(&s[start..i]);
+                start = i + 1;
+            }
+            '\\' if in_single_quote || in_double_quote => {
+                // Skip escaped character inside strings.
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    if start < s.len() {
+        parts.push(&s[start..]);
+    }
+    parts
+}
+
+/// Find the position of `=>` at the top level of an array element
+/// (not inside nested brackets, parens, or strings).
+fn find_top_level_arrow(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        match ch {
+            '\'' if !in_double_quote => in_single_quote = !in_single_quote,
+            '"' if !in_single_quote => in_double_quote = !in_double_quote,
+            '[' | '(' if !in_single_quote && !in_double_quote => depth += 1,
+            ']' | ')' if !in_single_quote && !in_double_quote => depth -= 1,
+            '=' if depth == 0
+                && !in_single_quote
+                && !in_double_quote
+                && i + 1 < bytes.len()
+                && bytes[i + 1] == b'>' =>
+            {
+                return Some(i);
+            }
+            '\\' if in_single_quote || in_double_quote => {
+                i += 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
     None
 }
 
@@ -1109,14 +1407,6 @@ fn map_between_offset_to_position(
         remaining -= 1; // for the '\n'
     }
     None
-}
-
-/// Walk backward from `start_line` to find a line containing the
-/// `function ` keyword (the function/method signature).
-fn find_function_keyword_line(lines: &[&str], start_line: usize) -> Option<usize> {
-    (0..=start_line)
-        .rev()
-        .find(|&i| lines[i].contains("function ") || lines[i].contains("function("))
 }
 
 /// Look for a docblock above the function signature and remove any
@@ -1598,8 +1888,88 @@ mod tests {
     }
 
     #[test]
-    fn literal_array() {
+    fn literal_array_empty() {
         assert_eq!(infer_type_from_literal("[]"), Some("array".to_string()));
+    }
+
+    #[test]
+    fn literal_array_of_strings() {
+        assert_eq!(
+            infer_type_from_literal("['string']"),
+            Some("list<string>".to_string())
+        );
+        assert_eq!(
+            infer_type_from_literal("['a', 'b', 'c']"),
+            Some("list<string>".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_array_of_ints() {
+        assert_eq!(
+            infer_type_from_literal("[1, 2, 3]"),
+            Some("list<int>".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_array_mixed_scalars() {
+        assert_eq!(
+            infer_type_from_literal("['a', 1]"),
+            Some("list<int|string>".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_array_with_string_keys() {
+        assert_eq!(
+            infer_type_from_literal("['key' => 'value']"),
+            Some("array<string, string>".to_string())
+        );
+        assert_eq!(
+            infer_type_from_literal("['name' => 'Alice', 'age' => 42]"),
+            Some("array<string, int|string>".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_array_nested() {
+        assert_eq!(
+            infer_type_from_literal("[['a'], ['b']]"),
+            Some("list<list<string>>".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_array_with_variable_falls_back() {
+        assert_eq!(
+            infer_type_from_literal("[$var, 'a']"),
+            Some("array".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_array_legacy_syntax() {
+        assert_eq!(
+            infer_type_from_literal("array('a', 'b')"),
+            Some("list<string>".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_array_new_objects() {
+        assert_eq!(
+            infer_type_from_literal("[new Foo(), new Foo()]"),
+            Some("list<Foo>".to_string())
+        );
+    }
+
+    #[test]
+    fn literal_array_trailing_comma() {
+        assert_eq!(
+            infer_type_from_literal("['a', 'b',]"),
+            Some("list<string>".to_string())
+        );
     }
 
     #[test]

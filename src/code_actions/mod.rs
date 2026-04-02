@@ -282,6 +282,8 @@ impl Backend {
             | "phpstan.fixReturnType.changeTypeToActual"
             | "phpstan.fixReturnType.changeType"
             | "phpstan.fixReturnType.addType" => self.resolve_fix_return_type(&data, &content),
+            // ── Add iterable return type ────────────────────────────
+            "phpstan.addIterableType" => self.resolve_add_iterable_type(&data, &content),
             // ── Remove unreachable statement ────────────────────────
             "phpstan.removeUnreachable" => self.resolve_remove_unreachable(&data, &content),
             // ── Change visibility (parent-aware) ────────────────────

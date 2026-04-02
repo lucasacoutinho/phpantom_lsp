@@ -1554,14 +1554,14 @@ fn build_call_site(info: &ExtractionInfo, call_indent: &str) -> String {
             // Extracted function returns null on fall-through, or the
             // actual value on early exit.
             // Call site:
-            //   $__early = extracted(…);
-            //   if ($__early !== null) return $__early;
+            //   $result = extracted(…);
+            //   if ($result !== null) return $result;
             out.push_str(call_indent);
-            out.push_str("$__early = ");
+            out.push_str("$result = ");
             out.push_str(&call_expr);
             out.push_str(";\n");
             out.push_str(call_indent);
-            out.push_str("if ($__early !== null) return $__early;\n");
+            out.push_str("if ($result !== null) return $result;\n");
         }
         ReturnStrategy::NullGuardWithValue(void_guards) => {
             // Guards return null (or were void), the function also
@@ -1804,8 +1804,8 @@ enum ReturnStrategy {
     /// sentinel for "no early exit."  The extracted function returns
     /// `?<type>` and the call site is:
     /// ```php
-    /// $__early = extracted(…);
-    /// if ($__early !== null) return $__early;
+    /// $result = extracted(…);
+    /// if ($result !== null) return $result;
     /// ```
     SentinelNull,
     /// All guard returns are `null` (or bare `return;`) and the
@@ -3811,7 +3811,7 @@ mod tests {
         let result = build_call_site(&info, "        ");
         assert_eq!(
             result,
-            "        $__early = $this->extracted($x);\n        if ($__early !== null) return $__early;\n"
+            "        $result = $this->extracted($x);\n        if ($result !== null) return $result;\n"
         );
     }
 

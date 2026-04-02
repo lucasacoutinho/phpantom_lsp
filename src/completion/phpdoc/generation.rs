@@ -64,6 +64,7 @@ pub fn try_generate_docblock(
     position: Position,
     use_map: &HashMap<String, String>,
     file_namespace: &Option<String>,
+    local_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: FunctionLoader<'_>,
 ) -> Option<CompletionResponse> {
@@ -90,6 +91,7 @@ pub fn try_generate_docblock(
         position,
         use_map,
         file_namespace,
+        local_classes,
         class_loader,
         function_loader,
     );
@@ -151,6 +153,7 @@ pub fn try_generate_docblock_on_enter(
     position: Position,
     use_map: &HashMap<String, String>,
     file_namespace: &Option<String>,
+    local_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: FunctionLoader<'_>,
 ) -> Option<Vec<TextEdit>> {
@@ -183,6 +186,7 @@ pub fn try_generate_docblock_on_enter(
         position,
         use_map,
         file_namespace,
+        local_classes,
         class_loader,
         function_loader,
     );
@@ -1123,6 +1127,7 @@ fn build_docblock_plain(
     position: Position,
     _use_map: &HashMap<String, String>,
     _file_namespace: &Option<String>,
+    local_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: FunctionLoader<'_>,
 ) -> String {
@@ -1134,6 +1139,7 @@ fn build_docblock_plain(
             position,
             _use_map,
             _file_namespace,
+            local_classes,
             class_loader,
             function_loader,
         ),
@@ -1162,6 +1168,7 @@ fn build_docblock_snippet(
     position: Position,
     _use_map: &HashMap<String, String>,
     _file_namespace: &Option<String>,
+    local_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: FunctionLoader<'_>,
 ) -> String {
@@ -1173,6 +1180,7 @@ fn build_docblock_snippet(
             position,
             _use_map,
             _file_namespace,
+            local_classes,
             class_loader,
             function_loader,
         ),
@@ -1199,6 +1207,7 @@ fn build_function_snippet(
     position: Position,
     _use_map: &HashMap<String, String>,
     _file_namespace: &Option<String>,
+    local_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: FunctionLoader<'_>,
 ) -> String {
@@ -1244,7 +1253,26 @@ fn build_function_snippet(
     let return_tag = if is_void || is_constructor {
         None
     } else {
-        enrichment_snippet(&sym.return_type, &mut tab_stop, class_loader)
+        // Try body-based inference first (produces richer types like
+        // `list<string>` instead of `array<mixed>`).
+        let body_inferred = crate::code_actions::phpstan::fix_return_type::enrichment_return_type(
+            content,
+            position,
+            local_classes,
+            class_loader,
+            function_loader,
+        );
+        let inferred = body_inferred.filter(|t| {
+            let lower = t.to_lowercase();
+            lower != "void" && lower != "mixed" && Some(t.as_str()) != sym.return_type.as_deref()
+        });
+        // Fall back to signature-based enrichment when body inference
+        // doesn't produce anything useful.
+        if let Some(t) = inferred {
+            Some(t)
+        } else {
+            enrichment_snippet(&sym.return_type, &mut tab_stop, class_loader)
+        }
     };
 
     let has_throws = !uncaught.is_empty();
@@ -1301,6 +1329,7 @@ fn build_function_plain(
     position: Position,
     _use_map: &HashMap<String, String>,
     _file_namespace: &Option<String>,
+    local_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: FunctionLoader<'_>,
 ) -> String {
@@ -1334,7 +1363,24 @@ fn build_function_plain(
     let return_tag = if is_void || is_constructor {
         None
     } else {
-        enrichment_plain(&sym.return_type, class_loader)
+        // Try body-based inference first (produces richer types like
+        // `list<string>` instead of `array<mixed>`).
+        let body_inferred = crate::code_actions::phpstan::fix_return_type::enrichment_return_type(
+            content,
+            position,
+            local_classes,
+            class_loader,
+            function_loader,
+        );
+        // Filter out types that don't need a @return tag (void, scalars
+        // that match the native hint exactly).
+        let inferred = body_inferred.filter(|t| {
+            let lower = t.to_lowercase();
+            lower != "void" && lower != "mixed" && Some(t.as_str()) != sym.return_type.as_deref()
+        });
+        // Fall back to signature-based enrichment when body inference
+        // doesn't produce anything useful.
+        inferred.or_else(|| enrichment_plain(&sym.return_type, class_loader))
     };
 
     let has_throws = !uncaught.is_empty();
@@ -2235,6 +2281,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &no_classes,
             None,
         );
@@ -2271,6 +2318,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &no_classes,
             None,
         );
@@ -2323,6 +2371,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &loader,
             None,
         );
@@ -2364,6 +2413,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &no_classes,
             None,
         );
@@ -2410,6 +2460,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &no_classes,
             None,
         );
@@ -2440,6 +2491,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &no_classes,
             None,
         );
@@ -2469,6 +2521,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &no_classes,
             None,
         );
@@ -2645,6 +2698,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &no_classes,
             None,
         );
@@ -2695,6 +2749,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &loader,
             None,
         );
@@ -2770,6 +2825,7 @@ mod tests {
             },
             &use_map,
             &file_ns,
+            &[],
             &no_classes,
             None,
         );

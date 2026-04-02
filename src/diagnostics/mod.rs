@@ -343,6 +343,15 @@ fn is_stale_phpstan_diagnostic(diag: &Diagnostic, content: &str) -> bool {
         );
     }
 
+    // ── missingType.iterableValue — @return with generic type added ─
+    if identifier == "missingType.iterableValue" {
+        return crate::code_actions::phpstan::add_iterable_type::is_add_iterable_type_stale(
+            content,
+            diag.range.start.line as usize,
+            &diag.message,
+        );
+    }
+
     false
 }
 

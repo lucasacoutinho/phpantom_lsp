@@ -11,13 +11,7 @@ No outstanding items.
 
 ---
 
-## Tier 1 — Trivial (no message parsing or simple static message)
-
-No outstanding items.
-
----
-
-## Tier 2 — Simple message parsing
+## Tier 1 — Simple message parsing
 
 ### H6. `return.type` — Update return type to match actual returns
 
@@ -117,7 +111,7 @@ and the diagnostic line.
 
 ---
 
-## Tier 3 — Requires locating related code
+## Tier 2 — Requires locating related code
 
 ### H13. `property.notFound` (same-class) — Declare missing property
 
@@ -186,41 +180,7 @@ a `TODO` comment — configurable later.
 
 ---
 
-## Tier 4 — Requires body analysis
-
-### H17. `missingType.iterableValue` (return type) — Add `@return` with iterable type
-
-**Identifier:** `missingType.iterableValue`
-**Messages:**
-- `Method Foo::bar() return type has no value type specified in iterable type array.`
-- `Function foo() return type has no value type specified in iterable type array.`
-
-Only handle the "return type" variant (not parameter/property). Parse the
-iterable type name (`array`, `iterable`, `Traversable`, etc.) from the message.
-
-**Simplest approach (start here):**
-
-Offer to add `@return array<mixed>` (or `list<mixed>`, `iterable<mixed>`, etc.
-matching the native type). This silences the PHPStan error while being explicit.
-PHPStan's documentation recommends this as the quick fix:
-> "If you just want to make this error go away, replace array with mixed[]
-> or array<mixed>."
-
-**Enhanced approach (later):**
-
-Walk the function body for `return` statements and infer element types from
-array literals using the existing `infer_element_type` /
-`infer_array_literal_raw_type` logic. If all return expressions are array
-literals with consistent value types, offer `@return array<ValueType>`.
-
-**Stale detection:** a `@return` tag exists with a generic array type
-(contains `<` or `[]`).
-
-**Reference:** https://phpstan.org/blog/solving-phpstan-no-value-type-specified-in-iterable-type
-
----
-
-## Tier 5 — Unique to PHPantom
+## Tier 3 — Unique to PHPantom
 
 ### H20. `generics.callSiteVarianceRedundant` — Remove redundant variance annotation
 

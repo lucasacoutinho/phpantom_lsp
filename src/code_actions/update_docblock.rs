@@ -5,10 +5,10 @@
 //! This code action patches the `@param` and `@return` tags to match the
 //! current signature while preserving descriptions and other tags.
 //!
-//! **Trigger:** Cursor is on a function/method that has an existing
-//! docblock whose `@param` tags don't match the signature's parameters
-//! (by name, count, or order), or whose `@return` tag contradicts the
-//! return type hint.
+//! **Trigger:** Cursor is inside the docblock of a function/method whose
+//! `@param` tags don't match the signature's parameters (by name, count,
+//! or order), whose `@return` tag contradicts the return type hint, or
+//! whose `@return` tag can be enriched with body-based type inference.
 //!
 //! **Code action kind:** `quickfix`.
 
@@ -24,6 +24,7 @@ use tower_lsp::lsp_types::*;
 
 use super::cursor_context::{CursorContext, MemberContext, find_cursor_context};
 use crate::Backend;
+use crate::code_actions::phpstan::fix_return_type::enrichment_return_type;
 use crate::completion::phpdoc::generation::enrichment_plain;
 use crate::completion::source::throws_analysis::{self, ThrowsContext};
 use crate::docblock::is_compatible_refinement_typed;
@@ -114,11 +115,16 @@ impl Backend {
         let ctx = find_cursor_context(&program.statements, cursor_offset);
         let trivia = program.trivia.as_slice();
 
-        let info =
-            match find_function_with_docblock_from_context(&ctx, trivia, content, cursor_offset) {
-                Some(info) => info,
-                None => return,
-            };
+        let info = match find_function_with_docblock_from_context(
+            &ctx,
+            &program.statements,
+            trivia,
+            content,
+            cursor_offset,
+        ) {
+            Some(info) => info,
+            None => return,
+        };
 
         // Build a class loader and function loader for type enrichment.
         let ctx = self.file_context(uri);
@@ -126,15 +132,25 @@ impl Backend {
         let function_loader = self.function_loader(&ctx);
 
         // Determine if anything needs updating.
-        let needs_update =
-            check_needs_update(&info, content, &class_loader, Some(&function_loader));
+        let needs_update = check_needs_update(
+            &info,
+            content,
+            &ctx.classes,
+            &class_loader,
+            Some(&function_loader),
+        );
         if !needs_update {
             return;
         }
 
         // Build the replacement docblock.
-        let new_docblock =
-            build_updated_docblock(&info, content, &class_loader, Some(&function_loader));
+        let new_docblock = build_updated_docblock(
+            &info,
+            content,
+            &ctx.classes,
+            &class_loader,
+            Some(&function_loader),
+        );
         if new_docblock == info.docblock_text {
             return;
         }
@@ -177,6 +193,7 @@ impl Backend {
 /// position, then check for an existing docblock.
 fn find_function_with_docblock_from_context<'a>(
     ctx: &CursorContext<'a>,
+    statements: &'a Sequence<'a, Statement<'a>>,
     trivia: &[Trivia<'a>],
     content: &str,
     cursor: u32,
@@ -187,17 +204,16 @@ fn find_function_with_docblock_from_context<'a>(
             all_members,
             ..
         } => {
-            if let MemberContext::Method(method, _in_body) = member {
-                let body_start = method.body.span().start.offset;
-                if cursor_on_signature_or_docblock(cursor, method, body_start, trivia, content) {
-                    return build_info_for_function_like(
-                        method.span().start.offset,
-                        &method.parameter_list,
-                        method.return_type_hint.as_ref(),
-                        trivia,
-                        content,
-                    );
-                }
+            if let MemberContext::Method(method, _in_body) = member
+                && cursor_on_docblock(cursor, method, trivia, content)
+            {
+                return build_info_for_function_like(
+                    method.span().start.offset,
+                    &method.parameter_list,
+                    method.return_type_hint.as_ref(),
+                    trivia,
+                    content,
+                );
             }
             // The cursor may be inside the docblock trivia that precedes
             // a method.  Docblocks live outside the method's AST span, so
@@ -206,27 +222,23 @@ fn find_function_with_docblock_from_context<'a>(
             // contains the cursor.
             if matches!(member, MemberContext::None) {
                 for m in all_members.iter() {
-                    if let ClassLikeMember::Method(method) = m {
-                        let body_start = method.body.span().start.offset;
-                        if cursor_on_signature_or_docblock(
-                            cursor, method, body_start, trivia, content,
-                        ) {
-                            return build_info_for_function_like(
-                                method.span().start.offset,
-                                &method.parameter_list,
-                                method.return_type_hint.as_ref(),
-                                trivia,
-                                content,
-                            );
-                        }
+                    if let ClassLikeMember::Method(method) = m
+                        && cursor_on_docblock(cursor, method, trivia, content)
+                    {
+                        return build_info_for_function_like(
+                            method.span().start.offset,
+                            &method.parameter_list,
+                            method.return_type_hint.as_ref(),
+                            trivia,
+                            content,
+                        );
                     }
                 }
             }
             None
         }
         CursorContext::InFunction(func, _in_body) => {
-            let body_start = func.body.span().start.offset;
-            if cursor_on_signature_or_docblock(cursor, func, body_start, trivia, content) {
+            if cursor_on_docblock(cursor, func, trivia, content) {
                 return build_info_for_function_like(
                     func.span().start.offset,
                     &func.parameter_list,
@@ -237,26 +249,68 @@ fn find_function_with_docblock_from_context<'a>(
             }
             None
         }
-        CursorContext::None => None,
+        CursorContext::None => {
+            // The cursor may be inside a docblock that precedes a
+            // top-level (or namespace-level) standalone function.
+            // Docblocks are trivia, so `find_cursor_context` returns
+            // `None` when the cursor sits before the function's AST
+            // span.  Scan all top-level statements to find a match.
+            find_standalone_function_by_docblock(statements, trivia, content, cursor)
+        }
     }
 }
 
-/// Check whether the cursor is on the function/method signature or inside
-/// the docblock trivia that immediately precedes it, but **not** inside
-/// the body.  The cursor must be in [`node_start`, `body_start`) or
-/// inside the preceding docblock.
-fn cursor_on_signature_or_docblock(
+/// Scan top-level (and namespace-level) statements for a standalone
+/// function whose preceding docblock contains the cursor.
+fn find_standalone_function_by_docblock<'a>(
+    statements: &'a Sequence<'a, Statement<'a>>,
+    trivia: &[Trivia<'a>],
+    content: &str,
+    cursor: u32,
+) -> Option<FunctionWithDocblock> {
+    for stmt in statements.iter() {
+        match stmt {
+            Statement::Function(func) => {
+                if cursor_on_docblock(cursor, func, trivia, content) {
+                    return build_info_for_function_like(
+                        func.span().start.offset,
+                        &func.parameter_list,
+                        func.return_type_hint.as_ref(),
+                        trivia,
+                        content,
+                    );
+                }
+            }
+            Statement::Namespace(ns) => {
+                for s in ns.statements().iter() {
+                    if let Statement::Function(func) = s
+                        && cursor_on_docblock(cursor, func, trivia, content)
+                    {
+                        return build_info_for_function_like(
+                            func.span().start.offset,
+                            &func.parameter_list,
+                            func.return_type_hint.as_ref(),
+                            trivia,
+                            content,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Check whether the cursor is inside the docblock trivia that immediately
+/// precedes the given AST node.
+fn cursor_on_docblock(
     cursor: u32,
     node: &impl HasSpan,
-    body_start: u32,
     trivia: &[Trivia<'_>],
     content: &str,
 ) -> bool {
     let node_start = node.span().start.offset;
-    // Cursor is on the signature (before the body).
-    if cursor >= node_start && cursor < body_start {
-        return true;
-    }
     // Check if the cursor is inside the docblock that belongs to this node.
     // Uses the canonical trivia-based locator from symbol_map::docblock.
     if let Some((_text, db_start)) =
@@ -490,6 +544,7 @@ fn detect_indent(content: &str, docblock_start: usize) -> String {
 fn check_needs_update(
     info: &FunctionWithDocblock,
     content: &str,
+    local_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: FunctionLoader<'_>,
 ) -> bool {
@@ -580,6 +635,36 @@ fn check_needs_update(
         }
         if is_type_contradiction(&doc_ret.type_str, sig_ret) {
             return true;
+        }
+    }
+
+    // Check if the @return tag needs body-based enrichment.
+    if let Some(sig_ret) = &info.sig_return
+        && sig_ret.to_lowercase() != "void"
+    {
+        let doc_already_rich = info
+            .doc_return
+            .as_ref()
+            .is_some_and(|dr| dr.type_str.contains('<') || dr.type_str.contains("[]"));
+        if !doc_already_rich
+            && let Some(enriched) = enrichment_return_type(
+                content,
+                info.docblock_position,
+                local_classes,
+                class_loader,
+                function_loader,
+            )
+        {
+            let enriched_lower = enriched.to_lowercase();
+            if enriched_lower != "void" && enriched_lower != "mixed" && enriched != *sig_ret {
+                let differs_from_doc = info
+                    .doc_return
+                    .as_ref()
+                    .is_none_or(|dr| dr.type_str != enriched);
+                if differs_from_doc {
+                    return true;
+                }
+            }
         }
     }
 
@@ -674,6 +759,7 @@ fn is_type_contradiction(doc_type: &str, native_type: &str) -> bool {
 fn build_updated_docblock(
     info: &FunctionWithDocblock,
     content: &str,
+    local_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     function_loader: FunctionLoader<'_>,
 ) -> String {
@@ -854,6 +940,65 @@ fn build_updated_docblock(
                     *text = format!("@return {} {}", sig_ret, description);
                 }
                 break;
+            }
+        }
+    }
+
+    // Body-based @return enrichment.
+    if let Some(sig_ret) = &info.sig_return
+        && sig_ret.to_lowercase() != "void"
+    {
+        let has_rich_return = lines.iter().any(|l| {
+            if let DocLine::Return(text) = l {
+                text.contains('<') || text.contains("[]")
+            } else {
+                false
+            }
+        });
+        if !has_rich_return
+            && let Some(enriched) = enrichment_return_type(
+                content,
+                info.docblock_position,
+                local_classes,
+                class_loader,
+                function_loader,
+            )
+        {
+            let enriched_lower = enriched.to_lowercase();
+            if enriched_lower != "void" && enriched_lower != "mixed" && enriched != *sig_ret {
+                let differs_from_doc = info
+                    .doc_return
+                    .as_ref()
+                    .is_none_or(|dr| dr.type_str != enriched);
+                if differs_from_doc {
+                    // Update existing @return line or insert a new one.
+                    let mut updated_existing = false;
+                    for line in &mut lines {
+                        if let DocLine::Return(text) = line {
+                            // Preserve any description text after the type.
+                            let desc = info
+                                .doc_return
+                                .as_ref()
+                                .map(|dr| dr.description.as_str())
+                                .unwrap_or("");
+                            if desc.is_empty() {
+                                *text = format!("@return {}", enriched);
+                            } else {
+                                *text = format!("@return {} {}", enriched, desc);
+                            }
+                            updated_existing = true;
+                            break;
+                        }
+                    }
+                    if !updated_existing {
+                        // Insert before the closing `*/`.
+                        let close_pos = lines
+                            .iter()
+                            .position(|l| matches!(l, DocLine::Close))
+                            .unwrap_or(lines.len());
+                        lines.insert(close_pos, DocLine::Return(format!("@return {}", enriched)));
+                    }
+                }
             }
         }
     }
@@ -1210,7 +1355,13 @@ mod tests {
         let file_id = mago_database::file::FileId::new("input.php");
         let program = mago_syntax::parser::parse_file_content(&arena, file_id, php);
         let ctx = find_cursor_context(&program.statements, offset);
-        find_function_with_docblock_from_context(&ctx, program.trivia.as_slice(), php, offset)
+        find_function_with_docblock_from_context(
+            &ctx,
+            &program.statements,
+            program.trivia.as_slice(),
+            php,
+            offset,
+        )
     }
 
     /// Stub class loader that never resolves anything (for unit tests).
@@ -1235,10 +1386,16 @@ class Foo {
     public function bar(string $a, int $b): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1252,10 +1409,16 @@ class Foo {
     public function bar(string $a): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1269,10 +1432,16 @@ class Foo {
     public function bar(string $a, int $b): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param int").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1286,10 +1455,16 @@ class Foo {
     public function bar(string $a, int $b): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(!check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(!check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1302,10 +1477,16 @@ class Foo {
     public function bar(int $a): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1318,10 +1499,16 @@ class Foo {
     public function bar(string $a): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param non-empty-string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(!check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(!check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1334,10 +1521,16 @@ class Foo {
     public function bar(): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@return void").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1350,10 +1543,16 @@ class Foo {
     public function bar(): int {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@return string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1363,6 +1562,7 @@ class Foo {
     public function bar(string $a): void {}
 }
 "#;
+        // No docblock at all — cursor on signature should return None.
         let pos = php.find("function bar").unwrap() as u32;
         let info = find_info(php, pos);
         assert!(info.is_none());
@@ -1377,10 +1577,16 @@ class Foo {
  */
 function bar(string $a, int $b, bool $c): void {}
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1395,10 +1601,10 @@ class Foo {
     public function bar(string $a, int $b): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         assert!(
             updated.contains("The first param"),
             "Should preserve description: {}",
@@ -1427,10 +1633,10 @@ class Foo {
     public function bar(int $b, bool $c): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         assert!(
             !updated.contains("$old"),
             "Should remove old param: {}",
@@ -1450,10 +1656,10 @@ class Foo {
     public function bar(): int {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@return string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         assert!(
             updated.contains("@return int Some description"),
             "Should update return type: {}",
@@ -1473,10 +1679,10 @@ class Foo {
     public function bar(): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@return void").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         assert!(
             !updated.contains("@return"),
             "Should remove @return void: {}",
@@ -1494,11 +1700,17 @@ class Foo {
     public function bar(string ...$args): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         // Variadic params should match — no update needed.
-        assert!(!check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(!check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1511,11 +1723,17 @@ class Foo {
     public function bar(array $items): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param array").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         // array<int, string> refines array — no contradiction.
-        assert!(!check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(!check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1532,10 +1750,10 @@ class Foo {
     public function bar(string $a, int $b): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@template T").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         assert!(
             updated.contains("@template T"),
             "Should preserve @template: {}",
@@ -1579,10 +1797,16 @@ class Foo {
     public function bar(int $a): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        assert!(check_needs_update(&info, php, &cl, no_function_loader()));
+        assert!(check_needs_update(
+            &info,
+            php,
+            &[],
+            &cl,
+            no_function_loader()
+        ));
     }
 
     #[test]
@@ -1595,10 +1819,10 @@ class Foo {
     public function bar(string $a, int $b, array $items): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         // All $names should be aligned at the same column.
         assert!(
             updated.contains("@param string       $a"),
@@ -1630,10 +1854,10 @@ class Foo {
     public function bar(string $a, int $b, bool $c): string {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         // Should NOT have a blank line between /** and the first @param.
         let lines: Vec<&str> = updated.lines().collect();
         assert_eq!(
@@ -1659,10 +1883,10 @@ class Foo {
     public function bar(string $a, Closure $handler, callable $fallback): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         assert!(
             updated.contains("(Closure(): mixed)"),
             "Should enrich Closure: {}",
@@ -1689,10 +1913,10 @@ class Foo {
     }
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
-        let updated = build_updated_docblock(&info, php, &cl, no_function_loader());
+        let updated = build_updated_docblock(&info, php, &[], &cl, no_function_loader());
         assert!(
             updated.contains("@throws RuntimeException"),
             "Should add missing @throws: {}",
@@ -1716,11 +1940,11 @@ class Foo {
     }
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param string").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         assert!(
-            !check_needs_update(&info, php, &cl, no_function_loader()),
+            !check_needs_update(&info, php, &[], &cl, no_function_loader()),
             "Should not need update when throws already documented"
         );
     }
@@ -1746,6 +1970,7 @@ class Foo {
         assert!(check_needs_update(
             &info.unwrap(),
             php,
+            &[],
             &cl,
             no_function_loader()
         ));
@@ -1866,11 +2091,11 @@ class Foo {
     public function bar($name): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param $name").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         assert!(
-            check_needs_update(&info, php, &cl, no_function_loader()),
+            check_needs_update(&info, php, &[], &cl, no_function_loader()),
             "should need update to add `mixed` type to @param $name"
         );
         // The param must still be recognised (not duplicated).
@@ -1890,11 +2115,11 @@ class Foo {
     public function bar(string $a, int $b): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("@param $a").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         assert!(
-            check_needs_update(&info, php, &cl, no_function_loader()),
+            check_needs_update(&info, php, &[], &cl, no_function_loader()),
             "should need update because $b is missing"
         );
         assert_eq!(info.doc_params.len(), 1);
@@ -1915,11 +2140,11 @@ class Foo {
     public function stepIntro(CustomerRequest $request): View {}
 }
 "#;
-        let pos = php.find("function stepIntro").unwrap() as u32;
+        let pos = php.find("/**").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         assert!(
-            !check_needs_update(&info, php, &cl, no_function_loader()),
+            !check_needs_update(&info, php, &[], &cl, no_function_loader()),
             "should not suggest adding @param for a fully-typed non-templated class param"
         );
     }
@@ -1934,11 +2159,11 @@ class Foo {
     public function bar(string $a, int $b, bool $c): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("/**").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         assert!(
-            !check_needs_update(&info, php, &cl, no_function_loader()),
+            !check_needs_update(&info, php, &[], &cl, no_function_loader()),
             "should not suggest adding @param for scalar-typed params"
         );
     }
@@ -1955,11 +2180,11 @@ class Foo {
     public function bar($untyped): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("/**").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         assert!(
-            check_needs_update(&info, php, &cl, no_function_loader()),
+            check_needs_update(&info, php, &[], &cl, no_function_loader()),
             "should suggest adding @param for an untyped param"
         );
     }
@@ -1976,11 +2201,11 @@ class Foo {
     public function bar(array $items): void {}
 }
 "#;
-        let pos = php.find("function bar").unwrap() as u32;
+        let pos = php.find("/**").unwrap() as u32;
         let info = find_info(php, pos).unwrap();
         let cl = no_class_loader();
         assert!(
-            check_needs_update(&info, php, &cl, no_function_loader()),
+            check_needs_update(&info, php, &[], &cl, no_function_loader()),
             "should suggest adding @param for an array param"
         );
     }
@@ -2028,7 +2253,7 @@ class Foo {
     }
 
     #[test]
-    fn finds_info_on_method_name() {
+    fn no_info_on_method_name() {
         let php = r#"<?php
 class Foo {
     /**
@@ -2042,13 +2267,13 @@ class Foo {
         let pos = php.find("bar").unwrap() as u32;
         let info = find_info(php, pos);
         assert!(
-            info.is_some(),
-            "should find info when cursor is on method name"
+            info.is_none(),
+            "should not offer update docblock when cursor is on method name"
         );
     }
 
     #[test]
-    fn finds_info_on_method_return_type() {
+    fn no_info_on_method_return_type() {
         let php = r#"<?php
 class Foo {
     /**
@@ -2062,8 +2287,8 @@ class Foo {
         let pos = php.find("void").unwrap() as u32;
         let info = find_info(php, pos);
         assert!(
-            info.is_some(),
-            "should find info when cursor is on return type hint"
+            info.is_none(),
+            "should not offer update docblock when cursor is on return type hint"
         );
     }
 
@@ -2086,7 +2311,7 @@ function foo(string $a, int $b): void {
     }
 
     #[test]
-    fn finds_info_on_standalone_function_signature() {
+    fn no_info_on_standalone_function_signature() {
         let php = r#"<?php
 /**
  * @param string $a
@@ -2098,8 +2323,8 @@ function foo(string $a, int $b): void {
         let pos = php.find("function foo").unwrap() as u32;
         let info = find_info(php, pos);
         assert!(
-            info.is_some(),
-            "should find info when cursor is on standalone function signature"
+            info.is_none(),
+            "should not offer update docblock when cursor is on standalone function signature"
         );
     }
 }

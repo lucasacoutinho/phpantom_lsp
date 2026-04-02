@@ -37,12 +37,16 @@
 //!   `return.void` (void function returns a value) or `return.empty`
 //!   (non-void function has bare return), offer to strip the return
 //!   expression or change the return type to `void`.
+//! - **Add iterable return type** — when PHPStan reports
+//!   `missingType.iterableValue` for a return type, offer to add a
+//!   `@return` tag with `<mixed>` (e.g. `@return array<mixed>`).
 //! - **Remove unreachable statement** — when PHPStan reports
 //!   `deadCode.unreachable`, offer to delete the dead statement.
 //! - **PHPStan ignore** — when the cursor is on a line with a PHPStan
 //!   error, offer to add `@phpstan-ignore <identifier>`.  When PHPStan
 //!   reports an unnecessary ignore, offer to remove it.
 
+pub(crate) mod add_iterable_type;
 mod add_override;
 pub(crate) mod add_return_type_will_change;
 pub(crate) mod add_throws;
@@ -120,6 +124,9 @@ impl Backend {
 
         // ── Fix return type (return.void / return.empty / return.type / missingType.return) ─
         self.collect_fix_return_type_actions(uri, content, params, out);
+
+        // ── Add iterable return type (missingType.iterableValue) ────
+        self.collect_add_iterable_type_actions(uri, content, params, out);
 
         // ── Remove unreachable statement ────────────────────────────
         self.collect_remove_unreachable_actions(uri, content, params, out);

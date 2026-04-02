@@ -392,14 +392,14 @@ function classify(int $code): string
     let result = apply_edit(content, resolved.edit.as_ref().unwrap());
 
     // Call site should use the sentinel-null pattern:
-    //   $__early = extracted($code);
-    //   if ($__early !== null) return $__early;
+    //   $result = extracted($code);
+    //   if ($result !== null) return $result;
     assert!(
-        result.contains("$__early = tryClassify($code);"),
-        "call site should assign to $__early:\n{result}"
+        result.contains("$result = tryClassify($code);"),
+        "call site should assign to $result:\n{result}"
     );
     assert!(
-        result.contains("if ($__early !== null) return $__early;"),
+        result.contains("if ($result !== null) return $result;"),
         "call site should check sentinel:\n{result}"
     );
     // Extracted function should have nullable return type.
