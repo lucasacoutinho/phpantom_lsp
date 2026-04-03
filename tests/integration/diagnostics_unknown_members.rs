@@ -2144,3 +2144,722 @@ class Seeder {
         diags
     );
 }
+
+// ─── Eloquent relationship property diagnostics (B4) ────────────────────────
+
+#[test]
+fn no_diagnostic_for_relationship_property_on_model() {
+    // When a model has a relationship method (e.g. translations() returning
+    // HasMany<Translation>), the LaravelModelProvider synthesizes a virtual
+    // property `$translations` typed as Collection<Translation>.  Accessing
+    // this property should not produce a diagnostic.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/HasMany.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class HasMany {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Collection.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TModel
+ */
+class Collection {
+    /** @return TModel|null */
+    public function first(): mixed { return null; }
+}
+"#,
+            ),
+            (
+                "src/Translation.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Translation extends Model {
+    public string $locale;
+}
+"#,
+            ),
+            (
+                "src/Category.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Category extends Model {
+    /** @return HasMany<Translation, $this> */
+    public function translations(): HasMany { return $this->hasMany(Translation::class); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\Category;
+
+class Service {
+    public function test(Category $cat): void {
+        $items = $cat->translations;
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags.iter().any(|d| d.message.contains("translations")),
+        "Relationship property 'translations' should be resolved via LaravelModelProvider, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_diagnostic_for_has_one_relationship_property_on_model() {
+    // HasOne relationship produces a virtual property typed as the related model.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/HasOne.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class HasOne {}
+"#,
+            ),
+            (
+                "src/ImageFile.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class ImageFile extends Model {
+    public string $path;
+}
+"#,
+            ),
+            (
+                "src/Notification.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+
+class Notification extends Model {
+    /** @return HasOne<ImageFile, $this> */
+    public function imageFile(): HasOne { return $this->hasOne(ImageFile::class); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\Notification;
+
+class Handler {
+    public function process(Notification $notif): void {
+        $file = $notif->imageFile;
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags.iter().any(|d| d.message.contains("imageFile")),
+        "HasOne relationship property 'imageFile' should be resolved via LaravelModelProvider, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_diagnostic_for_this_relationship_property_inside_model() {
+    // Accessing $this->translations inside the model itself (e.g. in a
+    // method body) should resolve the virtual relationship property.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/HasMany.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class HasMany {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Collection.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TModel
+ */
+class Collection {
+    /** @return TModel|null */
+    public function first(): mixed { return null; }
+}
+"#,
+            ),
+            (
+                "src/Translation.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Translation extends Model {
+    public string $locale;
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///src/Category.php";
+    let text = r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class Category extends Model {
+    /** @return HasMany<Translation, $this> */
+    public function translations(): HasMany { return $this->hasMany(Translation::class); }
+
+    public function defaultTranslation(): ?Translation {
+        return $this->translations->first();
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags.iter().any(|d| d.message.contains("translations")),
+        "Relationship property '$this->translations' should be resolved inside model, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_diagnostic_for_belongs_to_associate_method() {
+    // Calling a relationship method WITH () returns the relationship object
+    // (e.g. BelongsTo).  Methods like associate() should be found on it.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/BelongsTo.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class BelongsTo {
+    /** @return TDeclaringModel */
+    public function associate(mixed $model): static { return $this; }
+    public function dissociate(): static { return $this; }
+}
+"#,
+            ),
+            (
+                "src/ParentModel.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class ParentModel extends Model {
+    public string $name;
+}
+"#,
+            ),
+            (
+                "src/ChildModel.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class ChildModel extends Model {
+    /** @return BelongsTo<ParentModel, $this> */
+    public function parent(): BelongsTo { return $this->belongsTo(ParentModel::class); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\ChildModel;
+use App\ParentModel;
+
+class Service {
+    public function link(ChildModel $child, ParentModel $parent): void {
+        $child->parent()->associate($parent);
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags.iter().any(|d| d.message.contains("associate")),
+        "BelongsTo::associate() should be resolved on relationship method return type, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_diagnostic_for_belongs_to_with_covariant_this() {
+    // When the return type uses `covariant $this` syntax
+    // (e.g. BelongsTo<Category, covariant $this>), the type parser
+    // should still resolve the BelongsTo class and find its methods.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/BelongsTo.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class BelongsTo {
+    /** @return TDeclaringModel */
+    public function associate(mixed $model): static { return $this; }
+    public function dissociate(): static { return $this; }
+}
+"#,
+            ),
+            (
+                "src/Category.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Category extends Model {}
+"#,
+            ),
+            (
+                "src/Translation.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class Translation extends Model {
+    /** @return BelongsTo<Category, covariant $this> */
+    public function category(): BelongsTo { return $this->belongsTo(Category::class); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\Translation;
+use App\Category;
+
+class Service {
+    public function link(Translation $trans, Category $cat): void {
+        $trans->category()->associate($cat);
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags.iter().any(|d| d.message.contains("associate")),
+        "BelongsTo::associate() should be resolved even with 'covariant $this' syntax, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_diagnostic_for_relationship_property_inferred_from_body() {
+    // When a relationship method has no @return annotation but the body
+    // contains `$this->hasMany(Related::class)`, the parser infers the
+    // return type and the LaravelModelProvider should synthesize a virtual
+    // property from it.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/HasMany.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class HasMany {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Collection.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TModel
+ */
+class Collection {}
+"#,
+            ),
+            (
+                "src/Comment.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Comment extends Model {
+    public string $body;
+}
+"#,
+            ),
+            (
+                "src/Post.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Post extends Model {
+    public function comments() { return $this->hasMany(Comment::class); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\Post;
+
+class Handler {
+    public function test(Post $post): void {
+        $items = $post->comments;
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags.iter().any(|d| d.message.contains("comments")),
+        "Body-inferred relationship property 'comments' should be resolved, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_diagnostic_for_relationship_property_with_mixed_native_return() {
+    // In real Laravel projects, relationship methods often declare `mixed`
+    // as the native return type with the specific relationship type only
+    // in the @return docblock.  The LaravelModelProvider must still
+    // synthesize the virtual property from the docblock return type.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/HasMany.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class HasMany {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/HasOne.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class HasOne {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Relations/BelongsTo.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent\Relations;
+
+/**
+ * @template TRelatedModel
+ * @template TDeclaringModel
+ */
+class BelongsTo {
+    /** @return TDeclaringModel */
+    public function associate(mixed $model): static { return $this; }
+    public function dissociate(): static { return $this; }
+}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Collection.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TModel
+ */
+class Collection {
+    /** @return TModel|null */
+    public function first(): mixed { return null; }
+}
+"#,
+            ),
+            (
+                "src/Translation.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class Translation extends Model {
+    public string $locale;
+}
+"#,
+            ),
+            (
+                "src/ImageFile.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+
+class ImageFile extends Model {
+    public string $path;
+}
+"#,
+            ),
+            (
+                "src/Category.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class Category extends Model {
+    public string $name;
+}
+"#,
+            ),
+            (
+                "src/NotificationCategory.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
+
+class NotificationCategory extends Model {
+    /**
+     * @return HasMany<Translation, $this>
+     */
+    public function translations(): mixed { return $this->hasMany(Translation::class); }
+
+    public function defaultTranslation(): mixed {
+        return $this->translations->first();
+    }
+}
+"#,
+            ),
+            (
+                "src/NotificationObject.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasOne;
+
+class NotificationObject extends Model {
+    /**
+     * @return HasOne<ImageFile, $this>
+     */
+    public function imageFile(): mixed { return $this->hasOne(ImageFile::class); }
+
+    public function getImagePath(): mixed {
+        return $this->imageFile->path;
+    }
+}
+"#,
+            ),
+            (
+                "src/TranslationModel.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+
+class TranslationModel extends Model {
+    /**
+     * @return BelongsTo<Category, covariant $this>
+     */
+    public function category(): mixed { return $this->belongsTo(Category::class); }
+}
+"#,
+            ),
+        ],
+    );
+
+    // Test 1: $this->translations inside model (HasMany virtual property)
+    let uri1 = "file:///src/NotificationCategory.php";
+    let text1 = std::fs::read_to_string(_dir.path().join("src/NotificationCategory.php")).unwrap();
+    backend.update_ast(uri1, &text1);
+    let mut diags1 = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri1, &text1, &mut diags1);
+    assert!(
+        !diags1.iter().any(|d| d.message.contains("translations")),
+        "HasMany relationship property '$this->translations' with mixed native return should resolve, got: {:?}",
+        diags1
+    );
+
+    // Test 2: $this->imageFile inside model (HasOne virtual property)
+    let uri2 = "file:///src/NotificationObject.php";
+    let text2 = std::fs::read_to_string(_dir.path().join("src/NotificationObject.php")).unwrap();
+    backend.update_ast(uri2, &text2);
+    let mut diags2 = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri2, &text2, &mut diags2);
+    assert!(
+        !diags2.iter().any(|d| d.message.contains("imageFile")),
+        "HasOne relationship property '$this->imageFile' with mixed native return should resolve, got: {:?}",
+        diags2
+    );
+
+    // Test 3: $translation->category()->associate() (BelongsTo with covariant $this)
+    let uri3 = "file:///consumer.php";
+    let text3 = r#"<?php
+use App\TranslationModel;
+use App\Category;
+
+class NotificationCategoryService {
+    public function link(TranslationModel $translation, Category $cat): void {
+        $translation->category()->associate($cat);
+    }
+}
+"#;
+    backend.update_ast(uri3, text3);
+    let mut diags3 = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri3, text3, &mut diags3);
+    assert!(
+        !diags3.iter().any(|d| d.message.contains("associate")),
+        "BelongsTo::associate() should be found when method returns mixed with @return BelongsTo<..., covariant $this>, got: {:?}",
+        diags3
+    );
+}

@@ -1655,6 +1655,11 @@ class EloquentPropertyDemo
         $bakery->vendor_count;        // relationship count         → int
         $bakery->warmth;              // $appends (no cast/attr)    → mixed
         // MUST NOT appear: secret_ingredient (private $attributes field)
+
+        // BelongsTo relationship property + method call with covariant $this
+        $post = new BlogPost();
+        $post->author;                // relationship BelongsTo     → BlogAuthor
+        $post->author()->associate($post->author); // associate() on BelongsTo
     }
 }
 
@@ -4801,6 +4806,9 @@ class BlogPost extends \Illuminate\Database\Eloquent\Model
 {
     public function getTitle(): string { return ''; }
     public function getSlug(): string { return ''; }
+
+    /** @return \Illuminate\Database\Eloquent\Relations\BelongsTo<BlogAuthor, covariant $this> */
+    public function author(): mixed { return $this->belongsTo(BlogAuthor::class); }
 }
 
 class AuthorProfile extends \Illuminate\Database\Eloquent\Model
@@ -5740,7 +5748,10 @@ namespace Illuminate\Database\Eloquent\Relations {
     }
     class HasMany extends Relation {}
     class HasOne extends Relation {}
-    class BelongsTo extends Relation {}
+    class BelongsTo extends Relation {
+        public function associate(mixed $model): static { return $this; }
+        public function dissociate(): static { return $this; }
+    }
     class BelongsToMany extends Relation {}
     class MorphOne extends Relation {}
     class MorphMany extends Relation {}

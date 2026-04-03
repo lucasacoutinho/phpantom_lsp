@@ -137,18 +137,28 @@ impl PhpType {
     ///
     /// This never fails. If the input cannot be parsed by `mago_type_syntax`,
     /// returns `PhpType::Raw(input)`.
+    ///
+    /// PHPStan/Larastan variance annotations (`covariant`, `contravariant`)
+    /// inside generic parameter positions are stripped before parsing so
+    /// that types like `BelongsTo<Category, covariant $this>` parse as
+    /// `Generic("BelongsTo", [Named("Category"), Named("$this")])` instead
+    /// of falling back to `Raw(…)`.
     pub fn parse(input: &str) -> PhpType {
         if input.is_empty() {
             return PhpType::Raw(String::new());
         }
 
+        // Strip variance annotations that mago_type_syntax cannot parse.
+        let cleaned = strip_variance_annotations_from_type(input);
+        let effective: &str = &cleaned;
+
         let span = Span::new(
             FileId::zero(),
             Position::new(0),
-            Position::new(input.len() as u32),
+            Position::new(effective.len() as u32),
         );
 
-        match mago_type_syntax::parse_str(span, input) {
+        match mago_type_syntax::parse_str(span, effective) {
             Ok(ty) => convert(&ty),
             Err(_) => PhpType::Raw(input.to_owned()),
         }
@@ -1496,6 +1506,56 @@ impl PhpType {
 ///
 /// This is a superset of [`is_scalar_name`] that also includes PHPDoc-only
 /// pseudo-types and special names that `resolve_type_string` skips.
+/// Strip `covariant ` and `contravariant ` prefixes from generic type
+/// arguments so that `mago_type_syntax` can parse the type.
+///
+/// Only strips the keywords when they appear immediately after `<` or `,`
+/// (with optional whitespace), i.e. inside generic parameter positions.
+/// Returns the input unchanged (no allocation) when no annotations are
+/// found.
+fn strip_variance_annotations_from_type(s: &str) -> std::borrow::Cow<'_, str> {
+    // Fast path: no variance annotations at all.
+    if !s.contains("covariant ") && !s.contains("contravariant ") {
+        return std::borrow::Cow::Borrowed(s);
+    }
+
+    let mut cleaned = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+
+    while i < bytes.len() {
+        // Check whether the preceding non-whitespace is `<` or `,`,
+        // meaning we are inside a generic parameter position.
+        let preceded_by_generic_delimiter = || -> bool {
+            let mut j = i;
+            while j > 0 {
+                j -= 1;
+                if !bytes[j].is_ascii_whitespace() {
+                    return bytes[j] == b'<' || bytes[j] == b',';
+                }
+            }
+            false
+        };
+
+        if i + "covariant ".len() <= bytes.len()
+            && &bytes[i..i + "covariant ".len()] == b"covariant "
+            && preceded_by_generic_delimiter()
+        {
+            i += "covariant ".len();
+        } else if i + "contravariant ".len() <= bytes.len()
+            && &bytes[i..i + "contravariant ".len()] == b"contravariant "
+            && preceded_by_generic_delimiter()
+        {
+            i += "contravariant ".len();
+        } else {
+            cleaned.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+
+    std::borrow::Cow::Owned(cleaned)
+}
+
 fn is_keyword_type(name: &str) -> bool {
     if is_scalar_name(name) {
         return true;
@@ -2213,6 +2273,127 @@ mod tests {
         assert_round_trip("list<int>");
         assert_round_trip("non-empty-list<string>");
         assert_round_trip("non-empty-array<string>");
+    }
+
+    #[test]
+    fn parse_generic_with_covariant_this() {
+        // Laravel/Larastan uses `covariant $this` in generic args, e.g.
+        // `BelongsTo<Category, covariant $this>`.  The parser should
+        // still extract the base class name (`BelongsTo`) so that
+        // member lookup works on the relationship class.
+        let ty = PhpType::parse("BelongsTo<Category, covariant $this>");
+        let base = ty.base_name();
+        assert_eq!(
+            base,
+            Some("BelongsTo"),
+            "base_name should be 'BelongsTo' even with 'covariant $this' arg, got: {:?} from {:?}",
+            base,
+            ty,
+        );
+    }
+
+    #[test]
+    fn parse_generic_with_covariant_preserves_structure() {
+        // The full Generic structure should be preserved after stripping.
+        let ty = PhpType::parse("HasMany<Post, covariant $this>");
+        match &ty {
+            PhpType::Generic(name, args) => {
+                assert_eq!(name, "HasMany");
+                assert_eq!(args.len(), 2);
+                assert_eq!(args[0].to_string(), "Post");
+                assert_eq!(args[1].to_string(), "$this");
+            }
+            other => panic!("expected Generic, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_generic_with_contravariant() {
+        let ty = PhpType::parse("Comparator<contravariant T>");
+        assert_eq!(
+            ty.base_name(),
+            Some("Comparator"),
+            "base_name should work with contravariant annotation",
+        );
+        match &ty {
+            PhpType::Generic(_, args) => {
+                assert_eq!(args.len(), 1);
+                assert_eq!(args[0].to_string(), "T");
+            }
+            other => panic!("expected Generic, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_generic_with_covariant_fqn() {
+        // Fully-qualified relationship type with covariant $this.
+        let ty = PhpType::parse(
+            "Illuminate\\Database\\Eloquent\\Relations\\BelongsTo<Category, covariant $this>",
+        );
+        assert_eq!(
+            ty.base_name(),
+            Some("Illuminate\\Database\\Eloquent\\Relations\\BelongsTo"),
+        );
+    }
+
+    #[test]
+    fn parse_generic_with_multiple_covariant_args() {
+        let ty = PhpType::parse("Map<covariant TKey, covariant TValue>");
+        match &ty {
+            PhpType::Generic(name, args) => {
+                assert_eq!(name, "Map");
+                assert_eq!(args.len(), 2);
+                assert_eq!(args[0].to_string(), "TKey");
+                assert_eq!(args[1].to_string(), "TValue");
+            }
+            other => panic!("expected Generic, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_no_false_strip_of_covariant_class_name() {
+        // A class named `covariant` (unlikely but possible) should not
+        // be stripped when it is NOT inside a generic parameter position.
+        // It appears at the top level, not after `<` or `,`.
+        let ty = PhpType::parse("covariant");
+        // mago may or may not parse this as a Named type; the key is
+        // that stripping should NOT remove it since it's not after < or ,.
+        assert_ne!(ty.to_string(), "", "should not produce empty string");
+    }
+
+    #[test]
+    fn parse_generic_without_covariant_unchanged() {
+        // Normal generics without variance annotations should be unaffected.
+        let ty = PhpType::parse("Collection<int, User>");
+        match &ty {
+            PhpType::Generic(name, args) => {
+                assert_eq!(name, "Collection");
+                assert_eq!(args.len(), 2);
+            }
+            other => panic!("expected Generic, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_covariant_array_shape_in_generic() {
+        // `covariant array{...}` inside a generic — the array shape
+        // should still parse after stripping the variance keyword.
+        let ty = PhpType::parse(
+            "Collection<int, covariant array{customer: Customer, contact: Contact|null}>",
+        );
+        assert_eq!(ty.base_name(), Some("Collection"));
+        match &ty {
+            PhpType::Generic(_, args) => {
+                assert_eq!(args.len(), 2);
+                // The second arg should be an array shape, not Raw.
+                assert!(
+                    matches!(&args[1], PhpType::ArrayShape(_)),
+                    "second arg should be ArrayShape after stripping covariant, got: {:?}",
+                    args[1],
+                );
+            }
+            other => panic!("expected Generic, got: {:?}", other),
+        }
     }
 
     #[test]

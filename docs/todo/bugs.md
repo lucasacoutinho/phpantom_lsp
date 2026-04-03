@@ -1,48 +1,5 @@
 # PHPantom — Bug Fixes
 
-## B4: Relationship property access and BelongsTo return type not resolved by analyzer
-
-Eloquent relationship methods accessed as properties (without `()`) are
-resolved correctly in the completion engine via `LaravelModelProvider`,
-which synthesizes virtual properties (e.g. `translations()` returning
-`HasMany<T>` produces `$translations` typed as `Collection<T>`). However,
-the analyzer's member-access checker does not find these synthesized
-properties in some cross-file scenarios, reporting
-`unresolved_member_access`.
-
-Additionally, calling a relationship method WITH `()` (e.g.
-`$translation->category()`) returns a `BelongsTo` type that the LSP can
-resolve, but then member lookup on that `BelongsTo` fails to find
-methods like `associate()`. The `covariant $this` syntax in generic args
-(e.g. `BelongsTo<NotificationCategory, covariant $this>`) may interfere
-with type parsing.
-
-A separate sub-issue: `FlowService:477` accesses `$order->orderProducts`
-(camelCase) while the model declares the property and relationship method
-as `orderproducts` (all lowercase). Laravel normalises via `Str::snake()`
-at runtime, but the LSP does a case-sensitive property lookup.
-
-Affected diagnostics:
-
-- `NotificationCategory:52` — `$this->translations` property not resolved
-  (HasMany relationship, no `@property` annotation)
-- `NotificationObject:114` — `$this->imageFile` property not resolved
-  (HasOne relationship, no `@property` annotation)
-- `NotificationCategoryService:37` — `$translation->category()->associate()`
-  — `BelongsTo` return type resolves but `associate()` not found on it
-
-`FlowService:477` (`$order->orderProducts`) is a case-sensitivity issue
-filed separately as B9.
-
-`FlowService:517` is a compound failure: `$reorder->order->orderproducts`
-is a relationship property (this bug), then `->reduce()` returns `mixed`
-instead of `Decimal` (generic return type inference gap), then `->add()`
-fails on the unresolved type.
-
-**Impact:** 4 diagnostics in the shared project
-(`NotificationCategory:52`, `NotificationObject:114`,
-`NotificationCategoryService:37`, `FlowService:517`).
-
 ## B5: `$this->items` on custom Collection subclass not typed
 
 When a class extends `Collection<int, T>` via `@extends`, accessing

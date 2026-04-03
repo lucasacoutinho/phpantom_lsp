@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                             | Impact | Effort |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ------ |
-| B4  | [Relationship property access and BelongsTo return type not resolved](todo/bugs.md#b4-relationship-property-access-and-belongsto-return-type-not-resolved-by-analyzer) | Medium | Medium |
 | B5  | [`$this->items` on custom Collection subclass not typed](todo/bugs.md#b5-thisitems-on-custom-collection-subclass-not-typed)                      | Low    | Medium |
 | B6  | [Scope methods not found on Builder in analyzer chains](todo/bugs.md#b6-scope-methods-not-found-on-builder-in-analyzer-chains)                   | High   | Medium |
 | B7  | [PHPDoc `@param` generic array type not merged with native `array` hint](todo/bugs.md#b7-phpdoc-param-generic-array-type-not-merged-with-native-array-hint) | Low | Medium |
