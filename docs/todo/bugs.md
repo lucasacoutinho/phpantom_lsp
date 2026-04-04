@@ -1,42 +1,5 @@
 # PHPantom — Bug Fixes
 
-## B6: Scope methods not found on Builder in analyzer chains
-
-PHPantom's completion engine correctly injects scope methods onto
-`Builder<ConcreteModel>` via `try_inject_builder_scopes` in
-`resolve_named_type`. However, the analyzer's `check_member_on_resolved_classes`
-uses `resolve_class_fully_cached` which is keyed by bare FQN without
-generic args. A prior cache entry for `Builder` (without model-specific
-scopes) is returned, and the scope method is reported as not found.
-
-The analyzer does check `base_classes` first (before the cache) to avoid
-this, but in method chains like
-`ArticleCategoryTranslation::whereHas(...)->whereLanguage(...)`, the
-intermediate `Builder<ArticleCategoryTranslation>` type produced by
-`whereHas()` may not carry the scope-injected methods in `base_classes`.
-
-Affected diagnostics (5 direct + 2 cascading):
-
-Direct `unknown_member` — scope method exists on model but not found on
-Builder:
-- `ArticleRepository:69` — `whereLanguage` (scope on
-  `ArticleCategoryTranslation`)
-- `ProductRepository:271` — `whereIsLuxury` (scope on `Product`)
-- `ProductRepository:272` — `whereIsDerma` (scope on `Product`)
-- `ProductRepository:273` — `whereIsProHairCare` (scope on `Product`)
-- `ProductRepository:369` — `whereIsLuxury` (scope on `Product`)
-
-Cascading `unresolved_member_access`:
-- `EventRepository:23` — `pluck` after broken
-  `whereIsBlackFriday()->whereIsVisible()` chain
-
-Note: `EventRepository:22` reports `whereIsVisible` not found on Builder.
-Product has `scopeIsVisibleIn` (takes a `Country` parameter) but no
-`scopeWhereIsVisible` and no `is_visible` column. This may be a genuine
-code bug in the project rather than an LSP issue.
-
-**Impact:** 5–6 direct `unknown_member` diagnostics plus 1–2 cascading.
-
 ## B7: PHPDoc `@param` generic array type not merged with native `array` hint
 
 When a method has a native type hint `array` and a PHPDoc `@param` with
@@ -69,6 +32,3 @@ native `array` with the docblock's `list<Request>`.
 
 **Impact:** 1 diagnostic in the shared project
 (`MobilePayConnection:76`).
-
-
-

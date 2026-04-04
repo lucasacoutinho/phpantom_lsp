@@ -382,11 +382,11 @@ fn inject_scopes_and_model_methods(
     // 1. Inject scope methods.
     let scope_methods = build_scope_methods_for_builder(model_arg, class_loader);
     for method in scope_methods {
-        if !result
+        let already_exists = result
             .methods
             .iter()
-            .any(|m| m.name == method.name && m.is_static == method.is_static)
-        {
+            .any(|m| m.name == method.name && m.is_static == method.is_static);
+        if !already_exists {
             result.methods.push(method);
         }
     }

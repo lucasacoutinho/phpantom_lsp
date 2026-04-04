@@ -3097,3 +3097,340 @@ class KlaviyoService {
         diags
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// B6: Scope methods not found on Builder in analyzer chains
+// ═══════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn no_diagnostic_for_scope_method_on_builder_in_static_chain() {
+    // When a model has scope methods (e.g. scopeWhereIsLuxury), they should be
+    // available on the Builder returned by static query methods like
+    // whereHas().  The Builder-forwarded methods on the model substitute
+    // `static` → `Builder<Model>`, and type_hint_to_classes_typed should
+    // inject the model's scope methods onto that Builder.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Builder.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TModel of \Illuminate\Database\Eloquent\Model
+ */
+class Builder {
+    /** @return static */
+    public function where(string $column, mixed $operator = null, mixed $value = null): static { return $this; }
+    /** @return static */
+    public function whereHas(string $relation, ?\Closure $callback = null): static { return $this; }
+    /** @return static */
+    public function orderBy(string $column, string $direction = 'asc'): static { return $this; }
+    /** @return \Illuminate\Database\Eloquent\Collection<int, TModel> */
+    public function get(): Collection { return new Collection(); }
+    /**
+     * @template TValue
+     * @param string $column
+     * @return \Illuminate\Support\Collection<int, TValue>
+     */
+    public function pluck(string $column): \Illuminate\Support\Collection { return new \Illuminate\Support\Collection(); }
+}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Collection.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TKey of array-key
+ * @template TModel
+ */
+class Collection {
+    /** @return TModel|null */
+    public function first(): mixed { return null; }
+}
+"#,
+            ),
+            (
+                "illuminate/Support/Collection.php",
+                r#"<?php
+namespace Illuminate\Support;
+
+/**
+ * @template TKey of array-key
+ * @template TValue
+ */
+class Collection {
+    /** @return array<TKey, TValue> */
+    public function all(): array { return []; }
+}
+"#,
+            ),
+            (
+                "src/Product.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Builder;
+
+class Product extends Model {
+    public function scopeWhereIsLuxury(Builder $query): Builder { return $query->where('is_luxury', true); }
+    public function scopeWhereIsDerma(Builder $query): Builder { return $query->where('is_derma', true); }
+    public function scopeWhereIsProHairCare(Builder $query): Builder { return $query->where('is_pro_hair_care', true); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\Product;
+
+class ProductRepository {
+    public function getFiltered(bool $onlyLuxury): void {
+        $products = Product::whereHas('translations')
+            ->whereIsLuxury()
+            ->whereIsDerma()
+            ->whereIsProHairCare()
+            ->get();
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags.iter().any(|d| d.message.contains("whereIsLuxury")),
+        "Scope method 'whereIsLuxury' should be found on Builder<Product>, got: {:?}",
+        diags
+    );
+    assert!(
+        !diags.iter().any(|d| d.message.contains("whereIsDerma")),
+        "Scope method 'whereIsDerma' should be found on Builder<Product>, got: {:?}",
+        diags
+    );
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("whereIsProHairCare")),
+        "Scope method 'whereIsProHairCare' should be found on Builder<Product>, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_diagnostic_for_scope_method_after_wherehas_with_closure() {
+    // Same as above but with a closure argument to whereHas, matching
+    // the real-world pattern from EventRepository.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Builder.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TModel of \Illuminate\Database\Eloquent\Model
+ */
+class Builder {
+    /** @return static */
+    public function where(string $column, mixed $operator = null, mixed $value = null): static { return $this; }
+    /**
+     * @param  string  $relation
+     * @param  (\Closure(\Illuminate\Database\Eloquent\Builder<TModel>): mixed)|null  $callback
+     * @return static
+     */
+    public function whereHas(string $relation, ?\Closure $callback = null): static { return $this; }
+    /**
+     * @template TValue
+     * @param string $column
+     * @return \Illuminate\Support\Collection<int, TValue>
+     */
+    public function pluck(string $column): \Illuminate\Support\Collection { return new \Illuminate\Support\Collection(); }
+}
+"#,
+            ),
+            (
+                "illuminate/Support/Collection.php",
+                r#"<?php
+namespace Illuminate\Support;
+
+/**
+ * @template TKey of array-key
+ * @template TValue
+ */
+class Collection {
+    /** @return array<TKey, TValue> */
+    public function all(): array { return []; }
+}
+"#,
+            ),
+            (
+                "src/Product.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Builder;
+
+class Product extends Model {
+    public function scopeWhereIsBlackFriday(Builder $query): Builder { return $query->where('is_black_friday', true); }
+    public function scopeWhereIsVisible(Builder $query): Builder { return $query->where('is_visible', true); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\Product;
+use Illuminate\Database\Eloquent\Builder;
+
+class EventRepository {
+    public function getProductIds(): array {
+        $ids = Product::whereHas(
+            'translations',
+            fn(Builder $query): Builder => $query->where('lang_code', 'en')
+        )
+            ->whereIsBlackFriday()
+            ->whereIsVisible()
+            ->pluck('id')
+            ->all();
+        return $ids;
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags
+            .iter()
+            .any(|d| d.message.contains("whereIsBlackFriday")),
+        "Scope method 'whereIsBlackFriday' should be found on Builder<Product>, got: {:?}",
+        diags
+    );
+    assert!(
+        !diags.iter().any(|d| d.message.contains("whereIsVisible")),
+        "Scope method 'whereIsVisible' should be found on Builder<Product>, got: {:?}",
+        diags
+    );
+    // pluck and all should also resolve without issues
+    assert!(
+        !diags.iter().any(|d| d.message.contains("pluck")),
+        "pluck should be found on Builder after scope methods, got: {:?}",
+        diags
+    );
+}
+
+#[test]
+fn no_diagnostic_for_scope_on_bare_builder_param_in_closure() {
+    // When a closure parameter is typed as bare `Builder` (without generic
+    // args), scope methods like whereIsLuxury() are dispatched through
+    // Builder's __call at runtime.  The analyzer should not flag these as
+    // unknown because the Builder has __call specifically for scope dispatch.
+    let (backend, _dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/", "Illuminate\\": "illuminate/" } } }"#,
+        &[
+            (
+                "illuminate/Database/Eloquent/Model.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+class Model {}
+"#,
+            ),
+            (
+                "illuminate/Database/Eloquent/Builder.php",
+                r#"<?php
+namespace Illuminate\Database\Eloquent;
+
+/**
+ * @template TModel of \Illuminate\Database\Eloquent\Model
+ */
+class Builder {
+    /** @return static */
+    public function where(string $column, mixed $operator = null, mixed $value = null): static { return $this; }
+    /** @return static */
+    public function whereHas(string $relation, ?\Closure $callback = null): static { return $this; }
+    /**
+     * @param bool $value
+     * @param callable(static): static $callback
+     * @return static
+     */
+    public function when(bool $value, callable $callback): static { return $this; }
+
+    /** @return mixed */
+    public function __call(string $method, array $parameters): mixed { return null; }
+}
+"#,
+            ),
+            (
+                "src/Product.php",
+                r#"<?php
+namespace App;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Builder;
+
+class Product extends Model {
+    public function scopeWhereIsLuxury(Builder $query): Builder { return $query->where('is_luxury', true); }
+    public function scopeWhereIsDerma(Builder $query): Builder { return $query->where('is_derma', true); }
+}
+"#,
+            ),
+        ],
+    );
+
+    let uri = "file:///consumer.php";
+    let text = r#"<?php
+use App\Product;
+use Illuminate\Database\Eloquent\Builder;
+
+class ProductRepository {
+    public function getFiltered(bool $onlyLuxury, bool $onlyDerma): void {
+        Product::whereHas('translations')
+            ->when($onlyLuxury, fn(Builder $q): Builder => $q->whereIsLuxury())
+            ->when($onlyDerma, fn(Builder $q): Builder => $q->whereIsDerma());
+    }
+}
+"#;
+    backend.update_ast(uri, text);
+    let mut diags = Vec::new();
+    backend.collect_unknown_member_diagnostics(uri, text, &mut diags);
+
+    assert!(
+        !diags.iter().any(|d| d.message.contains("whereIsLuxury")),
+        "Scope method on bare Builder param should be suppressed (Builder has __call for scope dispatch), got: {:?}",
+        diags
+    );
+    assert!(
+        !diags.iter().any(|d| d.message.contains("whereIsDerma")),
+        "Scope method on bare Builder param should be suppressed (Builder has __call for scope dispatch), got: {:?}",
+        diags
+    );
+}

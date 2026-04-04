@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                             | Impact | Effort |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | ------ |
-| B6  | [Scope methods not found on Builder in analyzer chains](todo/bugs.md#b6-scope-methods-not-found-on-builder-in-analyzer-chains)                   | High   | Medium |
 | B7  | [PHPDoc `@param` generic array type not merged with native `array` hint](todo/bugs.md#b7-phpdoc-param-generic-array-type-not-merged-with-native-array-hint) | Low | Medium |
 | H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union) | Medium | Medium |
 | H6  | `return.type` — update return type to match actual returns                                                                                       | Medium | Medium |

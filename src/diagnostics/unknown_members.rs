@@ -59,6 +59,7 @@ use crate::Backend;
 use crate::completion::resolver::{ResolutionCtx, SubjectOutcome, resolve_subject_outcome};
 use crate::symbol_map::SymbolKind;
 use crate::types::{AccessKind, ClassInfo, ClassLikeKind};
+use crate::virtual_members::laravel::ELOQUENT_BUILDER_FQN;
 use crate::virtual_members::resolve_class_fully_cached;
 
 use super::helpers::{find_innermost_enclosing_class, make_diagnostic};
@@ -633,6 +634,27 @@ impl Backend {
                 || resolved_classes
                     .iter()
                     .any(|c| has_magic_method_for_access(c, is_static, true)));
+
+        // ── Suppress diagnostics on Eloquent Builder with __call ────
+        // Eloquent Builder's `__call` specifically dispatches scope
+        // methods defined on the concrete model and forwards unknown
+        // calls to Query\Builder.  When the Builder is used without
+        // generic args (e.g. a closure parameter typed as bare
+        // `Builder`), scope methods cannot be injected because the
+        // model type is unknown.  Emitting a warning for every scope
+        // call on a bare Builder creates pervasive false positives in
+        // real Laravel projects.  Suppress the diagnostic entirely
+        // when any resolved branch is an Eloquent Builder that has
+        // `__call`, since the method WILL succeed at runtime.
+        if has_magic_call
+            && resolved_classes.iter().any(|c| {
+                c.name == "Builder"
+                    && c.file_namespace.as_deref() == Some("Illuminate\\Database\\Eloquent")
+                    || c.name == ELOQUENT_BUILDER_FQN
+            })
+        {
+            return MemberCheckResult::Ok;
+        }
 
         // ── Member is unresolved on ALL branches — emit diagnostic ──
         let range = match offset_range_to_lsp_range(content, start as usize, end as usize) {
