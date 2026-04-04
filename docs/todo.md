@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                             | Impact      | Effort      |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ----------- |
-| T24 | [`stdClass` dynamic property access](todo/type-inference.md#t24-stdclass-dynamic-property-access) (suppress diagnostics on `stdClass`/`object`)  | Low-Medium  | Low         |
 | T22 | [Array value type tracking from loop assignments](todo/type-inference.md#t22-array-value-type-tracking-from-loop-assignments)                    | Medium      | Medium      |
 | T23 | [`class-string<T>` static method dispatch](todo/type-inference.md#t23-class-stringt-static-method-dispatch)                                     | Medium      | Medium      |
 | T21 | [Bidirectional template inference](todo/type-inference.md#t21-bidirectional-template-inference-upperlower-bounds) (closure return type → generic) | Medium      | Medium-High |

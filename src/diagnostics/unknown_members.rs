@@ -5255,4 +5255,94 @@ class OrderService {
             "expected no diagnostics for variable reassigned inside nested foreach loops, got: {diags:?}"
         );
     }
+
+    #[test]
+    fn no_diagnostic_for_object_parameter_type() {
+        let php = r#"<?php
+function test(object $obj): void {
+    echo $obj->anything;
+    $obj->whatever();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for object parameter type, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_after_is_object_guard() {
+        let php = r#"<?php
+function test(mixed $data): void {
+    if (is_object($data)) {
+        echo $data->error_link;
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics after is_object() guard, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_after_is_object_guard_with_negated_early_return() {
+        let php = r#"<?php
+function test(mixed $data): void {
+    if (!is_object($data)) {
+        return;
+    }
+    echo $data->error_link;
+    echo $data->something_else;
+    $data->doStuff();
+}
+"#;
+        let backend = Backend::new_test();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics after negated is_object() early return, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_after_is_object_in_compound_and_condition() {
+        let php = r#"<?php
+function test(mixed $data): void {
+    if (is_object($data) && property_exists($data, 'error_link') && is_string($data->error_link)) {
+        echo stripslashes($data->error_link);
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics after is_object() in compound && condition, got: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_object_typed_parameter() {
+        let php = r#"<?php
+function test(object $data): void {
+    echo $data->name;
+    $data->doStuff();
+}
+"#;
+        let backend = Backend::new_test();
+        backend.config.lock().diagnostics.unresolved_member_access = Some(true);
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for object-typed parameter, got: {diags:?}"
+        );
+    }
 }

@@ -589,24 +589,27 @@ via `is_object()`) should not produce `unresolved_member_access`
 diagnostics, because `stdClass` permits arbitrary properties by
 design.
 
-This affects two common patterns:
+**Partially resolved.** Three changes landed:
 
-1. `json_decode($json, false)` returns `mixed`. After an
-   `is_object($data)` guard, `$data` should narrow to `object`, and
-   property access like `$data->error_link` should be permitted
-   without a diagnostic. (`Order:646,647`.)
-2. `DB::select()` returns `array`. After `$result[0] instanceof
-   stdClass`, the element should narrow to `stdClass` and property
-   access should be permitted. (`PurchaseFileService:1081,1083`.)
+1. `filter_type_by_guard` now narrows `mixed` → the canonical type
+   for each guard kind (e.g. `is_object()` → `object`) instead of
+   filtering `mixed` to empty.
+2. `resolve_subject_outcome_variable` returns a synthetic
+   `Resolved(stdClass)` when the resolved type is `object` or
+   `stdClass`, so the existing `check_member_on_resolved_classes`
+   suppression kicks in.
+3. `try_apply_type_guard_narrowing` decomposes compound `&&`
+   conditions so `if (is_object($x) && $x->prop)` narrows in both
+   the condition RHS and the if-body. `apply_and_lhs_narrowing` also
+   handles `is_object()` in `&&` inline narrowing.
 
-Both patterns also depend on narrowing improvements tracked in T20
-(`is_object()` narrowing, `instanceof` on array element access).
-This item covers the additional step: once the type is narrowed to
-`stdClass` or `object`, suppress member-not-found diagnostics.
+This fixed `Order:646,647` (`json_decode` → `mixed` → `is_object`
+guard → property access).
 
-**Implementation:** in the diagnostic emission path for
-`unknown_member` and `unresolved_member_access`, skip the diagnostic
-when the resolved type is `stdClass` or bare `object`. Optionally,
-resolve any property access on `stdClass` as `mixed`.
+**Remaining:** `PurchaseFileService:1081,1083` — `$result[0]
+instanceof stdClass` where `$result` is bare `array` from
+`DB::select()`. This requires `instanceof` narrowing on array
+element access expressions, which is a T20 concern (the narrowing
+system only matches bare variable names, not `$arr[0]`).
 
 ---

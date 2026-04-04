@@ -253,6 +253,20 @@ class TypeGuardNarrowingDemo
         if (is_object($mixed)) {
             $mixed->weigh();                      // both Rock and Banana have weigh()
         }
+
+        // is_object() narrows mixed → object, suppressing diagnostics
+        // on dynamic property access (stdClass / object permit any property).
+        $decoded = json_decode('{}');             // mixed
+        if (is_object($decoded)) {
+            echo $decoded->anything;              // no diagnostic — object allows any property
+        }
+
+        // Compound && condition: is_object() narrowing propagates
+        // through the entire condition and into the if-body.
+        $payload = json_decode('{}');             // mixed
+        if (is_object($payload) && property_exists($payload, 'name')) {
+            echo $payload->name;                  // no diagnostic
+        }
     }
 }
 

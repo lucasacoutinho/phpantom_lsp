@@ -1063,6 +1063,24 @@ fn resolve_subject_outcome_variable(var_name: &str, ctx: &ResolutionCtx<'_>) -> 
                 .map_or_else(|| joined.to_string(), |t| t.to_string());
             return SubjectOutcome::Scalar(display);
         }
+
+        // ── stdClass / object — synthetic resolution ────────────────
+        // `stdClass` and `object` are not loadable classes but they
+        // permit arbitrary property access.  Return a synthetic
+        // `Resolved(stdClass)` so the downstream member check
+        // (which already suppresses diagnostics for stdClass) kicks
+        // in instead of falling to `Untyped`.
+        if resolved.iter().any(|rt| {
+            matches!(&rt.type_string,
+                PhpType::Named(s) if s.eq_ignore_ascii_case("stdclass") || s == "object")
+        }) {
+            let synthetic = Arc::new(ClassInfo {
+                name: "stdClass".to_string(),
+                ..ClassInfo::default()
+            });
+            return SubjectOutcome::Resolved(vec![synthetic]);
+        }
+
         // The resolved types contain non-scalar, non-class entries
         // (e.g. type aliases we can't resolve).  Check for
         // unresolvable class names.

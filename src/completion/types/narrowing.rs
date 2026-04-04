@@ -1492,6 +1492,23 @@ fn apply_and_lhs_narrowing(
                         results,
                     );
                 }
+                return;
+            }
+
+            // Try type-guard functions (`is_object`, `is_array`, etc.).
+            // When `is_object($var)` appears in the LHS of `&&` and
+            // the variable has no resolved type yet, inject a synthetic
+            // `stdClass` so that downstream member-access diagnostics
+            // are suppressed (stdClass permits arbitrary properties).
+            if let Some((kind, negated)) = try_extract_type_guard(expr, ctx.var_name)
+                && !negated
+                && kind == TypeGuardKind::Object
+                && results.is_empty()
+            {
+                results.push(ClassInfo {
+                    name: "stdClass".to_string(),
+                    ..ClassInfo::default()
+                });
             }
         }
     }
@@ -2503,6 +2520,25 @@ enum TypeGuardKind {
     Callable,
 }
 
+/// Return the canonical `PhpType` that a type-guard narrows `mixed` to.
+///
+/// When a variable has type `mixed` and a type-guard like `is_object()`
+/// succeeds, the variable should narrow to `object` (not stay `mixed`
+/// and not become empty).  This function maps each guard kind to the
+/// PHP type it asserts.
+fn guard_kind_to_narrowed_type(kind: TypeGuardKind) -> PhpType {
+    match kind {
+        TypeGuardKind::Array => PhpType::Named("array".to_string()),
+        TypeGuardKind::String => PhpType::Named("string".to_string()),
+        TypeGuardKind::Int => PhpType::Named("int".to_string()),
+        TypeGuardKind::Float => PhpType::Named("float".to_string()),
+        TypeGuardKind::Bool => PhpType::Named("bool".to_string()),
+        TypeGuardKind::Object => PhpType::Named("object".to_string()),
+        TypeGuardKind::Numeric => PhpType::Named("numeric".to_string()),
+        TypeGuardKind::Callable => PhpType::Named("callable".to_string()),
+    }
+}
+
 /// Try to extract a type-guard function call on a variable.
 ///
 /// Matches `is_array($var)`, `is_string($var)`, etc. (with optional
@@ -2730,6 +2766,21 @@ fn filter_type_by_guard(ty: &PhpType, kind: TypeGuardKind, keep_matching: bool) 
             }
         }
         other => {
+            // `mixed` includes all types.  When narrowing in the
+            // then-body (`keep_matching = true`), replace `mixed`
+            // with the canonical type for the guard kind (e.g.
+            // `is_object($mixed)` → `object`).  In the else-body
+            // (`keep_matching = false`), `mixed` minus one kind is
+            // still effectively `mixed`, so leave it unchanged.
+            if let PhpType::Named(name) = other
+                && name.eq_ignore_ascii_case("mixed")
+            {
+                return if keep_matching {
+                    Some(guard_kind_to_narrowed_type(kind))
+                } else {
+                    None // mixed minus one kind ≈ mixed
+                };
+            }
             // Non-union type: if it matches the predicate, keep it.
             if type_matches_guard(other, kind) == keep_matching {
                 None // no change needed
@@ -2755,6 +2806,21 @@ pub(in crate::completion) fn try_apply_type_guard_narrowing(
     if ctx.cursor_offset < body_span.start.offset || ctx.cursor_offset > body_span.end.offset {
         return;
     }
+
+    // ── Compound `&&` / `and` ───────────────────────────────────────
+    // `if (is_object($x) && is_string($y))` — both sides are true
+    // inside the then-body.  Decompose and apply each guard found.
+    if let Expression::Binary(bin) = condition
+        && matches!(
+            bin.operator,
+            BinaryOperator::And(_) | BinaryOperator::LowAnd(_)
+        )
+    {
+        try_apply_type_guard_narrowing(bin.lhs, body_span, ctx, results);
+        try_apply_type_guard_narrowing(bin.rhs, body_span, ctx, results);
+        return;
+    }
+
     if let Some((kind, negated)) = try_extract_type_guard(condition, ctx.var_name) {
         if negated {
             apply_type_guard_exclusion(kind, results);
