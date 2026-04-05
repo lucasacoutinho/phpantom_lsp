@@ -3579,3 +3579,317 @@ function filterProducts(Builder $query): void {
         diags
     );
 }
+
+/// Cross-file variant of B12: `Collection::reduce()` loaded via PSR-4 with
+/// two method-level `@template` params and a `callable(TReduceInitial|TReduceReturnType, TValue, TKey): TReduceReturnType`
+/// parameter.  The return type `TReduceReturnType` must be inferred from the
+/// closure's return type annotation even when the Collection class lives in
+/// a separate file.
+#[test]
+fn no_false_positive_on_reduce_two_tpl_cross_file() {
+    let composer = r#"{"autoload":{"psr-4":{"App\\":"src/","Illuminate\\Support\\":"vendor/illuminate/support/src/"}}}"#;
+
+    let collection_php = r#"<?php
+namespace Illuminate\Support;
+
+/**
+ * @template TKey
+ * @template TValue
+ */
+class Collection {
+    /**
+     * @template TReduceInitial
+     * @template TReduceReturnType
+     * @param callable(TReduceInitial|TReduceReturnType, TValue, TKey): TReduceReturnType $callback
+     * @param TReduceInitial $initial
+     * @return TReduceInitial|TReduceReturnType
+     */
+    public function reduce(callable $callback, mixed $initial = null): mixed {}
+}
+"#;
+
+    let decimal_php = r#"<?php
+namespace App;
+
+class Decimal {
+    public function add(Decimal $other): Decimal { return $this; }
+    public function getValue(): string { return '0'; }
+}
+"#;
+
+    let order_product_php = r#"<?php
+namespace App;
+
+class OrderProduct {
+    public float $price;
+}
+"#;
+
+    let service_php = r#"<?php
+namespace App;
+
+use Illuminate\Support\Collection;
+
+class FlowService {
+    public function test(): void {
+        /** @var Collection<int, OrderProduct> $products */
+        $products = new Collection();
+        $products->reduce(fn(Decimal $c, OrderProduct $p): Decimal => $c->add($p->price), new Decimal('0'))->add(new Decimal('1'));
+        $products->reduce(fn(Decimal $c, OrderProduct $p): Decimal => $c->add($p->price), new Decimal('0'))->getValue();
+    }
+}
+"#;
+
+    let (backend, _dir) = create_psr4_workspace(
+        composer,
+        &[
+            (
+                "vendor/illuminate/support/src/Collection.php",
+                collection_php,
+            ),
+            ("src/Decimal.php", decimal_php),
+            ("src/OrderProduct.php", order_product_php),
+            ("src/FlowService.php", service_php),
+        ],
+    );
+
+    let uri = &format!(
+        "file://{}",
+        _dir.path().join("src/FlowService.php").display()
+    );
+    let diags = unknown_member_diagnostics(&backend, uri, service_php);
+
+    let chained_diags: Vec<_> = diags.iter().filter(|d| !d.message.contains("$c")).collect();
+    assert!(
+        !chained_diags.iter().any(|d| d.message.contains("add")),
+        "reduce() should resolve TReduceReturnType=Decimal cross-file, chained 'add' should be known, got: {:?}",
+        chained_diags
+    );
+    assert!(
+        !chained_diags.iter().any(|d| d.message.contains("getValue")),
+        "reduce() should resolve TReduceReturnType=Decimal cross-file, chained 'getValue' should be known, got: {:?}",
+        chained_diags
+    );
+    assert!(
+        !chained_diags
+            .iter()
+            .any(|d| d.message.contains("could not be resolved")),
+        "reduce() return type should be fully resolved cross-file when chained, got: {:?}",
+        chained_diags
+    );
+}
+
+/// Cross-file test modelling the real Laravel structure: `Collection` uses
+/// a trait `EnumeratesValues` (which defines `reduce()` with
+/// `@return TReduceReturnType`) and implements an interface `Enumerable`
+/// (which declares `reduce()` with `@return TReduceInitial|TReduceReturnType`).
+/// The inheritance merger might pick up the interface's union return type,
+/// so the template substitution must handle both template params in the
+/// return type union.
+///
+/// Regression test for B12.
+#[test]
+fn no_false_positive_on_reduce_trait_interface_pattern() {
+    let composer = r#"{"autoload":{"psr-4":{"App\\":"src/","Illuminate\\Support\\":"vendor/illuminate/support/src/"}}}"#;
+
+    let enumerable_php = r#"<?php
+namespace Illuminate\Support;
+
+/**
+ * @template TKey
+ * @template TValue
+ */
+interface Enumerable {
+    /**
+     * @template TReduceInitial
+     * @template TReduceReturnType
+     * @param callable(TReduceInitial|TReduceReturnType, TValue, TKey): TReduceReturnType $callback
+     * @param TReduceInitial $initial
+     * @return TReduceInitial|TReduceReturnType
+     */
+    public function reduce(callable $callback, $initial = null);
+}
+"#;
+
+    let trait_php = r#"<?php
+namespace Illuminate\Support;
+
+trait EnumeratesValues {
+    /**
+     * @template TReduceInitial
+     * @template TReduceReturnType
+     * @param callable(TReduceInitial|TReduceReturnType, TValue, TKey): TReduceReturnType $callback
+     * @param TReduceInitial $initial
+     * @return TReduceReturnType
+     */
+    public function reduce(callable $callback, $initial = null)
+    {
+        $result = $initial;
+        foreach ($this as $key => $value) {
+            $result = $callback($result, $value, $key);
+        }
+        return $result;
+    }
+}
+"#;
+
+    let collection_php = r#"<?php
+namespace Illuminate\Support;
+
+/**
+ * @template TKey
+ * @template TValue
+ * @implements Enumerable<TKey, TValue>
+ */
+class Collection implements Enumerable {
+    use EnumeratesValues;
+}
+"#;
+
+    let decimal_php = r#"<?php
+namespace App;
+
+class Decimal {
+    public function add(Decimal $other): Decimal { return $this; }
+    public function getValue(): string { return '0'; }
+}
+"#;
+
+    let order_product_php = r#"<?php
+namespace App;
+
+class OrderProduct {
+    public float $price;
+}
+"#;
+
+    let service_php = r#"<?php
+namespace App;
+
+use Illuminate\Support\Collection;
+
+class FlowService {
+    public function test(): void {
+        /** @var Collection<int, OrderProduct> $products */
+        $products = new Collection();
+        $products->reduce(fn(Decimal $c, OrderProduct $p): Decimal => $c->add($p->price), new Decimal('0'))->add(new Decimal('1'));
+        $products->reduce(fn(Decimal $c, OrderProduct $p): Decimal => $c->add($p->price), new Decimal('0'))->getValue();
+    }
+}
+"#;
+
+    let (backend, _dir) = create_psr4_workspace(
+        composer,
+        &[
+            (
+                "vendor/illuminate/support/src/Enumerable.php",
+                enumerable_php,
+            ),
+            (
+                "vendor/illuminate/support/src/EnumeratesValues.php",
+                trait_php,
+            ),
+            (
+                "vendor/illuminate/support/src/Collection.php",
+                collection_php,
+            ),
+            ("src/Decimal.php", decimal_php),
+            ("src/OrderProduct.php", order_product_php),
+            ("src/FlowService.php", service_php),
+        ],
+    );
+
+    let uri = &format!(
+        "file://{}",
+        _dir.path().join("src/FlowService.php").display()
+    );
+    let diags = unknown_member_diagnostics(&backend, uri, service_php);
+
+    let chained_diags: Vec<_> = diags.iter().filter(|d| !d.message.contains("$c")).collect();
+    assert!(
+        !chained_diags.iter().any(|d| d.message.contains("add")),
+        "reduce() via trait+interface should resolve TReduceReturnType=Decimal, chained 'add' should be known, got: {:?}",
+        chained_diags
+    );
+    assert!(
+        !chained_diags.iter().any(|d| d.message.contains("getValue")),
+        "reduce() via trait+interface should resolve TReduceReturnType=Decimal, chained 'getValue' should be known, got: {:?}",
+        chained_diags
+    );
+    assert!(
+        !chained_diags
+            .iter()
+            .any(|d| d.message.contains("could not be resolved")),
+        "reduce() return type via trait+interface should be fully resolved when chained, got: {:?}",
+        chained_diags
+    );
+}
+
+/// `Collection::reduce()` with two method-level `@template` params
+/// (`TReduceInitial`, `TReduceReturnType`) and a callable whose first
+/// parameter is the union `TReduceInitial|TReduceReturnType`.  The
+/// return type is `TReduceReturnType` which should be inferred from
+/// the closure's return type annotation.  Chaining `.add()` on the
+/// result must not produce a diagnostic.
+///
+/// Regression test for B12.
+#[test]
+fn no_false_positive_on_reduce_with_two_template_params() {
+    let backend = create_test_backend();
+    let uri = "file:///test_reduce_b12.php";
+    let text = r#"<?php
+class Decimal {
+    public function add(Decimal $other): Decimal { return $this; }
+    public function getValue(): string { return '0'; }
+}
+
+class OrderProduct {
+    public float $price;
+}
+
+/**
+ * @template TKey
+ * @template TValue
+ */
+class Collection {
+    /**
+     * @template TReduceInitial
+     * @template TReduceReturnType
+     * @param callable(TReduceInitial|TReduceReturnType, TValue, TKey): TReduceReturnType $callback
+     * @param TReduceInitial $initial
+     * @return TReduceReturnType
+     */
+    public function reduce(callable $callback, mixed $initial = null): mixed {}
+}
+
+class FlowService {
+    public function test(): void {
+        /** @var Collection<int, OrderProduct> $products */
+        $products = new Collection();
+        $products->reduce(fn(Decimal $c, OrderProduct $p): Decimal => $c->add($p->price), new Decimal('0'))->add(new Decimal('1'));
+        $products->reduce(fn(Decimal $c, OrderProduct $p): Decimal => $c->add($p->price), new Decimal('0'))->getValue();
+    }
+}
+"#;
+    let diags = unknown_member_diagnostics(&backend, uri, text);
+    // Filter out diagnostics for the inner `$c->add($p->price)` inside
+    // the closure — we only care about the chained call after reduce().
+    let chained_diags: Vec<_> = diags.iter().filter(|d| !d.message.contains("$c")).collect();
+    assert!(
+        !chained_diags.iter().any(|d| d.message.contains("add")),
+        "reduce() should resolve TReduceReturnType=Decimal, chained 'add' should be known, got: {:?}",
+        chained_diags
+    );
+    assert!(
+        !chained_diags.iter().any(|d| d.message.contains("getValue")),
+        "reduce() should resolve TReduceReturnType=Decimal, chained 'getValue' should be known, got: {:?}",
+        chained_diags
+    );
+    assert!(
+        !chained_diags
+            .iter()
+            .any(|d| d.message.contains("could not be resolved")),
+        "reduce() return type should be fully resolved when chained, got: {:?}",
+        chained_diags
+    );
+}

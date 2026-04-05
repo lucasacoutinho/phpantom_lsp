@@ -2454,7 +2454,7 @@ fn expr_to_subject_text(expr: &Expression<'_>) -> String {
         Expression::Call(Call::Method(mc)) => {
             let obj = expr_to_subject_text(mc.object);
             if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
-                let args_text = format_first_class_arg(&mc.argument_list.arguments);
+                let args_text = format_all_call_args(&mc.argument_list.arguments);
                 format!("{}->{}({})", obj, ident.value, args_text)
             } else {
                 format!("{}->?()", obj)
@@ -2463,7 +2463,7 @@ fn expr_to_subject_text(expr: &Expression<'_>) -> String {
         Expression::Call(Call::NullSafeMethod(mc)) => {
             let obj = expr_to_subject_text(mc.object);
             if let ClassLikeMemberSelector::Identifier(ident) = &mc.method {
-                let args_text = format_first_class_arg(&mc.argument_list.arguments);
+                let args_text = format_all_call_args(&mc.argument_list.arguments);
                 format!("{}?->{}({})", obj, ident.value, args_text)
             } else {
                 format!("{}?->?()", obj)
@@ -2472,7 +2472,7 @@ fn expr_to_subject_text(expr: &Expression<'_>) -> String {
         Expression::Call(Call::StaticMethod(sc)) => {
             let class_text = expr_to_subject_text(sc.class);
             if let ClassLikeMemberSelector::Identifier(ident) = &sc.method {
-                let args_text = format_first_class_arg(&sc.argument_list.arguments);
+                let args_text = format_all_call_args(&sc.argument_list.arguments);
                 format!("{}::{}({})", class_text, ident.value, args_text)
             } else {
                 format!("{}::?()", class_text)
@@ -2480,7 +2480,7 @@ fn expr_to_subject_text(expr: &Expression<'_>) -> String {
         }
         Expression::Call(Call::Function(fc)) => {
             let func_text = expr_to_subject_text(fc.function);
-            let args_text = format_first_class_arg(&fc.argument_list.arguments);
+            let args_text = format_all_call_args(&fc.argument_list.arguments);
             // When the callee is a parenthesized expression (e.g.
             // `($this->formatter)()`), wrap the inner text back in
             // parens so that `SubjectExpr::parse` sees
@@ -2594,77 +2594,128 @@ fn expr_to_subject_text(expr: &Expression<'_>) -> String {
     }
 }
 
-/// Format the first argument of a call expression as source text.
+/// Format all arguments of a call expression as a comma-separated string.
 ///
-/// Preserves `Foo::class`, string/integer/float literals, `null`,
-/// `true`, `false`, and `$variable` references so that conditional
-/// return-type resolution (e.g. `$guard is null ? Factory : Guard`)
-/// can inspect the argument value.  Returns an empty string when the
-/// first argument cannot be represented as simple text.
-fn format_first_class_arg(args: &TokenSeparatedSequence<'_, Argument<'_>>) -> String {
-    if let Some(first) = args.iter().next() {
-        let arg_expr = match first {
+/// Each argument is serialized to a text representation that preserves
+/// enough information for downstream consumers:
+/// - Conditional return-type resolution needs the first argument value
+///   (`Foo::class`, string literals, `null`, etc.)
+/// - Template parameter inference needs closure/arrow-function signatures
+///   (parameter types and return type) and constructor calls (`new Foo()`)
+///
+/// When an argument cannot be represented, it is emitted as `...` so that
+/// positional indices remain correct for template binding resolution.
+fn format_all_call_args(args: &TokenSeparatedSequence<'_, Argument<'_>>) -> String {
+    let mut parts = Vec::new();
+    for arg in args.iter() {
+        let arg_expr = match arg {
             Argument::Positional(pos) => pos.value,
             Argument::Named(named) => named.value,
         };
-        match arg_expr {
-            // Foo::class
-            Expression::Access(Access::ClassConstant(cca)) => {
-                if let ClassLikeConstantSelector::Identifier(ident) = &cca.constant
-                    && ident.value == "class"
-                {
-                    let class_text = expr_to_subject_text(cca.class);
-                    return format!("{}::class", class_text);
-                }
+        let text = format_arg_expr(arg_expr);
+        parts.push(text);
+    }
+    // Trim trailing `...` placeholders so that simple single-arg calls
+    // (the common case) don't produce `method(Foo::class, ...)`.
+    while parts.last().is_some_and(|p| p == "...") {
+        parts.pop();
+    }
+    parts.join(", ")
+}
+
+/// Format a single argument expression to text.
+///
+/// Handles the same cases as the old `format_first_class_arg` plus
+/// closure and arrow-function expressions.  For closures the full body
+/// is replaced with a placeholder (`=> ...` or `{ ... }`) to keep the
+/// subject text compact while preserving parameter types and return
+/// type annotations that template inference depends on.
+fn format_arg_expr(expr: &Expression<'_>) -> String {
+    match expr {
+        // Foo::class
+        Expression::Access(Access::ClassConstant(cca)) => {
+            if let ClassLikeConstantSelector::Identifier(ident) = &cca.constant
+                && ident.value == "class"
+            {
+                let class_text = expr_to_subject_text(cca.class);
+                return format!("{}::class", class_text);
             }
-            // String literals: 'web', "guard"
-            Expression::Literal(Literal::String(lit_str)) => {
-                return lit_str.raw.to_string();
+            "...".to_string()
+        }
+        // String literals: 'web', "guard"
+        Expression::Literal(Literal::String(lit_str)) => lit_str.raw.to_string(),
+        // Integer literals: 0, 42
+        Expression::Literal(Literal::Integer(lit_int)) => lit_int.raw.to_string(),
+        // Float literals: 3.14
+        Expression::Literal(Literal::Float(lit_float)) => lit_float.raw.to_string(),
+        // null
+        Expression::Literal(Literal::Null(_)) => "null".to_string(),
+        // true
+        Expression::Literal(Literal::True(_)) => "true".to_string(),
+        // false
+        Expression::Literal(Literal::False(_)) => "false".to_string(),
+        // $variable
+        Expression::Variable(Variable::Direct(dv)) => dv.name.to_string(),
+        // new ClassName(…) → "new ClassName()"
+        Expression::Instantiation(inst) => {
+            let class_text = expr_to_subject_text(inst.class);
+            if class_text.is_empty() {
+                "...".to_string()
+            } else {
+                format!("new {}()", class_text)
             }
-            // Integer literals: 0, 42
-            Expression::Literal(Literal::Integer(lit_int)) => {
-                return lit_int.raw.to_string();
-            }
-            // Float literals: 3.14
-            Expression::Literal(Literal::Float(lit_float)) => {
-                return lit_float.raw.to_string();
-            }
-            // null
-            Expression::Literal(Literal::Null(_)) => {
-                return "null".to_string();
-            }
-            // true
-            Expression::Literal(Literal::True(_)) => {
-                return "true".to_string();
-            }
-            // false
-            Expression::Literal(Literal::False(_)) => {
-                return "false".to_string();
-            }
-            // $variable
-            Expression::Variable(Variable::Direct(dv)) => {
-                return dv.name.to_string();
-            }
-            // new ClassName(…) → "new ClassName()"
-            Expression::Instantiation(inst) => {
-                let class_text = expr_to_subject_text(inst.class);
-                if !class_text.is_empty() {
-                    return format!("new {}()", class_text);
-                }
-            }
-            // Any other expression (property access, method calls,
-            // static access, array access, etc.) — delegate to the
-            // general subject text formatter so that callers like
-            // `ARRAY_ELEMENT_FUNCS` resolution see the full argument.
-            _ => {
-                let text = expr_to_subject_text(arg_expr);
-                if !text.is_empty() {
-                    return text;
-                }
+        }
+        // Arrow function: fn(Type $a, Type $b): ReturnType => …
+        // Serialize the signature so template inference can extract
+        // parameter types and the return type annotation.
+        Expression::ArrowFunction(arrow) => {
+            let params = format_callable_params(&arrow.parameter_list);
+            let ret = arrow
+                .return_type_hint
+                .as_ref()
+                .map(|rth| format!(": {}", crate::parser::extract_hint_string(&rth.hint)))
+                .unwrap_or_default();
+            format!("fn({}){} => ...", params, ret)
+        }
+        // Closure: function(Type $a, Type $b): ReturnType { … }
+        Expression::Closure(closure) => {
+            let params = format_callable_params(&closure.parameter_list);
+            let ret = closure
+                .return_type_hint
+                .as_ref()
+                .map(|rth| format!(": {}", crate::parser::extract_hint_string(&rth.hint)))
+                .unwrap_or_default();
+            format!("function({}){} {{ ... }}", params, ret)
+        }
+        // Any other expression — delegate to the general subject text
+        // formatter.  Falls back to `...` when it can't be represented.
+        _ => {
+            let text = expr_to_subject_text(expr);
+            if text.is_empty() {
+                "...".to_string()
+            } else {
+                text
             }
         }
     }
-    String::new()
+}
+
+/// Format a callable's parameter list as a comma-separated string of
+/// `Type $name` pairs, preserving type annotations for template inference.
+fn format_callable_params(params: &FunctionLikeParameterList<'_>) -> String {
+    let mut parts = Vec::new();
+    for param in params.parameters.iter() {
+        let name = param.variable.name.to_string();
+        let type_text = param
+            .hint
+            .as_ref()
+            .map(|h| crate::parser::extract_hint_string(h));
+        match type_text {
+            Some(t) => parts.push(format!("{} {}", t, name)),
+            None => parts.push(name),
+        }
+    }
+    parts.join(", ")
 }
 
 /// Check whether `expr` is an `assert(… instanceof …)` call.

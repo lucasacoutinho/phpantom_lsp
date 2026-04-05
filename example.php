@@ -570,6 +570,10 @@ class ClosureReturnTemplateDemo
             new Pen('starter')
         );
         $merged2->color();      // TReduceReturnType = Pen
+
+        // Chained call: reduce() result used directly without intermediate variable.
+        // The template inference must survive the symbol-map subject text serialization.
+        $pencils->reduce(fn(Pen $carry, Pencil $item): Pen => $carry, new Pen('starter'))->write();
     }
 }
 
@@ -5265,6 +5269,10 @@ function runDemoAssertions(): void
         new Pen('starter')
     );
     assert($reduced instanceof Pen, 'reduce() with fn(): Pen must return Pen');
+
+    // Chained call: reduce() result used directly without intermediate variable.
+    $chainedWrite = $reducible->reduce(fn(Pen $carry, Pencil $item): Pen => $carry, new Pen('starter'))->write();
+    assert(is_string($chainedWrite), 'reduce()->write() chained must return string (Pen::write() return type)');
 
     // ── ScaffoldingEventBus::listen() — closure param type binding ──────
     $bus = new ScaffoldingEventBus();

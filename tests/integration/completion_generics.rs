@@ -7898,3 +7898,101 @@ async fn test_template_inferred_from_full_closure_param_type() {
         _ => panic!("Expected CompletionResponse::Array"),
     }
 }
+
+/// `Collection::reduce()` with the real Laravel signature that uses TWO
+/// template params: `TReduceInitial` for the `$initial` arg and
+/// `TReduceReturnType` for the closure return type.  The callable's first
+/// parameter is typed as the union `TReduceInitial|TReduceReturnType`.
+///
+/// PHPantom must infer `TReduceReturnType = Decimal` from the closure's
+/// return type annotation so that `reduce()` returns `Decimal`.
+#[tokio::test]
+async fn test_reduce_two_template_params_union_callable() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///reduce_two_tpl.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                               // 0
+        "class Decimal {\n",                                     // 1
+        "    public function add(Decimal $other): Decimal {}\n", // 2
+        "    public function getValue(): string {}\n",           // 3
+        "}\n",                                                   // 4
+        "\n",                                                    // 5
+        "class OrderProduct {\n",                                // 6
+        "    public float $price;\n",                            // 7
+        "}\n",                                                   // 8
+        "\n",                                                    // 9
+        "/**\n",                                                 // 10
+        " * @template TKey\n",                                   // 11
+        " * @template TValue\n",                                 // 12
+        " */\n",                                                 // 13
+        "class Collection {\n",                                  // 14
+        "    /**\n",                                             // 15
+        "     * @template TReduceInitial\n",                     // 16
+        "     * @template TReduceReturnType\n",                  // 17
+        "     * @param callable(TReduceInitial|TReduceReturnType, TValue, TKey): TReduceReturnType $callback\n", // 18
+        "     * @param TReduceInitial $initial\n", // 19
+        "     * @return TReduceReturnType\n",      // 20
+        "     */\n",                               // 21
+        "    public function reduce(callable $callback, mixed $initial = null): mixed {}\n", // 22
+        "}\n",                                     // 23
+        "\n",                                      // 24
+        "function test() {\n",                     // 25
+        "    /** @var Collection<int, OrderProduct> $products */\n", // 26
+        "    $products = new Collection();\n",     // 27
+        "    $total = $products->reduce(fn(Decimal $carry, OrderProduct $p): Decimal => $carry->add($p->price), new Decimal('0'));\n", // 28
+        "    $total->\n", // 29
+        "}\n",            // 30
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    let completion_params = CompletionParams {
+        text_document_position: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri },
+            position: Position {
+                line: 29,
+                character: 12,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+        context: None,
+    };
+
+    let result = backend.completion(completion_params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Completion should return results for $total->"
+    );
+
+    match result.unwrap() {
+        CompletionResponse::Array(items) => {
+            let method_names: Vec<&str> = items
+                .iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .map(|i| i.filter_text.as_deref().unwrap_or(&i.label))
+                .collect();
+
+            assert!(
+                method_names.contains(&"add"),
+                "TReduceReturnType should resolve to Decimal via closure return type, showing 'add', got: {:?}",
+                method_names
+            );
+            assert!(
+                method_names.contains(&"getValue"),
+                "TReduceReturnType should resolve to Decimal via closure return type, showing 'getValue', got: {:?}",
+                method_names
+            );
+        }
+        _ => panic!("Expected CompletionResponse::Array"),
+    }
+}

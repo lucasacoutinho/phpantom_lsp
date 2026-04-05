@@ -23,7 +23,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                                      | Impact | Effort     |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
-| B12 | [`Collection::reduce()` generic return type not inferred](todo/bugs.md#b12-collectionreduce-generic-return-type-not-inferred)                             | Low    | Medium     |
 | B13 | [Array shape tracking from keyed literal assignments in loops](todo/bugs.md#b13-array-shape-tracking-from-keyed-literal-assignments-in-loops)             | Low    | High       |
 | H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union)          | Medium | Medium     |
 | H6  | `return.type` — update return type to match actual returns                                                                                                | Medium | Medium     |
