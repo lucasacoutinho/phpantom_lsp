@@ -27,36 +27,42 @@ within the same impact tier.
 
 ## Sprint 5 — Polish for office adoption
 
-| #   | Item                                                                                             | Impact | Effort |
-| --- | ------------------------------------------------------------------------------------------------ | ------ | ------ |
-|     | Clear [refactoring gate](todo/refactor.md)                                                       | —      | —      |
-| D8  | [Undefined variable diagnostic](todo/diagnostics.md#d8-undefined-variable-diagnostic)            | High   | Medium |
-| D11 | [Invalid class-like kind in context](todo/diagnostics.md#d11-invalid-class-like-kind-in-context) | Medium | Low    |
-|     | **Release 0.8.0**                                                                                |        |        |
+| #   | Item                                                                                                                         | Impact | Effort |
+| --- | ---------------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
+|     | Clear [refactoring gate](todo/refactor.md)                                                                                   | —      | —      |
+| D8  | [Undefined variable diagnostic](todo/diagnostics.md#d8-undefined-variable-diagnostic)                                        | High   | Medium |
+| D12 | [Mago linter integration](todo/diagnostics.md#d12-mago-linter-integration-optional-diagnostics)                              | Medium | Medium |
+| D11 | [Invalid class-like kind in context](todo/diagnostics.md#d11-invalid-class-like-kind-in-context)                             | Medium | Low    |
+| F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints) | Medium | Medium |
+| A36 | [Import all missing classes](todo/actions.md#a36-import-all-missing-classes) (bulk import)                                    | Medium | Low    |
+|     | **Release 0.8.0**                                                                                                            |        |        |
 
 > **Note:** F1 (Workspace symbol search), F2 (Document symbols), A8
 > (Implement interface methods), A9 (Auto import), D1 (Unknown class
 > diagnostic), and D3 (Unknown member diagnostic) were originally
 > planned here but have already shipped.
 
-## Sprint 6 — Type intelligence depth
+## Sprint 6 — Type intelligence & refactoring depth
 
-| #   | Item                                                                                                                | Impact | Effort |
-| --- | ------------------------------------------------------------------------------------------------------------------- | ------ | ------ |
-|     | Clear [refactoring gate](todo/refactor.md)                                                                          | —      | —      |
-| C2  | [`#[ArrayShape]` return shapes on stub functions](todo/completion.md#c2-arrayshape-return-shapes-on-stub-functions) | Medium | Medium |
-| T7  | [`key-of<T>` and `value-of<T>` resolution](todo/type-inference.md#t7-key-oft-and-value-oft-resolution)              | Medium | Medium |
+| #   | Item                                                                                                                | Impact     | Effort |
+| --- | ------------------------------------------------------------------------------------------------------------------- | ---------- | ------ |
+|     | Clear [refactoring gate](todo/refactor.md)                                                                          | —          | —      |
+| C2  | [`#[ArrayShape]` return shapes on stub functions](todo/completion.md#c2-arrayshape-return-shapes-on-stub-functions) | Medium     | Medium |
+| T7  | [`key-of<T>` and `value-of<T>` resolution](todo/type-inference.md#t7-key-oft-and-value-oft-resolution)              | Medium     | Medium |
+| A3  | Switch → match conversion                                                                                           | Low-Medium | Medium |
+| A10 | [Generate interface from class](todo/actions.md#a10-generate-interface-from-class)                                  | Low-Medium | Medium |
+| A35 | [Convert to arrow function](todo/actions.md#a35-convert-to-arrow-function) (only non-void single-expression closures) | Low-Medium | Low    |
 
 ## Sprint 7 — Laravel excellence & stub accuracy
 
-| #   | Item                                                                                          | Impact      | Effort      |
-| --- | --------------------------------------------------------------------------------------------- | ----------- | ----------- |
-|     | Clear [refactoring gate](todo/refactor.md)                                                    | —           | —           |
-| L1  | [Eloquent model attribute completion](todo/laravel.md#l1-eloquent-model-attribute-completion) | High        | High        |
-| L5  | [Blade component tag completion](todo/laravel.md#l5-blade-component-tags)                     | Medium      | Medium-High |
-| E1  | [External stub packages (ide-helper, etc.)](todo/external-stubs.md#e1-external-stub-packages) | Medium-High | Medium      |
-| E4  | [Stub version alignment with target PHP](todo/external-stubs.md#e4-stub-version-alignment)    | Medium      | Medium      |
-| E5  | [Extension stub coverage audit](todo/external-stubs.md#e5-extension-stub-audit)               | Medium      | Low         |
+| #   | Item                                                                                                                                       | Impact      | Effort      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ----------- |
+|     | Clear [refactoring gate](todo/refactor.md)                                                                                                 | —           | —           |
+| L1  | [Facade completion](todo/laravel.md#l1-facade-completion)                                                                                  | High        | High        |
+| L11 | [Relation dot-notation string and column name string completion](todo/laravel.md#l11-relation-dot-notation-string-completion-and-column-name-string-completion) | Medium-High | Medium-High |
+| E1  | [External stub packages (ide-helper, etc.)](todo/external-stubs.md#e1-external-stub-packages)                                              | Medium-High | Medium      |
+| E4  | [Stub version alignment with target PHP](todo/external-stubs.md#e4-stub-version-alignment)                                                 | Medium      | Medium      |
+| E5  | [Extension stub coverage audit](todo/external-stubs.md#e5-extension-stub-audit)                                                            | Medium      | Low         |
 
 ## Sprint 8 — Blade support
 
@@ -99,21 +105,18 @@ unlikely to move the needle for most users.
 | T10  | [Ternary expression as RHS of list destructuring](todo/type-inference.md#t10-ternary-expression-as-rhs-of-list-destructuring)                                               | Low         | Low-Medium     |
 | T11  | [Nested list destructuring](todo/type-inference.md#t11-nested-list-destructuring)                                                                                           | Low         | Low-Medium     |
 |      | **[Diagnostics](todo/diagnostics.md)**                                                                                                                                      |             |                |
-| D5   | Diagnostic suppression intelligence                                                                                                                                         | Medium      | Medium         |
-| D12  | [Mago linter integration](todo/diagnostics.md#d12-mago-linter-integration-optional-diagnostics) (optional, ~159 AST-only lint rules)                                        | Medium      | Medium         |
-| D6   | [Unreachable code diagnostic](todo/diagnostics.md#d6-unreachable-code-diagnostic)                                                                                           | Low-Medium  | Low            |
+| D5   | Diagnostic suppression intelligence                                                                                                         | Medium      | Medium         |
+| D6   | [Unreachable code diagnostic](todo/diagnostics.md#d6-unreachable-code-diagnostic)                                                           | Low-Medium  | Low            |
 | D10  | PHPMD diagnostic proxy                                                                                                                                                      | Low         | Medium         |
 |      | **[Bug Fixes](todo/bugs.md)**                                                                                                                                               |             |                |
 |      | **[Code Actions](todo/actions.md)**                                                                                                                                         |             |                |
-| A8   | [Update docblock to match signature](todo/actions.md#a8-update-docblock-to-match-signature)                                                                                 | Medium      | Medium         |
+| A8   | [Update docblock to match signature](todo/actions.md#a8-update-docblock-to-match-signature)                                                 | Medium      | Medium         |
 | A16  | [Snippet placeholder for extracted method name](todo/actions.md#a16-snippet-placeholder-for-extracted-method-name) (lets the user type over the generated name immediately) | Medium      | Low-Medium     |
-| A25  | [`strpos` → `str_contains`](todo/actions.md#a25-strpos--str_contains-php-80) (PHP 8.0+)                                                                                     | Medium      | Low            |
-| A28  | [Explicit nullable parameter type](todo/actions.md#a28-explicit-nullable-parameter-type-php-84-deprecation) (PHP 8.4 deprecation)                                           | Medium      | Low            |
-| A10  | [Generate interface from class](todo/actions.md#a10-generate-interface-from-class)                                                                                          | Low-Medium  | Medium         |
-| A29  | [Simplify boolean return](todo/actions.md#a29-simplify-boolean-return) (`if (cond) return true; return false;` → `return cond;`)                                            | Low-Medium  | Medium         |
-| A31  | [Remove always-else](todo/actions.md#a31-remove-always-else-extract-guard-clause) (extract guard clause)                                                                    | Low-Medium  | Medium         |
+| A25  | [`strpos` → `str_contains`](todo/actions.md#a25-strpos--str_contains-php-80) (PHP 8.0+)                                                     | Medium      | Low            |
+| A28  | [Explicit nullable parameter type](todo/actions.md#a28-explicit-nullable-parameter-type-php-84-deprecation) (PHP 8.4 deprecation)           | Medium      | Low            |
+| A29  | [Simplify boolean return](todo/actions.md#a29-simplify-boolean-return) (`if (cond) return true; return false;` → `return cond;`)            | Low-Medium  | Medium         |
+| A31  | [Remove always-else](todo/actions.md#a31-remove-always-else-extract-guard-clause) (extract guard clause)                                    | Low-Medium  | Medium         |
 | A34  | [Unified code action handler architecture](todo/actions.md#a34-unified-code-action-handler-architecture) (closure-based resolve, unified fix type)                          | Medium      | Medium-High    |
-| A3   | Switch → match conversion                                                                                                                                                   | Low         | Medium         |
 |      | **[PHPStan Code Actions](todo/phpstan-actions.md)**                                                                                                                         |             |                |
 | H4   | `assign.byRefForeachExpr` — unset by-reference foreach variable                                                                                                             | Medium      | Medium         |
 | H13  | `property.notFound` — declare missing property (same-class)                                                                                                                 | Medium      | Medium         |
@@ -131,6 +134,7 @@ unlikely to move the needle for most users.
 | FX5  | [`phpstan.property.unused` / `phpstan.method.unused` — remove unused member](todo/fix-cli.md#fx5-phpstanpropertyunused--phpstanmethodunused--remove-unused-member)          | Low         | Low            |
 | FX6  | [`phpstan.generics.callSiteVarianceRedundant` — remove redundant variance](todo/fix-cli.md#fx6-phpstangenericscallsitevarianceredundant--remove-redundant-variance)         | Low         | Low            |
 |      | **[LSP Features](todo/lsp-features.md)**                                                                                                                                    |             |                |
+| F5   | [Call hierarchy](todo/lsp-features.md#f5-call-hierarchy) (incoming/outgoing calls)                                                                                          | Medium      | Medium         |
 | F2   | [Partial result streaming via `$/progress`](todo/lsp-features.md#f2-partial-result-streaming-via-progress)                                                                  | Medium      | Medium-High    |
 | F3   | Incremental text sync                                                                                                                                                       | Low-Medium  | Medium         |
 |      | **[Signature Help](todo/signature-help.md)**                                                                                                                                |             |                |

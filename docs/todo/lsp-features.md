@@ -130,3 +130,112 @@ text sync is lower priority because full-file sync is rarely the
 bottleneck in practice. Partial result streaming has a more immediate
 user-visible impact for go-to-implementation, find references, and
 workspace symbols on large codebases.
+
+---
+
+## F4. Return type and closure parameter type inlay hints
+
+**Impact: Medium · Effort: Medium**
+
+PHPantom's inlay hints currently show **parameter names** and
+**by-reference indicators** at call sites. Two additional hint kinds
+would bring PHPantom to parity with Devsense and ahead of Intelephense:
+
+### Return type hints
+
+Show an inferred return type hint after the closing parenthesis of
+functions, methods, closures, and arrow functions that lack an explicit
+return type declaration:
+
+```php
+function doubled($x)  // → : int
+{
+    return $x * 2;
+}
+
+$fn = fn($x) => $x * 2;  // → : int
+```
+
+The hint should only appear when the return type can be inferred from
+the function body (or from the callable context for closures). Functions
+that already have a native return type hint or a `@return` docblock
+should not receive a hint.
+
+Ideally, clicking the hint (or double-clicking, depending on editor
+support) should insert the return type declaration as a text edit.
+
+### Closure / arrow function parameter type hints
+
+Show an inferred type hint after untyped closure and arrow function
+parameters when the type can be inferred from the callable context:
+
+```php
+$users->map(fn($u) => $u->name);
+//            ^ : User
+
+$filtered = array_filter($items, function ($item) { ... });
+//                                         ^ : Item
+```
+
+The hint should only appear when the parameter has no native type hint
+and the type is inferred from the enclosing callable signature (e.g.
+a `Closure(User): bool` parameter type, or a `@param` on the receiving
+function). Parameters that already have a type hint should not receive
+a hint.
+
+### What to avoid
+
+- **Variable type hints at assignment sites.** Phpactor shows these
+  (e.g. `$x` `: string` after every assignment). This is noisy in
+  practice and clutters the editor. Do not add this kind.
+- **End-of-block labels.** Phpactor shows `// class Foo` or
+  `// method bar` at closing braces. This is an editor feature (most
+  editors already show sticky scroll or breadcrumbs) and would add
+  visual noise. Do not add this kind.
+
+---
+
+## F5. Call hierarchy
+
+**Impact: Medium · Effort: Medium**
+
+Implement `callHierarchy/incomingCalls` and
+`callHierarchy/outgoingCalls` to answer "who calls this function?" and
+"what does this function call?"
+
+### Incoming calls (who calls this)
+
+Given a function or method, find all call sites across the project.
+This is conceptually similar to Find References but filtered to call
+expressions and structured as a tree (each caller is itself a callable
+with a location).
+
+The existing Find References infrastructure
+(`find_references_in_file`, cross-file scanning) provides the core
+search. The call hierarchy handler wraps the results into
+`CallHierarchyIncomingCall` items, grouping by containing function.
+
+### Outgoing calls (what does this call)
+
+Given a function or method, walk its AST body and collect all call
+expressions (function calls, method calls, static calls, `new`
+expressions). Resolve each callee to its declaration location.
+
+This is a single-file AST walk with cross-file resolution for each
+callee, similar to what go-to-definition already does.
+
+### Prepare
+
+`callHierarchy/prepare` returns a `CallHierarchyItem` for the symbol
+at the cursor. This is straightforward: resolve the symbol, return its
+name, kind, URI, range, and selection range.
+
+### Dependencies
+
+Call hierarchy benefits significantly from a full project index.
+Without an index, incoming calls can only be found via the existing
+classmap + PSR-4 scan approach (same as Find References). With a full
+index (X4), the lookup becomes a simple index query.
+
+Consider implementing after X4 (full background indexing) ships, or
+accept the same scan-based latency that Find References currently has.

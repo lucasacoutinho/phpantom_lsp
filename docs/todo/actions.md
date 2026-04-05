@@ -388,3 +388,72 @@ these eagerly, removing the else changes semantics).
 
 **Code action kind:** `refactor.rewrite`.
 
+---
+
+### A35. Convert to arrow function
+
+**Impact: Low-Medium · Effort: Low**
+
+Convert a single-expression anonymous function to an arrow function:
+`function($x) { return $x * 2; }` → `fn($x) => $x * 2`.
+
+Only offer the conversion when ALL of the following are true:
+
+- The closure body contains exactly one statement, and that statement
+  is a `return` with an expression.
+- The closure does not have a `use()` clause that captures by reference
+  (`&$var`). Arrow functions capture by value automatically; by-ref
+  semantics differ.
+- The closure's return type (native hint, `@return` docblock, or
+  inferred from callable context) is NOT `void` or `never`. Arrow
+  functions always return their expression value. Converting a
+  `void`-returning closure produces code that silently changes
+  behaviour when the caller inspects the return value (e.g.
+  `array_walk`, `register_shutdown_function`, `Event::listen`).
+- The closure does not have a return type hint of `void` or `never`
+  explicitly declared.
+- `php_version >= 7.4`.
+
+**Why the void/never guard matters:** Several PHP functions and
+framework APIs behave differently depending on whether a callback
+returns a value. `array_walk` ignores the return, but `array_filter`
+uses it. A closure typed `function(): void { doSomething(); }` makes
+the intent explicit. Converting it to `fn() => doSomething()` changes
+the return value from `null` (void) to whatever `doSomething()` returns,
+which can silently break filtering, mapping, or event-handling logic.
+
+**Code action kind:** `refactor.rewrite`.
+
+---
+
+### A36. Import all missing classes
+
+**Impact: Medium · Effort: Low**
+
+Bulk code action that imports all unresolvable class names in a file at
+once, instead of requiring the user to trigger "Import class" on each
+name individually.
+
+### Behaviour
+
+- **Trigger:** File contains one or more unresolved class names (the
+  same condition that triggers the existing single-class import action).
+  The bulk action appears in the source action menu.
+- **Code action kind:** `source.organizeImports` or
+  `source.importAll`.
+- **Result:** For each unresolved class name, resolve candidates using
+  the same logic as the existing import action. When exactly one
+  candidate exists, import it. When multiple candidates exist, pick the
+  one with the highest namespace affinity (same ranking the single
+  import action uses). Insert all new `use` statements in alphabetical
+  order.
+
+### Edge cases
+
+- If any class name has zero candidates (truly unknown), skip it
+  silently.
+- If two unresolved names would import different classes with the same
+  short name, import the first and skip the second (a conflict that
+  requires manual resolution).
+- Already-imported names are excluded.
+

@@ -23,7 +23,7 @@ PHPantom focuses on deep type intelligence. Here's how it compares:
 | Linked editing                       | ❌       | ❌           | ✅         | ❌          | ✅          |
 | Extras<sup>2</sup>                   | ✅       | 💰           | 🚧         | 🚧          | ✅          |
 | **Diagnostics**                      |          |              |            |             |             |
-| PHPStan integration                  | ✅       | ❌           | ❌         | ✅          | ✅          |
+| PHPStan integration                  | ✅       | ❌           | ❌         | 🚧          | 🚧          |
 | Undefined variable                   | ❌       | 💰           | ✅         | ✅          | ✅          |
 | Type errors                          | ❌       | 💰           | ✅         | 🚧          | ✅          |
 | Unused variable                      | ❌       | ❌           | ✅         | ❌          | ✅          |
