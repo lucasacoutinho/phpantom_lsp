@@ -21,12 +21,16 @@ within the same impact tier.
 
 ## Sprint 4 — Refactoring toolkit & type inference
 
-| #   | Item                                                                                                                                             | Impact      | Effort      |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- | ----------- |
-
-| H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union) | Medium      | Medium      |
-| H6  | `return.type` — update return type to match actual returns                                                                                       | Medium      | Medium      |
-|     | **Release 0.7.0**                                                                                                                                |             |             |
+| #   | Item                                                                                                                                                      | Impact | Effort     |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
+| B10 | [`instanceof` ternary narrowing fails when target class is in a phar](todo/bugs.md#b10-instanceof-ternary-narrowing-fails-when-target-class-is-in-a-phar) | Low    | Low-Medium |
+| B11 | [`static` return type not resolved through `class-string<T>` context](todo/bugs.md#b11-static-return-type-not-resolved-through-class-stringt-context)     | Low    | Medium     |
+| B12 | [`Collection::reduce()` generic return type not inferred](todo/bugs.md#b12-collectionreduce-generic-return-type-not-inferred)                             | Low    | Medium     |
+| B13 | [Array shape tracking from keyed literal assignments in loops](todo/bugs.md#b13-array-shape-tracking-from-keyed-literal-assignments-in-loops)             | Low    | High       |
+| B14 | [`DB::select()` returns bare `array`, element type unresolvable](todo/bugs.md#b14-dbselect-returns-bare-array-element-type-unresolvable)                  | Low    | Low        |
+| H10 | [`return.unusedType` — remove unused type from return union](todo/phpstan-actions.md#h10-returnunusedtype--remove-unused-type-from-return-union)          | Medium | Medium     |
+| H6  | `return.type` — update return type to match actual returns                                                                                                | Medium | Medium     |
+|     | **Release 0.7.0**                                                                                                                                         |        |            |
 
 ## Sprint 5 — Polish for office adoption
 
@@ -154,7 +158,7 @@ unlikely to move the needle for most users.
 | E2   | Project-level stubs as type resolution source                                                                                                                               | Medium      | Medium         |
 | E3   | IDE-provided and `.phpantom.toml` stub paths                                                                                                                                | Low-Medium  | Low            |
 | E6   | Stub install prompt for non-Composer projects                                                                                                                               | Low         | Low            |
-| E7   | [Stub-based framework patches](todo/external-stubs.md#e7-stub-based-framework-patches)                                                                                     | Medium      | Medium         |
+| E7   | [Stub-based framework patches](todo/external-stubs.md#e7-stub-based-framework-patches)                                                                                      | Medium      | Medium         |
 |      | **[Performance](todo/performance.md)**                                                                                                                                      |             |                |
 | P1.5 | [Layered class resolution (zero-copy inheritance)](todo/performance.md#p15-layered-class-resolution-zero-copy-inheritance)                                                  | High        | Very High      |
 | P13  | [Tiered storage: drop per-file maps for non-open files](todo/performance.md#p13-tiered-storage-drop-per-file-maps-for-non-open-files)                                       | Medium-High | Medium-High    |

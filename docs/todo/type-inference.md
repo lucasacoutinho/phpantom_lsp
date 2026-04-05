@@ -518,7 +518,7 @@ design.
 This fixed `Order:646,647` (`json_decode` → `mixed` → `is_object`
 guard → property access).
 
-**Remaining:** `PurchaseFileService:1081,1083` — `$result[0]
+**Remaining:** `PurchaseFileService:1087,1089` — `$result[0]
 instanceof stdClass` where `$result` is bare `array` from
 `DB::select()`. This requires `instanceof` narrowing on array
 element access expressions, which is a T20 concern (the narrowing
