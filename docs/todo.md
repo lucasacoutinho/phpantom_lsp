@@ -140,7 +140,9 @@ unlikely to move the needle for most users.
 |      | **[LSP Features](todo/lsp-features.md)**                                                                                                                                    |             |                |
 | F5   | [Call hierarchy](todo/lsp-features.md#f5-call-hierarchy) (incoming/outgoing calls)                                                                                          | Medium      | Medium         |
 | F2   | [Partial result streaming via `$/progress`](todo/lsp-features.md#f2-partial-result-streaming-via-progress)                                                                  | Medium      | Medium-High    |
+| F7   | [Evaluatable expression support (DAP integration)](todo/lsp-features.md#f7-evaluatable-expression-support-dap-integration)                                                  | Low-Medium  | Low            |
 | F3   | Incremental text sync                                                                                                                                                       | Low-Medium  | Medium         |
+| F8   | [Test ↔ implementation navigation via `@covers`](todo/lsp-features.md#f8-test--implementation-navigation-via-covers)                                                        | Low         | Medium         |
 |      | **[Signature Help](todo/signature-help.md)**                                                                                                                                |             |                |
 | S1   | [Attribute constructor signature help](todo/signature-help.md#s1-attribute-constructor-signature-help)                                                                      | Medium      | Medium         |
 | S2   | [Closure / arrow function parameter signature help](todo/signature-help.md#s2-closure--arrow-function-parameter-signature-help)                                             | Medium      | Medium         |

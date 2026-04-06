@@ -266,3 +266,104 @@ directly to stderr/stdout with ANSI formatting. Extract the rendering
 behind a trait or enum so each format can be selected at the call
 site. The `--no-colour` flag becomes redundant for non-table formats
 but should continue to work for the default table output.
+
+---
+
+## F7. Evaluatable expression support (DAP integration)
+
+**Impact: Low-Medium · Effort: Low**
+
+Implement `textDocument/evaluatableExpression` so debuggers (Xdebug
+via DAP) can evaluate expressions under the cursor during a debug
+session. Given a cursor position, the handler returns the expression
+text and range that the debugger should evaluate in the running PHP
+process.
+
+### Supported expression kinds
+
+- **Variables**: `$var` — return the variable name and its span.
+- **Property access**: `$obj->prop`, `$this->prop` — return the full
+  member access expression.
+- **Array access**: `$arr[0]`, `$arr['key']` — return the full
+  subscript expression including brackets.
+- **Static property access**: `Foo::$bar` — return the full expression.
+- **Parameters**: function/method parameters at declaration sites.
+
+### Why this is cheap
+
+The symbol map already identifies all of these constructs with precise
+byte ranges. The handler is a thin layer: look up the `SymbolSpan` at
+the cursor position, check that it's a variable, member access, or
+subscript expression, and return the source text and range. No type
+resolution needed.
+
+### What this enables
+
+When a user is debugging PHP with Xdebug and hovers over `$user->name`
+in their editor, the editor asks the LSP "what expression is here?"
+and forwards it to the debug adapter for evaluation. Without this
+handler, the editor falls back to selecting the word under the cursor,
+which gives `name` instead of `$user->name` — useless for the
+debugger.
+
+---
+
+## F8. Test ↔ implementation navigation via `@covers`
+
+**Impact: Low · Effort: Medium**
+
+Provide bidirectional navigation between a test class and the class it
+tests, using PHPUnit's `@covers` / `@coversClass` / `#[CoversClass]`
+annotations as the linking mechanism.
+
+### Why not path-based mapping
+
+Pattern-based approaches (e.g. `src/Foo.php` → `tests/FooTest.php`)
+assume a project follows a specific directory convention. Many projects
+don't: tests may live under `tests/Feature/`, `tests/Functional/`,
+or in a completely separate directory structure. The `@covers` tag is
+an explicit, project-layout-independent link that works for any
+structure.
+
+### From test → subject
+
+When the cursor is in a test class, look for:
+- `@covers \App\Service\UserService` (docblock on class or method)
+- `@coversClass(\App\Service\UserService::class)` (PHPUnit 10+)
+- `#[CoversClass(UserService::class)]` (PHP 8 attribute, PHPUnit 10+)
+
+Resolve the referenced class name via the standard class loader and
+navigate to its definition. This can be exposed as a code lens
+("Go to subject") or a code action, or both.
+
+### From subject → test
+
+Given a class, find test classes that reference it in `@covers` /
+`@coversClass` / `#[CoversClass]`. This requires scanning test files
+for the annotation. Two approaches:
+
+- **Lazy scan**: When the user invokes "find tests" on a class, scan
+  files matching `*Test.php` in the project for `@covers` / `#[CoversClass]`
+  referencing the current class FQN. This is O(n) in test file count
+  but test directories are typically small.
+- **Indexed**: If full background indexing (X4) ships, index `@covers`
+  annotations during the indexing pass and look them up in O(1).
+
+The lazy approach is fine for most projects. Test directories rarely
+exceed a few hundred files, and a simple `memchr`-based string
+pre-filter on the class name before parsing keeps it fast.
+
+### Exposure
+
+- **Code lens** on test classes: "Subject: UserService" (clickable,
+  navigates to the subject class).
+- **Code lens** on subject classes: "Tests: UserServiceTest" (clickable,
+  navigates to the test).
+- **Code action**: "Go to test" / "Go to subject" when the cursor is
+  on the class name.
+
+### Dependencies
+
+No hard dependencies. Works with the existing class loader for the
+test → subject direction. The subject → test direction benefits from
+but does not require full indexing (X4).
