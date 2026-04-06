@@ -1116,11 +1116,11 @@ fn test_parse_array_shape_basic() {
 
     let entries = parse_array_shape("array{name: string, age: int}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "name");
-    assert_eq!(entries[0].value_type, "string");
+    assert_eq!(entries[0].key.as_deref(), Some("name"));
+    assert_eq!(entries[0].value_type.to_string(), "string");
     assert!(!entries[0].optional);
-    assert_eq!(entries[1].key, "age");
-    assert_eq!(entries[1].value_type, "int");
+    assert_eq!(entries[1].key.as_deref(), Some("age"));
+    assert_eq!(entries[1].value_type.to_string(), "int");
     assert!(!entries[1].optional);
 }
 
@@ -1130,11 +1130,11 @@ fn test_parse_array_shape_optional_keys() {
 
     let entries = parse_array_shape("array{name: string, age?: int, email?: string}").unwrap();
     assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0].key, "name");
+    assert_eq!(entries[0].key.as_deref(), Some("name"));
     assert!(!entries[0].optional);
-    assert_eq!(entries[1].key, "age");
+    assert_eq!(entries[1].key.as_deref(), Some("age"));
     assert!(entries[1].optional);
-    assert_eq!(entries[2].key, "email");
+    assert_eq!(entries[2].key.as_deref(), Some("email"));
     assert!(entries[2].optional);
 }
 
@@ -1144,12 +1144,12 @@ fn test_parse_array_shape_positional() {
 
     let entries = parse_array_shape("array{string, int, bool}").unwrap();
     assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0].key, "0");
-    assert_eq!(entries[0].value_type, "string");
-    assert_eq!(entries[1].key, "1");
-    assert_eq!(entries[1].value_type, "int");
-    assert_eq!(entries[2].key, "2");
-    assert_eq!(entries[2].value_type, "bool");
+    assert_eq!(entries[0].key.as_deref(), Some("0"));
+    assert_eq!(entries[0].value_type.to_string(), "string");
+    assert_eq!(entries[1].key.as_deref(), Some("1"));
+    assert_eq!(entries[1].value_type.to_string(), "int");
+    assert_eq!(entries[2].key.as_deref(), Some("2"));
+    assert_eq!(entries[2].value_type.to_string(), "bool");
 }
 
 #[test]
@@ -1158,10 +1158,10 @@ fn test_parse_array_shape_numeric_keys() {
 
     let entries = parse_array_shape("array{0: User, 1: Address}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "0");
-    assert_eq!(entries[0].value_type, "User");
-    assert_eq!(entries[1].key, "1");
-    assert_eq!(entries[1].value_type, "Address");
+    assert_eq!(entries[0].key.as_deref(), Some("0"));
+    assert_eq!(entries[0].value_type.to_string(), "User");
+    assert_eq!(entries[1].key.as_deref(), Some("1"));
+    assert_eq!(entries[1].value_type.to_string(), "Address");
 }
 
 #[test]
@@ -1171,10 +1171,10 @@ fn test_parse_array_shape_nested_generics() {
     let entries =
         parse_array_shape("array{users: list<User>, meta: array<string, mixed>}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "users");
-    assert_eq!(entries[0].value_type, "list<User>");
-    assert_eq!(entries[1].key, "meta");
-    assert_eq!(entries[1].value_type, "array<string, mixed>");
+    assert_eq!(entries[0].key.as_deref(), Some("users"));
+    assert_eq!(entries[0].value_type.to_string(), "list<User>");
+    assert_eq!(entries[1].key.as_deref(), Some("meta"));
+    assert_eq!(entries[1].value_type.to_string(), "array<string, mixed>");
 }
 
 #[test]
@@ -1201,7 +1201,7 @@ fn test_parse_array_shape_nullable() {
 
     let entries = parse_array_shape("?array{name: string}").unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].key, "name");
+    assert_eq!(entries[0].key.as_deref(), Some("name"));
 }
 
 #[test]
@@ -1209,19 +1209,22 @@ fn test_extract_array_shape_value_type() {
     use phpantom_lsp::docblock::extract_array_shape_value_type;
 
     assert_eq!(
-        extract_array_shape_value_type("array{name: string, user: User}", "user"),
+        extract_array_shape_value_type("array{name: string, user: User}", "user")
+            .map(|t| t.to_string()),
         Some("User".to_string())
     );
     assert_eq!(
-        extract_array_shape_value_type("array{name: string, user: User}", "name"),
+        extract_array_shape_value_type("array{name: string, user: User}", "name")
+            .map(|t| t.to_string()),
         Some("string".to_string())
     );
     assert_eq!(
-        extract_array_shape_value_type("array{name: string, user: User}", "missing"),
+        extract_array_shape_value_type("array{name: string, user: User}", "missing")
+            .map(|t| t.to_string()),
         None
     );
     assert_eq!(
-        extract_array_shape_value_type("list<User>", "anything"),
+        extract_array_shape_value_type("list<User>", "anything").map(|t| t.to_string()),
         None
     );
 }
@@ -1233,10 +1236,13 @@ fn test_parse_array_shape_nested_shapes() {
     let entries =
         parse_array_shape("array{user: array{name: string, age: int}, active: bool}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "user");
-    assert_eq!(entries[0].value_type, "array{name: string, age: int}");
-    assert_eq!(entries[1].key, "active");
-    assert_eq!(entries[1].value_type, "bool");
+    assert_eq!(entries[0].key.as_deref(), Some("user"));
+    assert_eq!(
+        entries[0].value_type.to_string(),
+        "array{name: string, age: int}"
+    );
+    assert_eq!(entries[1].key.as_deref(), Some("active"));
+    assert_eq!(entries[1].value_type.to_string(), "bool");
 }
 
 // ─── split_type_token and clean_type with array shapes ──────────────────────
@@ -2998,11 +3004,11 @@ fn test_parse_array_shape_single_quoted_keys() {
 
     let entries = parse_array_shape("array{'foo': int, 'bar': string}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "foo");
-    assert_eq!(entries[0].value_type, "int");
+    assert_eq!(entries[0].key.as_deref(), Some("foo"));
+    assert_eq!(entries[0].value_type.to_string(), "int");
     assert!(!entries[0].optional);
-    assert_eq!(entries[1].key, "bar");
-    assert_eq!(entries[1].value_type, "string");
+    assert_eq!(entries[1].key.as_deref(), Some("bar"));
+    assert_eq!(entries[1].value_type.to_string(), "string");
     assert!(!entries[1].optional);
 }
 
@@ -3012,10 +3018,10 @@ fn test_parse_array_shape_double_quoted_keys() {
 
     let entries = parse_array_shape(r#"array{"foo": int, "bar": string}"#).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "foo");
-    assert_eq!(entries[0].value_type, "int");
-    assert_eq!(entries[1].key, "bar");
-    assert_eq!(entries[1].value_type, "string");
+    assert_eq!(entries[0].key.as_deref(), Some("foo"));
+    assert_eq!(entries[0].value_type.to_string(), "int");
+    assert_eq!(entries[1].key.as_deref(), Some("bar"));
+    assert_eq!(entries[1].value_type.to_string(), "string");
 }
 
 #[test]
@@ -3024,14 +3030,14 @@ fn test_parse_array_shape_mixed_quoted_and_unquoted_keys() {
 
     let entries = parse_array_shape(r#"array{'foo': int, "bar"?: string, baz: bool}"#).unwrap();
     assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0].key, "foo");
-    assert_eq!(entries[0].value_type, "int");
+    assert_eq!(entries[0].key.as_deref(), Some("foo"));
+    assert_eq!(entries[0].value_type.to_string(), "int");
     assert!(!entries[0].optional);
-    assert_eq!(entries[1].key, "bar");
-    assert_eq!(entries[1].value_type, "string");
+    assert_eq!(entries[1].key.as_deref(), Some("bar"));
+    assert_eq!(entries[1].value_type.to_string(), "string");
     assert!(entries[1].optional);
-    assert_eq!(entries[2].key, "baz");
-    assert_eq!(entries[2].value_type, "bool");
+    assert_eq!(entries[2].key.as_deref(), Some("baz"));
+    assert_eq!(entries[2].value_type.to_string(), "bool");
     assert!(!entries[2].optional);
 }
 
@@ -3041,10 +3047,10 @@ fn test_parse_array_shape_quoted_key_with_spaces() {
 
     let entries = parse_array_shape("array{'po rt': int, 'my key': string}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "po rt");
-    assert_eq!(entries[0].value_type, "int");
-    assert_eq!(entries[1].key, "my key");
-    assert_eq!(entries[1].value_type, "string");
+    assert_eq!(entries[0].key.as_deref(), Some("po rt"));
+    assert_eq!(entries[0].value_type.to_string(), "int");
+    assert_eq!(entries[1].key.as_deref(), Some("my key"));
+    assert_eq!(entries[1].value_type.to_string(), "string");
 }
 
 #[test]
@@ -3058,14 +3064,14 @@ fn test_parse_array_shape_quoted_key_with_special_chars() {
     )
     .unwrap();
     assert_eq!(entries.len(), 3, "entries: {:?}", entries);
-    assert_eq!(entries[0].key, ",host?:}");
-    assert_eq!(entries[0].value_type, "string");
+    assert_eq!(entries[0].key.as_deref(), Some(",host?:}"));
+    assert_eq!(entries[0].value_type.to_string(), "string");
     assert!(entries[0].optional);
-    assert_eq!(entries[1].key, "po rt");
-    assert_eq!(entries[1].value_type, "int");
+    assert_eq!(entries[1].key.as_deref(), Some("po rt"));
+    assert_eq!(entries[1].value_type.to_string(), "int");
     assert!(!entries[1].optional);
-    assert_eq!(entries[2].key, "credentials");
-    assert_eq!(entries[2].value_type, "User|AdminUser");
+    assert_eq!(entries[2].key.as_deref(), Some("credentials"));
+    assert_eq!(entries[2].value_type.to_string(), "User|AdminUser");
     assert!(!entries[2].optional);
 }
 
@@ -3076,12 +3082,12 @@ fn test_parse_array_shape_optional_quoted_key() {
     // Optional marker `?` after closing quote: `"bar"?: string`
     let entries = parse_array_shape(r#"array{"bar"?: string, 'baz'?: int}"#).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "bar");
+    assert_eq!(entries[0].key.as_deref(), Some("bar"));
     assert!(entries[0].optional);
-    assert_eq!(entries[0].value_type, "string");
-    assert_eq!(entries[1].key, "baz");
+    assert_eq!(entries[0].value_type.to_string(), "string");
+    assert_eq!(entries[1].key.as_deref(), Some("baz"));
     assert!(entries[1].optional);
-    assert_eq!(entries[1].value_type, "int");
+    assert_eq!(entries[1].value_type.to_string(), "int");
 }
 
 #[test]
@@ -3091,10 +3097,10 @@ fn test_parse_array_shape_quoted_key_with_colon() {
     // Colon inside a quoted key must not be treated as the key:value separator.
     let entries = parse_array_shape(r#"array{"host:port": string, name: string}"#).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "host:port");
-    assert_eq!(entries[0].value_type, "string");
-    assert_eq!(entries[1].key, "name");
-    assert_eq!(entries[1].value_type, "string");
+    assert_eq!(entries[0].key.as_deref(), Some("host:port"));
+    assert_eq!(entries[0].value_type.to_string(), "string");
+    assert_eq!(entries[1].key.as_deref(), Some("name"));
+    assert_eq!(entries[1].value_type.to_string(), "string");
 }
 
 #[test]
@@ -3104,10 +3110,10 @@ fn test_parse_array_shape_quoted_key_with_comma() {
     // Comma inside a quoted key must not split entries.
     let entries = parse_array_shape(r#"array{"first,last": string, age: int}"#).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "first,last");
-    assert_eq!(entries[0].value_type, "string");
-    assert_eq!(entries[1].key, "age");
-    assert_eq!(entries[1].value_type, "int");
+    assert_eq!(entries[0].key.as_deref(), Some("first,last"));
+    assert_eq!(entries[0].value_type.to_string(), "string");
+    assert_eq!(entries[1].key.as_deref(), Some("age"));
+    assert_eq!(entries[1].value_type.to_string(), "int");
 }
 
 #[test]
@@ -3117,10 +3123,10 @@ fn test_parse_array_shape_quoted_key_with_braces() {
     // Braces inside a quoted key must not break brace matching.
     let entries = parse_array_shape(r#"array{"{key}": string, normal: int}"#).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "{key}");
-    assert_eq!(entries[0].value_type, "string");
-    assert_eq!(entries[1].key, "normal");
-    assert_eq!(entries[1].value_type, "int");
+    assert_eq!(entries[0].key.as_deref(), Some("{key}"));
+    assert_eq!(entries[0].value_type.to_string(), "string");
+    assert_eq!(entries[1].key.as_deref(), Some("normal"));
+    assert_eq!(entries[1].value_type.to_string(), "int");
 }
 
 #[test]
@@ -3130,15 +3136,15 @@ fn test_extract_array_shape_value_type_quoted_key() {
     // Lookup by unquoted key name should match a quoted key in the shape.
     let t = r#"array{"host": string, 'port': int, ssl: bool}"#;
     assert_eq!(
-        extract_array_shape_value_type(t, "host"),
+        extract_array_shape_value_type(t, "host").map(|t| t.to_string()),
         Some("string".to_string())
     );
     assert_eq!(
-        extract_array_shape_value_type(t, "port"),
+        extract_array_shape_value_type(t, "port").map(|t| t.to_string()),
         Some("int".to_string())
     );
     assert_eq!(
-        extract_array_shape_value_type(t, "ssl"),
+        extract_array_shape_value_type(t, "ssl").map(|t| t.to_string()),
         Some("bool".to_string())
     );
 }
@@ -3151,40 +3157,40 @@ fn test_parse_array_shape_phpstan_spec_examples() {
     // array{'foo': int, "bar": string}
     let entries = parse_array_shape(r#"array{'foo': int, "bar": string}"#).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "foo");
-    assert_eq!(entries[0].value_type, "int");
-    assert_eq!(entries[1].key, "bar");
-    assert_eq!(entries[1].value_type, "string");
+    assert_eq!(entries[0].key.as_deref(), Some("foo"));
+    assert_eq!(entries[0].value_type.to_string(), "int");
+    assert_eq!(entries[1].key.as_deref(), Some("bar"));
+    assert_eq!(entries[1].value_type.to_string(), "string");
 
     // array{'foo': int, "bar"?: string}
     let entries = parse_array_shape(r#"array{'foo': int, "bar"?: string}"#).unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "foo");
+    assert_eq!(entries[0].key.as_deref(), Some("foo"));
     assert!(!entries[0].optional);
-    assert_eq!(entries[1].key, "bar");
+    assert_eq!(entries[1].key.as_deref(), Some("bar"));
     assert!(entries[1].optional);
 
     // array{int, int} (tuple)
     let entries = parse_array_shape("array{int, int}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "0");
-    assert_eq!(entries[0].value_type, "int");
-    assert_eq!(entries[1].key, "1");
-    assert_eq!(entries[1].value_type, "int");
+    assert_eq!(entries[0].key.as_deref(), Some("0"));
+    assert_eq!(entries[0].value_type.to_string(), "int");
+    assert_eq!(entries[1].key.as_deref(), Some("1"));
+    assert_eq!(entries[1].value_type.to_string(), "int");
 
     // array{0: int, 1?: int}
     let entries = parse_array_shape("array{0: int, 1?: int}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "0");
+    assert_eq!(entries[0].key.as_deref(), Some("0"));
     assert!(!entries[0].optional);
-    assert_eq!(entries[1].key, "1");
+    assert_eq!(entries[1].key.as_deref(), Some("1"));
     assert!(entries[1].optional);
 
     // array{foo: int, bar: string}
     let entries = parse_array_shape("array{foo: int, bar: string}").unwrap();
     assert_eq!(entries.len(), 2);
-    assert_eq!(entries[0].key, "foo");
-    assert_eq!(entries[1].key, "bar");
+    assert_eq!(entries[0].key.as_deref(), Some("foo"));
+    assert_eq!(entries[1].key.as_deref(), Some("bar"));
 }
 
 #[tokio::test]

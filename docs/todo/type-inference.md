@@ -486,26 +486,6 @@ and update all call sites.
 
 ---
 
-## T29. Unify `ArrayShapeEntry` with `ShapeEntry`
-**Impact: Low · Effort: Low**
-
-`types::ArrayShapeEntry` stores `value_type: String`, duplicating
-`php_type::ShapeEntry` which stores `value_type: Box<PhpType>`.
-Functions like `parse_array_shape()` and `parse_object_shape()` parse
-into `PhpType`, unwrap the `ShapeEntry` values, then stringify them
-back into `ArrayShapeEntry`. Consumers downstream often re-parse the
-string.
-
-**Task:** Either change `ArrayShapeEntry.value_type` to `PhpType`,
-or eliminate `ArrayShapeEntry` entirely in favour of `ShapeEntry`
-(adding a `key` default for implicit positional indices). Update
-`docblock/shapes.rs` and all consumers.
-
-**Files:** `src/types.rs`, `src/docblock/shapes.rs`,
-`src/completion/array_shape.rs`, and consumers
-
----
-
 ## T30. Migrate `inline_use_generics` to `PhpType`
 **Impact: Low · Effort: Low**
 

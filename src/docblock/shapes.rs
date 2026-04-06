@@ -9,30 +9,28 @@
 //! hand-rolled depth-tracking parsers.
 
 use crate::php_type::PhpType;
-use crate::types::ArrayShapeEntry;
 
-/// Convert a `PhpType` shape entry list into `ArrayShapeEntry` values.
+/// Resolve implicit positional keys in shape entries.
 ///
-/// Positional entries (where `ShapeEntry.key` is `None`) are assigned
-/// auto-incrementing numeric keys (`"0"`, `"1"`, …) to match the
-/// behaviour callers expect.
-fn shape_entries_to_array_entries(entries: &[crate::php_type::ShapeEntry]) -> Vec<ArrayShapeEntry> {
+/// Entries with `key: None` are assigned auto-incrementing string
+/// indices (`"0"`, `"1"`, …), matching PHPStan's array shape semantics.
+fn resolve_shape_keys(entries: &[crate::php_type::ShapeEntry]) -> Vec<crate::php_type::ShapeEntry> {
     let mut result = Vec::with_capacity(entries.len());
     let mut implicit_index: u32 = 0;
 
     for entry in entries {
         let key = match &entry.key {
-            Some(k) => k.clone(),
+            Some(k) => Some(k.clone()),
             None => {
                 let k = implicit_index.to_string();
                 implicit_index += 1;
-                k
+                Some(k)
             }
         };
 
-        result.push(ArrayShapeEntry {
+        result.push(crate::php_type::ShapeEntry {
             key,
-            value_type: entry.value_type.to_string(),
+            value_type: entry.value_type.clone(),
             optional: entry.optional,
         });
     }
@@ -81,23 +79,23 @@ fn unwrap_object_shape(ty: &PhpType) -> Option<&[crate::php_type::ShapeEntry]> {
 /// - `"array{user: User, items: list<Item>}"` → nested generics preserved
 ///
 /// Returns `None` if the type is not an array shape.
-pub fn parse_array_shape(type_str: &str) -> Option<Vec<ArrayShapeEntry>> {
+pub fn parse_array_shape(type_str: &str) -> Option<Vec<crate::php_type::ShapeEntry>> {
     let parsed = PhpType::parse(type_str);
     let entries = unwrap_array_shape(&parsed)?;
-    Some(shape_entries_to_array_entries(entries))
+    Some(resolve_shape_keys(entries))
 }
 
 /// Look up the value type for a specific key in an array shape type string.
 ///
 /// Given a type like `"array{name: string, user: User}"` and key `"user"`,
-/// returns `Some("User")`.
+/// returns `Some(PhpType)` for the `User` type.
 ///
 /// Returns `None` if the type is not an array shape or the key is not found.
-pub fn extract_array_shape_value_type(type_str: &str, key: &str) -> Option<String> {
+pub fn extract_array_shape_value_type(type_str: &str, key: &str) -> Option<PhpType> {
     let entries = parse_array_shape(type_str)?;
     entries
         .into_iter()
-        .find(|e| e.key == key)
+        .find(|e| e.key.as_deref() == Some(key))
         .map(|e| e.value_type)
 }
 
@@ -112,14 +110,11 @@ pub fn extract_array_shape_value_type(type_str: &str, key: &str) -> Option<Strin
 /// - `"object{'foo': int, \"bar\": string}"` → quoted property names
 /// - `"object{foo: int, bar: string}&\stdClass"` → intersection ignored here
 ///
-/// The returned entries reuse [`ArrayShapeEntry`] since the structure is
-/// identical (key name, value type, optional flag).
-///
 /// Returns `None` if the type is not an object shape.
-pub fn parse_object_shape(type_str: &str) -> Option<Vec<ArrayShapeEntry>> {
+pub fn parse_object_shape(type_str: &str) -> Option<Vec<crate::php_type::ShapeEntry>> {
     let parsed = PhpType::parse(type_str);
     let entries = unwrap_object_shape(&parsed)?;
-    Some(shape_entries_to_array_entries(entries))
+    Some(resolve_shape_keys(entries))
 }
 
 /// Return `true` if `type_str` is an object shape type (e.g. `object{name: string}`).
@@ -130,14 +125,14 @@ pub fn is_object_shape(type_str: &str) -> bool {
 /// Look up the value type for a specific property in an object shape.
 ///
 /// Given a type like `"object{name: string, user: User}"` and key `"user"`,
-/// returns `Some("User")`.
+/// returns `Some(PhpType)` for the `User` type.
 ///
 /// Returns `None` if the type is not an object shape or the property
 /// is not found.
-pub fn extract_object_shape_property_type(type_str: &str, prop: &str) -> Option<String> {
+pub fn extract_object_shape_property_type(type_str: &str, prop: &str) -> Option<PhpType> {
     let entries = parse_object_shape(type_str)?;
     entries
         .into_iter()
-        .find(|e| e.key == prop)
+        .find(|e| e.key.as_deref() == Some(prop))
         .map(|e| e.value_type)
 }

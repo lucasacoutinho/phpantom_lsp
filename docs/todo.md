@@ -26,7 +26,6 @@ within the same impact tier.
 | T19 | [Structured type representation](todo/type-inference.md#t19-structured-type-representation) (migrate remaining callers; already in progress)              | High   | Very High  |
 | T26 | [Migrate `resolve_effective_type` / `should_override_type` to accept `PhpType`](todo/type-inference.md#t26-typed-resolve_effective_type-and-should_override_type) | Medium | Medium |
 | T28 | [Migrate `enrichment_snippet` / `enrichment_plain` to accept `PhpType`](todo/type-inference.md#t28-migrate-enrichment-functions-to-accept-phptype)        | Low    | Low        |
-| T29 | [Unify `ArrayShapeEntry` with `ShapeEntry`](todo/type-inference.md#t29-unify-arrayshapeentry-with-shapeentry)                                             | Low    | Low        |
 | T30 | [Migrate `inline_use_generics` to `Vec<(String, Vec<PhpType>)>`](todo/type-inference.md#t30-migrate-inline_use_generics-to-phptype)                       | Low    | Low        |
 | T31 | [Migrate `throws` fields to `Vec<PhpType>`](todo/type-inference.md#t31-migrate-throws-fields-to-vecphptype)                                               | Low    | Low        |
 | T32 | [Migrate `closure_this_type` to `Option<PhpType>`](todo/type-inference.md#t32-migrate-closure_this_type-to-optionphptype)                                 | Low    | Low        |
