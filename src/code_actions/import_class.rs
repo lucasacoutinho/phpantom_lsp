@@ -727,4 +727,292 @@ mod tests {
             "should not offer conflicting import"
         );
     }
+
+    // ── No-namespace file tests ─────────────────────────────────────────
+
+    #[test]
+    fn import_action_offered_in_no_namespace_file_for_new_expression() {
+        let backend = crate::Backend::new_test();
+        let uri = "file:///test.php";
+        // File has NO namespace declaration.
+        let content = "<?php\n\nnew Request();\n";
+
+        backend.update_ast(uri, content);
+
+        {
+            let mut cmap = backend.classmap.write();
+            cmap.insert(
+                "Illuminate\\Http\\Request".to_string(),
+                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+            );
+        }
+
+        // Range covering "Request" on line 2.
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range {
+                start: Position::new(2, 4),
+                end: Position::new(2, 11),
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let actions = backend.handle_code_action(uri, content, &params);
+        assert!(
+            actions.iter().any(|a| {
+                if let CodeActionOrCommand::CodeAction(ca) = a {
+                    ca.title.contains("Illuminate\\Http\\Request")
+                } else {
+                    false
+                }
+            }),
+            "expected an import action for Illuminate\\Http\\Request in no-namespace file, got: {:?}",
+            actions
+                .iter()
+                .map(|a| match a {
+                    CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                    CodeActionOrCommand::Command(c) => c.title.clone(),
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn import_action_offered_in_no_namespace_file_for_static_call() {
+        let backend = crate::Backend::new_test();
+        let uri = "file:///test.php";
+        // File has NO namespace — reproduces issue #59.
+        let content = "<?php\n\nfunction () {\n    return Carbon::now();\n};\n";
+
+        backend.update_ast(uri, content);
+
+        {
+            let mut cmap = backend.classmap.write();
+            cmap.insert(
+                "Carbon\\Carbon".to_string(),
+                "/vendor/nesbot/carbon/src/Carbon/Carbon.php".into(),
+            );
+        }
+
+        // Range covering "Carbon" on line 3 (the class name in Carbon::now()).
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range {
+                start: Position::new(3, 11),
+                end: Position::new(3, 17),
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let actions = backend.handle_code_action(uri, content, &params);
+        assert!(
+            actions.iter().any(|a| {
+                if let CodeActionOrCommand::CodeAction(ca) = a {
+                    ca.title.contains("Carbon\\Carbon")
+                } else {
+                    false
+                }
+            }),
+            "expected an import action for Carbon\\Carbon in no-namespace file, got: {:?}",
+            actions
+                .iter()
+                .map(|a| match a {
+                    CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                    CodeActionOrCommand::Command(c) => c.title.clone(),
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn import_action_inserts_use_after_php_open_in_no_namespace_file() {
+        let backend = crate::Backend::new_test();
+        let uri = "file:///test.php";
+        let content = "<?php\n\nnew Request();\n";
+
+        backend.update_ast(uri, content);
+
+        {
+            let mut cmap = backend.classmap.write();
+            cmap.insert(
+                "Illuminate\\Http\\Request".to_string(),
+                "/vendor/laravel/framework/src/Illuminate/Http/Request.php".into(),
+            );
+        }
+
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range {
+                start: Position::new(2, 4),
+                end: Position::new(2, 11),
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let actions = backend.handle_code_action(uri, content, &params);
+        let action = actions
+            .iter()
+            .find_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca)
+                    if ca.title.contains("Illuminate\\Http\\Request") =>
+                {
+                    Some(ca)
+                }
+                _ => None,
+            })
+            .expect("expected import action");
+
+        let edit = action.edit.as_ref().expect("expected workspace edit");
+        let changes = edit.changes.as_ref().expect("expected changes");
+        let file_edits = changes
+            .get(&uri.parse::<Url>().unwrap())
+            .expect("expected edits for the file");
+        assert_eq!(file_edits.len(), 1);
+        assert_eq!(file_edits[0].new_text, "use Illuminate\\Http\\Request;\n");
+        // Should insert after `<?php` (line 1), not line 0.
+        assert_eq!(file_edits[0].range.start.line, 1);
+    }
+
+    #[test]
+    fn no_import_action_for_known_global_class_in_no_namespace_file() {
+        let backend = crate::Backend::new_test();
+        let uri_dep = "file:///dep.php";
+        let content_dep = "<?php\nclass Helper {}\n";
+        backend.update_ast(uri_dep, content_dep);
+
+        {
+            let mut idx = backend.class_index.write();
+            idx.insert("Helper".to_string(), uri_dep.to_string());
+        }
+
+        let uri = "file:///test.php";
+        let content = "<?php\n\nnew Helper();\n";
+        backend.update_ast(uri, content);
+
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range {
+                start: Position::new(2, 4),
+                end: Position::new(2, 10),
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let actions = backend.handle_code_action(uri, content, &params);
+        let import_actions: Vec<_> = actions
+            .iter()
+            .filter(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) => ca.title.starts_with("Import"),
+                _ => false,
+            })
+            .collect();
+        assert!(
+            import_actions.is_empty(),
+            "should not offer import for a known global class in no-namespace file, got: {:?}",
+            import_actions
+                .iter()
+                .map(|a| match a {
+                    CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                    _ => String::new(),
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn import_action_offered_when_namespaced_class_in_ast_map() {
+        // Reproduces issue #59: when a namespaced class like `Carbon\Carbon`
+        // is already parsed and in the ast_map, `find_or_load_class("Carbon")`
+        // must NOT match it — the bare name `"Carbon"` is a global-scope
+        // lookup and should not resolve to `Carbon\Carbon`.
+        //
+        // Without the fix, `find_class_in_ast_map("Carbon")` ignores the
+        // namespace filter when `expected_ns` is `None`, so ANY class with
+        // short name `Carbon` matches.  The import action then skips it
+        // thinking "this class resolves in global scope".
+        let backend = crate::Backend::new_test();
+
+        // Parse the dependency file so Carbon\Carbon is in the ast_map.
+        let uri_dep = "file:///vendor/carbon.php";
+        let content_dep = "<?php\nnamespace Carbon;\n\nclass Carbon {}\n";
+        backend.update_ast(uri_dep, content_dep);
+        {
+            let mut idx = backend.class_index.write();
+            idx.insert("Carbon\\Carbon".to_string(), uri_dep.to_string());
+        }
+
+        // The file under edit has NO namespace.
+        let uri = "file:///test.php";
+        let content = "<?php\n\nfunction () {\n    return Carbon::now();\n};\n";
+        backend.update_ast(uri, content);
+
+        // Range covering "Carbon" on line 3.
+        let params = CodeActionParams {
+            text_document: TextDocumentIdentifier {
+                uri: uri.parse().unwrap(),
+            },
+            range: Range {
+                start: Position::new(3, 11),
+                end: Position::new(3, 17),
+            },
+            context: CodeActionContext {
+                diagnostics: vec![],
+                only: None,
+                trigger_kind: None,
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        };
+
+        let actions = backend.handle_code_action(uri, content, &params);
+        assert!(
+            actions.iter().any(|a| {
+                if let CodeActionOrCommand::CodeAction(ca) = a {
+                    ca.title.contains("Carbon\\Carbon")
+                } else {
+                    false
+                }
+            }),
+            "expected an import action for Carbon\\Carbon when the namespaced class is in ast_map, got: {:?}",
+            actions
+                .iter()
+                .map(|a| match a {
+                    CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
+                    CodeActionOrCommand::Command(c) => c.title.clone(),
+                })
+                .collect::<Vec<_>>()
+        );
+    }
 }

@@ -1394,11 +1394,21 @@ fn class_names_match(resolved: &str, target: &str, target_short: &str) -> bool {
     if !resolved.contains('\\') && !target.contains('\\') {
         return resolved == target_short;
     }
-    // Compare short names as a fallback — the resolved name's short
-    // segment must match.  This handles cases where one side has a
-    // namespace and the other doesn't (common for global classes).
-    let resolved_short = crate::util::short_name(resolved);
-    resolved_short == target_short && (resolved == target || !target.contains('\\'))
+    // When the resolved name is unqualified but the target is
+    // namespace-qualified, the resolved name might be a short-name
+    // reference to the target class (e.g. `Request` referencing
+    // `Illuminate\Http\Request` via a `use` import that was not
+    // tracked in the resolved-names map).  Accept the match only
+    // when the short names agree.
+    //
+    // The reverse (resolved is qualified, target is unqualified) is
+    // NOT accepted: `App\Helper` is a different class from a global
+    // `Helper`, so matching by short name alone would produce false
+    // positives.
+    if !resolved.contains('\\') && target.contains('\\') {
+        return resolved == target_short;
+    }
+    false
 }
 
 /// Push a location only if it is not already present (deduplication).

@@ -38,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Missing diagnostics and import actions in files without a namespace.** When a namespaced class (e.g. `Carbon\Carbon`) had already been parsed, using its short name (`Carbon`) in a file without a `namespace` declaration incorrectly resolved against the namespaced class. This suppressed both the "class not found" diagnostic and the "Import" code action. Bare-name lookups now only match classes that are themselves in the global namespace.
+- **Find-references false positives for global classes.** Searching for references to a global-scope class (e.g. `Helper` with no namespace) could include references to unrelated namespaced classes with the same short name (e.g. `App\Helper`). Short-name fallback matching now only applies when the resolved name is unqualified.
 - **Fluent chains only flag the first broken link.** In a chain where the first method does not exist, only that method is flagged instead of every subsequent call receiving its own warning.
 - **Null narrowing from `!== null` checks.** Null-initialized variables guarded by `$var !== null`, `!is_null()`, or bare truthy checks now have `null` narrowed away inside the then-body and in subsequent `&&` operands. Works in chained conditions, ternary expressions, and return statements.
 - **Variables assigned inside `if`/`while` conditions now resolve in the body.** `if ($admin = AdminUser::first())` and `while ($row = nextRow())` register the assignment so the variable has a type inside the branch or loop body.

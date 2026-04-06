@@ -1015,4 +1015,94 @@ mod tests {
             diags.iter().map(|d| &d.message).collect::<Vec<_>>()
         );
     }
+
+    // ── No-namespace file tests ─────────────────────────────────────────
+
+    #[test]
+    fn diagnostic_when_namespaced_class_in_ast_map() {
+        // Reproduces issue #59: when `Carbon\Carbon` is already parsed
+        // and in the ast_map, `find_or_load_class("Carbon")` must NOT
+        // match it — the bare name is a global-scope lookup.  Without
+        // the fix the no-namespace fallback at step 3 resolves the bare
+        // name to the namespaced class, suppressing the diagnostic.
+        let backend = Backend::new_test();
+
+        // Parse the dependency so Carbon\Carbon is in the ast_map.
+        let uri_dep = "file:///vendor/carbon.php";
+        let content_dep = "<?php\nnamespace Carbon;\n\nclass Carbon {}\n";
+        backend.update_ast(uri_dep, content_dep);
+        {
+            let mut idx = backend.class_index.write();
+            idx.insert("Carbon\\Carbon".to_string(), uri_dep.to_string());
+        }
+
+        let uri = "file:///test.php";
+        let content = "<?php\n\nfunction () {\n    return Carbon::now();\n};\n";
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.iter().any(|d| d.message.contains("Carbon")),
+            "expected unknown-class diagnostic for Carbon even when Carbon\\Carbon is in ast_map, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn diagnostic_for_unknown_class_in_no_namespace_file() {
+        // In a file without a namespace, an unresolved class name should
+        // still produce a diagnostic.
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = "<?php\n\nnew Request();\n";
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.iter().any(|d| d.message.contains("Request")),
+            "expected unknown-class diagnostic for Request in no-namespace file, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn diagnostic_for_unknown_static_class_in_no_namespace_file() {
+        // Reproduces issue #59: `Carbon::now()` in a file without a
+        // namespace should emit a diagnostic for unresolved `Carbon`.
+        let backend = Backend::new_test();
+        let uri = "file:///test.php";
+        let content = "<?php\n\nfunction () {\n    return Carbon::now();\n};\n";
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            diags.iter().any(|d| d.message.contains("Carbon")),
+            "expected unknown-class diagnostic for Carbon in no-namespace file, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_imported_class_in_no_namespace_file() {
+        // A `use` statement in a no-namespace file should suppress the
+        // diagnostic, just like in a namespaced file.
+        let backend = Backend::new_test();
+
+        // Register the class so it can be found.
+        let uri_dep = "file:///carbon.php";
+        let content_dep = "<?php\nnamespace Carbon;\n\nclass Carbon {}\n";
+        backend.update_ast(uri_dep, content_dep);
+        {
+            let mut idx = backend.class_index.write();
+            idx.insert("Carbon\\Carbon".to_string(), uri_dep.to_string());
+        }
+
+        let uri = "file:///test.php";
+        let content =
+            "<?php\n\nuse Carbon\\Carbon;\n\nfunction () {\n    return Carbon::now();\n};\n";
+
+        let diags = collect(&backend, uri, content);
+        assert!(
+            !diags.iter().any(|d| d.message.contains("Carbon")),
+            "should not flag imported Carbon class, got: {:?}",
+            diags.iter().map(|d| &d.message).collect::<Vec<_>>()
+        );
+    }
 }

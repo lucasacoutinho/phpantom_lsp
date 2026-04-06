@@ -1022,14 +1022,24 @@ impl Backend {
             // (e.g. `Illuminate\Database\Eloquent\Builder` and
             // `Illuminate\Database\Query\Builder`).
             for cls in classes.iter().filter(|c| c.name == last_segment) {
+                let class_ns = cls.file_namespace.as_deref();
                 if let Some(exp_ns) = expected_ns {
                     // Use the per-class namespace (set during parsing)
                     // rather than the file-level namespace.  This
                     // correctly handles files with multiple namespace
                     // blocks where different classes live under different
                     // namespaces.
-                    let class_ns = cls.file_namespace.as_deref();
                     if class_ns != Some(exp_ns) {
+                        continue;
+                    }
+                } else {
+                    // Bare-name lookup (no namespace in the query).
+                    // Only match classes that are themselves in the
+                    // global namespace.  Without this check, looking
+                    // up bare `"Carbon"` would incorrectly match
+                    // `Carbon\Carbon` (or any other namespaced class
+                    // whose short name happens to be `Carbon`).
+                    if class_ns.is_some() {
                         continue;
                     }
                 }
