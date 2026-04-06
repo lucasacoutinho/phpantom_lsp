@@ -14,7 +14,7 @@ const STYLES: Styles = Styles::styled()
 #[derive(Parser)]
 #[command(name = "phpantom_lsp", styles = STYLES)]
 #[command(
-    version,
+    version = env!("PHPANTOM_GIT_VERSION"),
     about = "A fast and lightweight PHP Language Server Protocol implementation"
 )]
 struct Cli {

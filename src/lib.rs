@@ -535,7 +535,7 @@ impl Backend {
     fn defaults() -> Self {
         Self {
             name: "PHPantom".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: env!("PHPANTOM_GIT_VERSION").to_string(),
             client_name: Mutex::new(String::new()),
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
@@ -591,7 +591,7 @@ impl Backend {
     fn test_defaults() -> Self {
         Self {
             name: "PHPantom".to_string(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: env!("PHPANTOM_GIT_VERSION").to_string(),
             client_name: Mutex::new(String::new()),
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),

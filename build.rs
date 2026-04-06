@@ -100,6 +100,26 @@ fn main() {
     println!("cargo:rerun-if-changed=.");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=stubs.lock");
+    // Re-run when HEAD moves (commit, checkout, tag) so the embedded
+    // version string stays current.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/refs/tags");
+
+    // ── Git version string ──────────────────────────────────────────
+    // On a release tag:  "0.6.0"
+    // Between tags:      "0.6.0-186-g37a901ed"  (commits ahead + hash)
+    // No tags at all:    "g37a901ed"             (just the hash)
+    // Dirty worktree:    any of the above + "-dirty"
+    // No git at all:     falls back to CARGO_PKG_VERSION (crates.io builds)
+    let git_version = std::process::Command::new("git")
+        .args(["describe", "--tags", "--always", "--dirty"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| env::var("CARGO_PKG_VERSION").unwrap_or_default());
+    println!("cargo:rustc-env=PHPANTOM_GIT_VERSION={git_version}");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR not set");
     let lock = read_stubs_lock(&manifest_dir);

@@ -1,0 +1,53 @@
+name: Feature Request
+description: Suggest a new feature or improvement for PHPantom
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to suggest an improvement! Please fill out the sections below so we can understand what you're looking for.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear description of the feature you'd like to see.
+      placeholder: Describe the feature or improvement you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use case
+      description: Why do you need this? What problem does it solve for you?
+      placeholder: |
+        Example: "When working with Symfony projects, I often need to ... but PHPantom doesn't currently ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed-solution
+    attributes:
+      label: Proposed solution
+      description: If you have a specific idea for how this should work, describe it here.
+      placeholder: Describe your ideal solution or how you'd expect it to behave.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any workarounds or alternative approaches you've tried or considered.
+    validations:
+      required: false
+
+  - type: textarea
+    id: code-example
+    attributes:
+      label: Code example
+      description: If applicable, provide a PHP snippet that demonstrates the feature you'd like support for.
+      render: php
+    validations:
+      required: false

@@ -1,0 +1,113 @@
+name: Bug Report
+description: Report something that isn't working correctly
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug! Please fill out the sections below so we can reproduce and fix the issue quickly.
+
+  - type: input
+    id: version
+    attributes:
+      label: PHPantom version
+      description: |
+        Paste the output of `phpantom_lsp --version`. This prints the exact release tag or commit hash.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Installation method
+      options:
+        - Pre-built binary from GitHub Releases
+        - Zed extension (auto-downloaded)
+        - Built from source
+        - Other (describe in Additional Context)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux x86_64
+        - Linux aarch64
+        - macOS x86_64 (Intel)
+        - macOS aarch64 (Apple Silicon)
+        - Windows x86_64
+        - Other (describe in Additional Context)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: editor
+    attributes:
+      label: Editor
+      options:
+        - Zed
+        - Neovim
+        - VS Code
+        - PHPStorm
+        - Sublime Text
+        - Other (describe in Additional Context)
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug description
+      description: A clear description of what went wrong and what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: |
+        Minimal steps to trigger the bug. Include a short PHP code snippet if possible.
+        If the issue involves cross-file resolution, mention the relevant `composer.json` autoload config.
+      placeholder: |
+        1. Create a file with the following content:
+        ```php
+        <?php
+        // ...
+        ```
+        2. Place cursor after `$foo->` and trigger completion
+        3. Expected: property `bar` appears
+        4. Actual: no suggestions
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error output or panic trace
+      description: |
+        If the LSP crashed or logged an error, paste the output here. Set `RUST_BACKTRACE=1` for full panic traces.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: phpantom-config
+    attributes:
+      label: ".phpantom.toml"
+      description: |
+        Paste your `.phpantom.toml` if you have one, or note "default / no config file". Non-default settings often matter for reproduction.
+      render: toml
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: |
+        Anything else that might help: screenshots, related `composer.json` autoload sections, framework in use (Laravel, Symfony, Drupal, etc.), or links to a public repo that reproduces the issue.
+    validations:
+      required: false
