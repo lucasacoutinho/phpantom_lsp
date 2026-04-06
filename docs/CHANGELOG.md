@@ -79,6 +79,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Types with `covariant` or `contravariant` variance annotations in generic args now parse correctly.** Annotations like `BelongsTo<Category, covariant $this>` no longer cause the entire type to become unresolvable.
 - **Diagnostics now work for vendor files open in the editor.** Projects using `--prefer-source` or monorepo setups no longer have diagnostics suppressed in vendor files.
 - **PHPStan diagnostics no longer hidden by unrelated native diagnostics on the same line.** Deduplication now only suppresses a full-line diagnostic when the precise diagnostic on the same line reports a related issue.
+- **Aliased namespace imports used in attributes no longer flagged as unused.** `use Symfony\Component\Validator\Constraints as Assert;` with `#[Assert\Uuid(...)]` no longer produces a false "Unused import" diagnostic.
 - **`DB::select()` return type.** `DB::select()` and related methods now return `array<int, stdClass>` instead of bare `array`, and `DB::selectOne()` returns `?stdClass`.
 - **Redis `Connection` method resolution.** Redis commands on `Illuminate\Redis\Connections\Connection` now resolve through the phpredis stubs.
 - **Array shape tracking from keyed assignments inside conditional branches.** Shape types built incrementally with variable keys inside loops with if/else branching are now preserved through foreach iteration.

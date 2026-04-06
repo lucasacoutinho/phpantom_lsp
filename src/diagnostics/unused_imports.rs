@@ -251,7 +251,14 @@ fn alias_is_referenced_in_content(
             None => break,
         };
 
-        // Check word boundaries
+        // Check word boundaries.
+        //
+        // A backslash *after* the alias is a valid boundary: `Assert\Uuid`
+        // means the file uses `Assert` as a namespace-alias prefix, which
+        // counts as a real usage of the `use … as Assert` import.
+        //
+        // A backslash *before* the alias is NOT a valid boundary:
+        // `Foo\Assert` does not reference a top-level `Assert` alias.
         let before_ok = if pos == 0 {
             true
         } else {
@@ -261,7 +268,8 @@ fn alias_is_referenced_in_content(
         let after_ok = if pos + alias_len >= content_bytes.len() {
             true
         } else {
-            !is_ident_char(content_bytes[pos + alias_len])
+            let next_byte = content_bytes[pos + alias_len];
+            next_byte == b'\\' || !is_ident_char(next_byte)
         };
 
         if before_ok && after_ok {
@@ -483,4 +491,82 @@ fn find_group_member_range(
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: no use-statement or declaration ranges to exclude.
+    fn referenced(content: &str, alias: &str) -> bool {
+        alias_is_referenced_in_content(content, alias, "", &[], &[])
+    }
+
+    #[test]
+    fn backslash_after_alias_counts_as_reference() {
+        // `Assert\Uuid` uses the `Assert` alias as a namespace prefix.
+        let content = r#"<?php
+use Symfony\Component\Validator\Constraints as Assert;
+
+class Dto {
+    public function __construct(
+        #[Assert\Uuid(message: 'bad')]
+        public string $id,
+    ) {}
+}
+"#;
+        let use_ranges = compute_use_line_ranges(content);
+        assert!(
+            alias_is_referenced_in_content(content, "Assert", "", &use_ranges, &[]),
+            "Assert\\Uuid should count as a usage of the Assert alias"
+        );
+    }
+
+    #[test]
+    fn backslash_before_alias_does_not_count() {
+        // `Foo\Assert` does NOT reference a top-level `Assert` alias.
+        assert!(!referenced(r#"Foo\Assert"#, "Assert"));
+    }
+
+    #[test]
+    fn standalone_alias_still_detected() {
+        assert!(referenced("new Assert();", "Assert"));
+    }
+
+    #[test]
+    fn alias_inside_longer_word_not_detected() {
+        // `Assertion` contains `Assert` but is a different identifier.
+        assert!(!referenced("new Assertion();", "Assert"));
+    }
+
+    #[test]
+    fn alias_with_static_access_through_namespace() {
+        // `Assert\Uuid::V7_MONOTONIC` — the alias `Assert` is used.
+        assert!(referenced("Assert\\Uuid::V7_MONOTONIC", "Assert"));
+    }
+
+    #[test]
+    fn alias_on_use_line_not_counted() {
+        let content = "use Foo\\Bar as Assert;\n";
+        let use_ranges = compute_use_line_ranges(content);
+        assert!(
+            !alias_is_referenced_in_content(content, "Assert", "", &use_ranges, &[]),
+            "Alias on a use-statement line should not count as a reference"
+        );
+    }
+
+    #[test]
+    fn alias_in_comment_not_counted() {
+        assert!(!referenced("// Assert is great\n", "Assert"));
+    }
+
+    #[test]
+    fn alias_in_docblock_prose_not_counted() {
+        assert!(!referenced(" * Assert something here\n", "Assert"));
+    }
+
+    #[test]
+    fn alias_in_docblock_type_tag_counted() {
+        assert!(referenced(" * @param Assert $x\n", "Assert"));
+    }
 }

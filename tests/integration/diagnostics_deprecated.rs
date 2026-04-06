@@ -2884,3 +2884,101 @@ class Beta {
         deprecated[0].message
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Aliased imports used in attributes (bug #64)
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// An aliased namespace import used in an attribute (`#[Assert\Uuid(...)]`)
+/// must not be flagged as unused.
+#[test]
+fn aliased_import_used_in_attribute_not_flagged() {
+    let backend = create_test_backend();
+    let uri = "file:///test_aliased_attr.php";
+    let text = r#"<?php
+namespace App\Dto\In;
+
+use Symfony\Component\Validator\Constraints as Assert;
+
+final readonly class SomeKindOfInDto
+{
+    public function __construct(
+        #[Assert\Uuid(
+            message: 'Not valid UUID::v7',
+        )]
+        public string $id,
+    ) {}
+}
+"#;
+
+    let diags = unused_import_diagnostics(&backend, uri, text);
+    let unnecessary: Vec<_> = diags.iter().filter(|d| has_unnecessary_tag(d)).collect();
+
+    assert!(
+        unnecessary.is_empty(),
+        "Aliased import used in attribute should NOT be flagged as unused, got: {:?}",
+        unnecessary
+    );
+}
+
+/// An aliased namespace import used in a nested static constant access
+/// inside an attribute argument (`Assert\Uuid::V7_MONOTONIC`) must not
+/// be flagged as unused.
+#[test]
+fn aliased_import_used_in_attribute_static_constant_not_flagged() {
+    let backend = create_test_backend();
+    let uri = "file:///test_aliased_attr_const.php";
+    let text = r#"<?php
+namespace App\Dto\In;
+
+use Symfony\Component\Validator\Constraints as Assert;
+
+final readonly class SomeKindOfInDto
+{
+    public function __construct(
+        #[Assert\Uuid(
+            message: 'Not valid UUID::v7',
+            versions: [Assert\Uuid::V7_MONOTONIC],
+        )]
+        public string $id,
+    ) {}
+}
+"#;
+
+    let diags = unused_import_diagnostics(&backend, uri, text);
+    let unnecessary: Vec<_> = diags.iter().filter(|d| has_unnecessary_tag(d)).collect();
+
+    assert!(
+        unnecessary.is_empty(),
+        "Aliased import used in attribute with static constant should NOT be flagged as unused, got: {:?}",
+        unnecessary
+    );
+}
+
+/// A non-aliased import used in an attribute should also work correctly.
+#[test]
+fn non_aliased_import_used_in_attribute_not_flagged() {
+    let backend = create_test_backend();
+    let uri = "file:///test_non_aliased_attr.php";
+    let text = r#"<?php
+namespace App;
+
+use Symfony\Component\Serializer\Attribute\SerializedName;
+
+class Dto {
+    public function __construct(
+        #[SerializedName('product')]
+        public string $id,
+    ) {}
+}
+"#;
+
+    let diags = unused_import_diagnostics(&backend, uri, text);
+    let unnecessary: Vec<_> = diags.iter().filter(|d| has_unnecessary_tag(d)).collect();
+
+    assert!(
+        unnecessary.is_empty(),
+        "Import used in attribute should NOT be flagged as unused, got: {:?}",
+        unnecessary
+    );
+}
