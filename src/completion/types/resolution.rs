@@ -224,17 +224,14 @@ fn type_hint_to_classes_typed_depth(
         ),
 
         // ── Generic type ───────────────────────────────────────────
-        PhpType::Generic(name, args) => {
-            let arg_strings: Vec<String> = args.iter().map(|a| a.to_string()).collect();
-            resolve_named_type(
-                name,
-                &arg_strings,
-                owning_class_name,
-                all_classes,
-                class_loader,
-                depth,
-            )
-        }
+        PhpType::Generic(name, args) => resolve_named_type(
+            name,
+            args,
+            owning_class_name,
+            all_classes,
+            class_loader,
+            depth,
+        ),
 
         // ── Array slice (T[]) ──────────────────────────────────────
         // Not a class type itself; skip.
@@ -260,7 +257,7 @@ fn type_hint_to_classes_typed_depth(
 /// substitution.
 fn resolve_named_type(
     name: &str,
-    generic_arg_strings: &[String],
+    generic_args: &[PhpType],
     owning_class_name: &str,
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
@@ -280,11 +277,10 @@ fn resolve_named_type(
 
     // ── self / static / $this ──────────────────────────────────────
     if matches!(name, "self" | "static" | "$this") {
-        if !generic_arg_strings.is_empty() {
+        if !generic_args.is_empty() {
             // `self<RuleError>` → rewrite to `OwningClass<RuleError>`.
-            let args_str = generic_arg_strings.join(", ");
-            let rewritten = format!("{}<{}>", owning_class_name, args_str);
-            return type_hint_to_classes_depth(
+            let rewritten = PhpType::Generic(owning_class_name.to_string(), generic_args.to_vec());
+            return type_hint_to_classes_typed_depth(
                 &rewritten,
                 owning_class_name,
                 all_classes,
@@ -321,18 +317,26 @@ fn resolve_named_type(
     }
 
     // ── Resolve static/self/$this inside generic arguments ────────
-    let resolved_generic_args: Vec<String> = generic_arg_strings
-        .iter()
-        .map(|arg| {
-            let trimmed = arg.trim();
-            if trimmed == "static" || trimmed == "self" || trimmed == "$this" {
-                owning_class_name.to_string()
-            } else {
-                trimmed.to_string()
-            }
-        })
-        .collect();
-    let generic_args: Vec<&str> = resolved_generic_args.iter().map(|s| s.as_str()).collect();
+    let resolved_generic_args: Vec<PhpType>;
+    let generic_args: &[PhpType] = if generic_args.iter().any(
+        |a| matches!(a, PhpType::Named(n) if matches!(n.as_str(), "static" | "self" | "$this")),
+    ) {
+        resolved_generic_args = generic_args
+            .iter()
+            .map(|arg| {
+                if let PhpType::Named(n) = arg
+                    && matches!(n.as_str(), "static" | "self" | "$this")
+                {
+                    PhpType::Named(owning_class_name.to_string())
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect();
+        &resolved_generic_args
+    } else {
+        generic_args
+    };
 
     let short = short_name(name);
 
@@ -347,7 +351,7 @@ fn resolve_named_type(
             let cls = laravel::try_swap_custom_collection(
                 cls,
                 name,
-                &generic_args,
+                generic_args,
                 all_classes,
                 class_loader,
             );
@@ -360,7 +364,7 @@ fn resolve_named_type(
                 } else {
                     virtual_members::resolve_class_fully(&cls, class_loader)
                 };
-                let mut result = apply_generic_args(&resolved, &generic_args);
+                let mut result = apply_generic_args(&resolved, generic_args);
 
                 // ── Template-param mixin resolution ────────────────
                 // When a class declares `@mixin TParam` where `TParam`
@@ -369,7 +373,7 @@ fn resolve_named_type(
                 // is not yet known.  Now that generic args are concrete,
                 // resolve those mixins and merge their members.
                 if cls.mixins.iter().any(|m| cls.template_params.contains(m)) {
-                    let subs = build_generic_subs(&cls, &generic_args);
+                    let subs = build_generic_subs(&cls, generic_args);
                     if !subs.is_empty() {
                         let mixin_members = virtual_members::phpdoc::resolve_template_param_mixins(
                             &cls,
@@ -387,7 +391,7 @@ fn resolve_named_type(
                     &mut result,
                     &cls,
                     name,
-                    &generic_args,
+                    generic_args,
                     class_loader,
                 );
 
@@ -401,7 +405,7 @@ fn resolve_named_type(
                 laravel::try_inject_mixin_builder_scopes(
                     &mut result,
                     &cls,
-                    &generic_args,
+                    generic_args,
                     class_loader,
                 );
 
@@ -425,9 +429,8 @@ fn resolve_named_type(
                 && owner.template_params.contains(&short.to_string())
                 && let Some(bound) = owner.template_param_bounds.get(short)
             {
-                let bound_str = bound.to_string();
-                return type_hint_to_classes_depth(
-                    &bound_str,
+                return type_hint_to_classes_typed_depth(
+                    bound,
                     owning_class_name,
                     all_classes,
                     class_loader,

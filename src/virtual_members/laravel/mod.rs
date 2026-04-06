@@ -113,6 +113,7 @@ use casts::cast_type_to_php_type;
 pub use factory::LaravelFactoryProvider;
 pub(crate) use factory::{factory_to_model_fqn, model_to_factory_fqn};
 
+use crate::php_type::PhpType;
 use crate::types::{ClassInfo, PropertyInfo};
 
 use super::{ResolvedClassCache, VirtualMemberProvider, VirtualMembers};
@@ -151,7 +152,7 @@ pub const ELOQUENT_BUILDER_FQN: &str = "Illuminate\\Database\\Eloquent\\Builder"
 pub(crate) fn try_swap_custom_collection(
     cls: ClassInfo,
     base_fqn: &str,
-    generic_args: &[&str],
+    generic_args: &[PhpType],
     all_classes: &[Arc<ClassInfo>],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) -> ClassInfo {
@@ -160,10 +161,10 @@ pub(crate) fn try_swap_custom_collection(
     }
 
     // The last generic arg is typically the model type.
-    let model_arg = generic_args.last().unwrap();
-    let model_class = find_class_in(all_classes, model_arg)
+    let model_arg = generic_args.last().unwrap().to_string();
+    let model_class = find_class_in(all_classes, &model_arg)
         .cloned()
-        .or_else(|| class_loader(model_arg).map(Arc::unwrap_or_clone));
+        .or_else(|| class_loader(&model_arg).map(Arc::unwrap_or_clone));
 
     if let Some(ref mc) = model_class
         && let Some(coll_name) = mc.laravel().and_then(|l| l.custom_collection.as_ref())
@@ -200,7 +201,7 @@ pub(crate) fn try_inject_builder_scopes(
     result: &mut ClassInfo,
     raw_cls: &ClassInfo,
     base_fqn: &str,
-    generic_args: &[&str],
+    generic_args: &[PhpType],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) {
     if !is_eloquent_builder_fqn(base_fqn, raw_cls) || generic_args.is_empty() {
@@ -208,9 +209,9 @@ pub(crate) fn try_inject_builder_scopes(
     }
 
     // The first (or only) generic arg is the model type.
-    let model_arg = generic_args.first().unwrap();
+    let model_arg = generic_args.first().unwrap().to_string();
 
-    inject_scopes_and_model_methods(result, model_arg, class_loader);
+    inject_scopes_and_model_methods(result, &model_arg, class_loader);
 }
 
 /// Inject scope methods and model virtual methods onto a class that has
@@ -232,12 +233,11 @@ pub(crate) fn try_inject_builder_scopes(
 pub(crate) fn try_inject_mixin_builder_scopes(
     result: &mut ClassInfo,
     raw_cls: &ClassInfo,
-    generic_args: &[&str],
+    generic_args: &[PhpType],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
 ) {
     use std::collections::HashMap;
 
-    use crate::php_type::PhpType;
     use crate::types::MAX_INHERITANCE_DEPTH;
     use crate::util::short_name;
 
@@ -252,7 +252,7 @@ pub(crate) fn try_inject_mixin_builder_scopes(
     let mut root_subs: HashMap<String, PhpType> = HashMap::new();
     for (i, param_name) in raw_cls.template_params.iter().enumerate() {
         if let Some(arg) = generic_args.get(i) {
-            root_subs.insert(param_name.clone(), PhpType::parse(arg));
+            root_subs.insert(param_name.clone(), arg.clone());
         }
     }
 

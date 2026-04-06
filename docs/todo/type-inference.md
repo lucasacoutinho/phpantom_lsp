@@ -627,40 +627,6 @@ This runs for every method/static call in an assignment RHS.
 
 ---
 
-## T28. Accept `&[PhpType]` in generic-arg resolution
-**Impact: Medium · Effort: Medium**
-
-In `completion/types/resolution.rs`, when handling
-`PhpType::Generic(name, args)`, the args are converted back to strings
-so they can be passed to `build_generic_subs()` and
-`apply_generic_args()` in `inheritance.rs`, which accept `&[&str]`.
-Those functions then re-parse each arg via `PhpType::parse()`.
-
-The same pattern appears in `resolve_named_type()` where template
-bound lookups stringify a `PhpType` to re-enter the string-based
-resolution path (~L425, L428).
-
-**What to change:**
-
-1. Change `build_generic_subs()` and `apply_generic_args()` in
-   `inheritance.rs` to accept `&[PhpType]` instead of `&[&str]`.
-   Remove the internal `PhpType::parse()` calls.
-
-2. Update `type_hint_to_classes_typed_depth()` to pass the generic
-   args as `&[PhpType]` directly instead of stringifying them.
-
-3. Update `resolve_named_type()` to use `PhpType` values for template
-   bound lookups instead of round-tripping through strings.
-
-4. Remove the `apply_substitution()` string shim in `inheritance.rs`
-   (~L972-1000) once all callers work with `PhpType` directly.
-
-**Files:** `src/inheritance.rs`, `src/completion/types/resolution.rs`.
-
-**Part of:** T19.
-
----
-
 ## T29. Migrate `type_strings_joined` call sites to `types_joined`
 **Impact: Medium · Effort: Low**
 

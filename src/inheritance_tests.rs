@@ -453,7 +453,7 @@ fn test_apply_generic_args_right_aligns_single_arg_for_collection() {
         ..ClassInfo::default()
     };
 
-    let result = apply_generic_args(&collection, &["SectionTranslation"]);
+    let result = apply_generic_args(&collection, &[PhpType::parse("SectionTranslation")]);
 
     let first = result
         .methods
@@ -478,7 +478,10 @@ fn test_apply_generic_args_no_right_align_when_all_args_provided() {
         ..ClassInfo::default()
     };
 
-    let result = apply_generic_args(&collection, &["int", "User"]);
+    let result = apply_generic_args(
+        &collection,
+        &[PhpType::parse("int"), PhpType::parse("User")],
+    );
 
     let first = result
         .methods
@@ -499,7 +502,7 @@ fn test_apply_generic_args_no_right_align_without_key_bound() {
         ..ClassInfo::default()
     };
 
-    let result = apply_generic_args(&cls, &["Foo"]);
+    let result = apply_generic_args(&cls, &[PhpType::parse("Foo")]);
 
     let first = result
         .methods
@@ -524,7 +527,7 @@ fn test_apply_generic_args_right_align_with_int_bound() {
         ..ClassInfo::default()
     };
 
-    let result = apply_generic_args(&cls, &["Product"]);
+    let result = apply_generic_args(&cls, &[PhpType::parse("Product")]);
 
     let get = result
         .methods

@@ -456,17 +456,11 @@ fn resolve_rhs_instantiation(
                     let rctx = ctx.as_resolution_ctx();
                     let subs = build_constructor_template_subs(cls, ctor, &text_args, &rctx, ctx);
                     if !subs.is_empty() {
-                        let type_arg_strings: Vec<String> = cls
+                        let type_args: Vec<PhpType> = cls
                             .template_params
                             .iter()
-                            .map(|p| {
-                                subs.get(p)
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| p.clone())
-                            })
+                            .map(|p| subs.get(p).cloned().unwrap_or_else(|| PhpType::parse(p)))
                             .collect();
-                        let type_args: Vec<&str> =
-                            type_arg_strings.iter().map(|s| s.as_str()).collect();
                         let resolved =
                             crate::virtual_members::resolve_class_fully(cls, ctx.class_loader);
                         let mut substituted =

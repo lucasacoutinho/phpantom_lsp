@@ -1009,7 +1009,7 @@ pub(crate) fn apply_substitution<'a>(
 /// `template_params` or `type_args` is empty).
 pub(crate) fn build_generic_subs(
     class: &ClassInfo,
-    type_args: &[&str],
+    type_args: &[PhpType],
 ) -> HashMap<String, PhpType> {
     if class.template_params.is_empty() || type_args.is_empty() {
         return HashMap::new();
@@ -1044,7 +1044,7 @@ pub(crate) fn build_generic_subs(
             continue;
         }
         if let Some(arg) = type_args.get(i - offset) {
-            subs.insert(param_name.clone(), PhpType::parse(arg));
+            subs.insert(param_name.clone(), arg.clone());
         }
     }
 
@@ -1064,10 +1064,10 @@ pub(crate) fn build_generic_subs(
 /// # Example
 ///
 /// Given a `Collection` class with `@template TKey` and `@template TValue`,
-/// calling `apply_generic_args(&collection_class, &["int", "User"])` will
-/// substitute every occurrence of `TKey` with `int` and `TValue` with `User`
+/// calling `apply_generic_args(&collection_class, &[PhpType::parse("int"), PhpType::parse("User")])`
+/// will substitute every occurrence of `TKey` with `int` and `TValue` with `User`
 /// in the class's methods and properties.
-pub(crate) fn apply_generic_args(class: &ClassInfo, type_args: &[&str]) -> ClassInfo {
+pub(crate) fn apply_generic_args(class: &ClassInfo, type_args: &[PhpType]) -> ClassInfo {
     let subs = build_generic_subs(class, type_args);
 
     if subs.is_empty() {

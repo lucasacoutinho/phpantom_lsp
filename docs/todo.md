@@ -24,7 +24,6 @@ within the same impact tier.
 | #   | Item                                                                                                                                                      | Impact | Effort     |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ | ---------- |
 | T27 | [Keep substituted return types as `PhpType` in RHS resolution](todo/type-inference.md#t27-keep-substituted-return-types-as-phptype-in-rhs-resolution)     | High   | Low        |
-| T28 | [Accept `&[PhpType]` in generic-arg resolution](todo/type-inference.md#t28-accept-phptype-in-generic-arg-resolution)                                     | Medium | Medium     |
 | T29 | [Migrate `type_strings_joined` call sites to `types_joined`](todo/type-inference.md#t29-migrate-type_strings_joined-call-sites-to-types_joined)           | Medium | Low        |
 | T30 | [Thread `PhpType` through remaining string-based API boundaries](todo/type-inference.md#t30-thread-phptype-through-remaining-string-based-api-boundaries) | Medium | Medium     |
 |     | **Release 0.7.0**                                                                                                                                         |        |            |
