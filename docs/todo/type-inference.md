@@ -328,7 +328,7 @@ $one->  // should see Foo members
 ---
 
 ## T12. Intersection types flattened to unions by `type_strings_joined`
-**Impact: Low-Medium · Effort: Low (after M4)**
+**Impact: Low-Medium · Effort: Low**
 
 `ResolvedType::type_strings_joined` joins all resolved type entries
 with `|`. When a variable has an intersection type (`A&B`), the
@@ -350,10 +350,10 @@ function measure(Countable&Serializable $thing): void {
 // `Countable&Serializable $thing`.
 ```
 
-**Blocked by M4.** The fix requires `PhpType::Intersection` from the
-mago-type-syntax migration. The current `Vec<ResolvedType>` has no way
-to distinguish "these types form an intersection" from "these types
-form a union". With `PhpType`, the intersection is a single tree node.
+**No longer blocked.** `PhpType::Intersection` already exists.
+`ResolvedType::types_joined()` returns a `PhpType` that preserves
+intersection structure. This will be naturally fixed when T29 migrates
+all `type_strings_joined` call sites to `types_joined`.
 
 **After fixing:** verify that extract function docblock generation
 preserves intersection types in both the native hint and the `@param`
@@ -415,38 +415,25 @@ emits the concrete callable signature in the `@param` tag.
 ## T19. Structured type representation
 **Impact: High · Effort: Very High**
 
-PHPantom represents types as strings (e.g. `"Collection<string>|null"`)
-and manipulates them via string splitting, regex, and concatenation.
-PHPStan, Psalm, and Mago all use structured type trees (enums/classes)
-where each type is a node with typed children. This causes:
+**Status: partially complete.** The `PhpType` enum exists in
+`src/php_type.rs` with full parsing via `mago-type-syntax`, a rich
+method set (substitution, extraction, display, name resolution), and
+is already used as the primary representation in core data structures
+(`MethodInfo.return_type`, `PropertyInfo.type_hint`,
+`ParameterInfo.type_hint`, `ResolvedType.type_string`). Template
+substitution, type narrowing, and inheritance merging all operate on
+`PhpType` values.
 
-- Fragile parsing on every type comparison or manipulation
-- No proper subtype checking (can't answer "is `Cat` a subtype of
-  `Animal`?")
-- String-based template substitution that breaks on nested generics
-- No union simplification (`string|string` stays as-is, `true|false`
-  doesn't merge to `bool`)
-- Intersection types can't be properly distributed over unions
+The remaining work is eliminating `PhpType -> String -> PhpType`
+round-trips at internal API boundaries. Many functions still accept
+`&str` or return `Option<String>` for types, forcing callers to
+stringify and downstream consumers to re-parse. The concrete migration
+tasks are tracked as T26 through T30.
 
-A structured type representation (a Rust `enum PhpType`) would
-eliminate these issues. PHPantom already has `PhpType` via
-`mago-type-syntax` for parsing. The gap is using it as the primary
-representation throughout the resolution pipeline instead of raw
-strings.
-
-**Migration path:** incremental. Start by making the hottest paths
-(template substitution, type narrowing) operate on `PhpType` values
-instead of strings, converting at the boundary. Expand outward over
-time.
-
-**Reference:** PHPStan's `Type` interface (~120 methods), Psalm's
-`Union`/`Atomic` hierarchy, Mago's `TUnion`/`TAtomic` enum. All three
-converge on the same architecture.
-
-**Note:** the `mago-type-syntax` integration tracked in `refactor.md`
-is a stepping stone toward this. The remaining items there
-(`ArrayShapeEntry.value_type` to `PhpType`, `split_type_token`
-replacement) should be completed first.
+Subtype checking (`is Cat a subtype of Animal?`), union simplification
+(`string|string`, `true|false -> bool`), and intersection distribution
+over unions remain unimplemented and are out of scope for the API
+boundary cleanup.
 
 ---
 
@@ -604,3 +591,211 @@ hover, diagnostics) once the forward walker covers enough cases.
 statement analyzers. Both converge on the same architecture: the
 scope is the single source of truth, populated eagerly as the walk
 progresses.
+
+---
+
+## T26. Carry `PhpType` through bracket-access segment walks
+**Impact: High · Effort: Low**
+
+In `rhs_resolution.rs` (`resolve_rhs_array_access`, ~L885-915), the
+bracket-access segment walk carries `current_type` as a `String`. On
+every iteration it re-parses to `PhpType`, calls `.shape_value_type()`
+or `.extract_value_type()`, then stringifies the result to continue.
+For chained access like `$result['items'][0]['name']` this produces a
+`PhpType -> String -> PhpType` round-trip per bracket level.
+
+A similar pattern exists in `resolver.rs`
+(`try_chained_array_access_with_candidates`) where candidates arrive
+as `String` even though callers already have `PhpType` values.
+
+**What to change:**
+
+1. In `resolve_rhs_array_access`, change `current_type` from `String`
+   to `PhpType`. Call `.shape_value_type()` / `.extract_value_type()`
+   directly and assign the result without stringifying. Only convert
+   to string at the end for the final `type_hint_to_classes` call.
+
+2. In `resolver.rs`, change `try_chained_array_access_with_candidates`
+   to accept `PhpType` candidates instead of `String`. Update the
+   callers (`resolve_target_classes_expr` ArrayAccess branch,
+   `resolve_property_type_hint` call site) to pass `PhpType` directly
+   instead of stringifying.
+
+**Files:** `src/completion/variable/rhs_resolution.rs`,
+`src/completion/resolver.rs`.
+
+**Part of:** T19 (structured type representation migration).
+
+---
+
+## T27. Keep substituted return types as `PhpType` in RHS resolution
+**Impact: High · Effort: Low**
+
+In `rhs_resolution.rs`, `resolve_rhs_method_call_inner` (~L1699-1726)
+and `resolve_rhs_static_call` (~L1895-1916) produce a `PhpType` via
+`substitute() -> replace_self()`, then stringify it, only for the
+caller to immediately re-parse with `PhpType::parse(hint)`:
+
+```
+let substituted = ret.substitute(&subs).replace_self(&owner.name);
+let ret_type_string = substituted.to_string();  // stringify
+// ...
+ResolvedType::from_classes_with_hint(classes, PhpType::parse(hint))  // re-parse
+```
+
+This runs for every method/static call in an assignment RHS.
+
+**What to change:**
+
+1. Keep `ret_type_string` as `Option<PhpType>` instead of
+   `Option<String>` in both functions.
+
+2. Pass the `PhpType` directly to `from_classes_with_hint` (which
+   already accepts `PhpType`).
+
+3. Apply the same fix in `resolve_rhs_static_call`.
+
+**Files:** `src/completion/variable/rhs_resolution.rs`.
+
+**Part of:** T19.
+
+---
+
+## T28. Accept `&[PhpType]` in generic-arg resolution
+**Impact: Medium · Effort: Medium**
+
+In `completion/types/resolution.rs`, when handling
+`PhpType::Generic(name, args)`, the args are converted back to strings
+so they can be passed to `build_generic_subs()` and
+`apply_generic_args()` in `inheritance.rs`, which accept `&[&str]`.
+Those functions then re-parse each arg via `PhpType::parse()`.
+
+The same pattern appears in `resolve_named_type()` where template
+bound lookups stringify a `PhpType` to re-enter the string-based
+resolution path (~L425, L428).
+
+**What to change:**
+
+1. Change `build_generic_subs()` and `apply_generic_args()` in
+   `inheritance.rs` to accept `&[PhpType]` instead of `&[&str]`.
+   Remove the internal `PhpType::parse()` calls.
+
+2. Update `type_hint_to_classes_typed_depth()` to pass the generic
+   args as `&[PhpType]` directly instead of stringifying them.
+
+3. Update `resolve_named_type()` to use `PhpType` values for template
+   bound lookups instead of round-tripping through strings.
+
+4. Remove the `apply_substitution()` string shim in `inheritance.rs`
+   (~L972-1000) once all callers work with `PhpType` directly.
+
+**Files:** `src/inheritance.rs`, `src/completion/types/resolution.rs`.
+
+**Part of:** T19.
+
+---
+
+## T29. Migrate `type_strings_joined` call sites to `types_joined`
+**Impact: Medium · Effort: Low**
+
+`ResolvedType::types_joined()` returns a structured `PhpType` and was
+created as the replacement for `type_strings_joined()`, which joins
+types into a `String` with `|` separators. The string variant is still
+called in ~12 places across the resolution pipeline:
+
+- `resolver.rs` (2 call sites)
+- `resolution.rs` / variable resolution (3 call sites)
+- `rhs_resolution.rs` (1 call site)
+- `call_resolution.rs` (1 call site)
+- `foreach_resolution.rs` (1 call site)
+- `array_shape.rs` (1 call site)
+- `fix_return_type.rs` (1 call site)
+
+Each produces a `String` that is later re-parsed by downstream
+consumers.
+
+**What to change:**
+
+1. At each call site, replace `type_strings_joined` with
+   `types_joined` and thread the resulting `PhpType` through to the
+   consumer.
+
+2. Where the consumer is a function that accepts `&str` (e.g.
+   `check_unresolvable_class_name`), change that function to accept
+   `&PhpType`.
+
+3. Once all call sites are migrated, remove `type_strings_joined`
+   entirely (or mark it `#[deprecated]` first if external tests use
+   it).
+
+**Files:** `src/completion/resolver.rs`,
+`src/completion/variable/resolution.rs`,
+`src/completion/variable/rhs_resolution.rs`,
+`src/completion/call_resolution.rs`,
+`src/completion/variable/foreach_resolution.rs`,
+`src/completion/array_shape.rs`,
+`src/code_actions/phpstan/fix_return_type.rs`,
+`src/types.rs`.
+
+**Part of:** T19.
+
+---
+
+## T30. Thread `PhpType` through remaining string-based API boundaries
+**Impact: Medium · Effort: Medium**
+
+Several internal APIs accept `&str` or `Option<String>` for types when
+their callers already have a `PhpType`. This creates parse-on-entry
+overhead and loses structural information. The items below can be done
+independently in any order.
+
+### `VarResolutionCtx.enclosing_return_type`
+
+In `resolver.rs` (~L128), `enclosing_return_type` is `Option<String>`.
+It is parsed with `PhpType::parse()` every time it is consumed (e.g.
+for `generator_send_type()` during yield inference). Change to
+`Option<PhpType>` and parse once at construction.
+
+### `resolve_type_alias()` return type
+
+In `completion/types/resolution.rs` (~L462-544), type alias
+definitions are stored as `PhpType` in `TypeAliasDef::Local(PhpType)`
+but immediately stringified to return `Option<String>`. Change to
+return `Option<PhpType>`.
+
+### `is_type_subclass_of()` base name extraction
+
+In `call_resolution.rs` (~L1054-1143), a `PhpType` is stringified
+then split on `<` and stripped of `\\` to get the base class name. Use
+`PhpType::base_name()` instead.
+
+### Shape/list builders in variable resolution
+
+In `resolution.rs`, `merge_shape_key()`, `merge_push_type()`, and
+`merge_keyed_type()` build type strings via `format!("array{{...}}")`
+and `format!("list<...>")` that are immediately re-parsed. Build
+`PhpType::ArrayShape(entries)` and `PhpType::Generic("list", ...)`
+directly.
+
+### Hover formatting entry points
+
+In `hover/formatting.rs`, `build_var_annotation()` and
+`build_param_return_section()` accept `Option<&str>` (produced by
+`type_hint_str()` which stringifies a `PhpType`), then immediately
+re-parse. Change to accept `Option<&PhpType>`.
+
+### `type_hint_to_classes_depth()` string preprocessing
+
+In `completion/types/resolution.rs` (~L88-128), `strip_nullable()`
+and parenthesis stripping are done via string manipulation before
+parsing. `PhpType::parse()` already handles `?Foo` and `(A&B)|C`
+natively, making this preprocessing redundant. Parse first, then
+handle alias resolution on the parsed result.
+
+**Files:** `src/completion/resolver.rs`,
+`src/completion/types/resolution.rs`,
+`src/completion/call_resolution.rs`,
+`src/completion/variable/resolution.rs`,
+`src/hover/formatting.rs`.
+
+**Part of:** T19.
