@@ -1708,8 +1708,8 @@ fn resolve_rhs_method_call_inner<'b>(
                     None
                 };
                 match receiver_type {
-                    Some(rt) => substituted.replace_self_with_type(&rt).to_string(),
-                    None => substituted.replace_self(&owner.name).to_string(),
+                    Some(rt) => substituted.replace_self_with_type(&rt),
+                    None => substituted.replace_self(&owner.name),
                 }
             });
 
@@ -1722,9 +1722,7 @@ fn resolve_rhs_method_call_inner<'b>(
         if !results.is_empty() {
             let classes: Vec<ClassInfo> = results.into_iter().map(Arc::unwrap_or_clone).collect();
             return match ret_type_string {
-                Some(ref hint) => {
-                    ResolvedType::from_classes_with_hint(classes, PhpType::parse(hint))
-                }
+                Some(hint) => ResolvedType::from_classes_with_hint(classes, hint),
                 None => ResolvedType::from_classes(classes),
             };
         }
@@ -1743,14 +1741,17 @@ fn resolve_rhs_method_call_inner<'b>(
         // `@phpstan-type UserList array<int, User>` with
         // `@return UserList` is expanded to its concrete type.
         if let Some(ref hint) = ret_type_string {
+            let hint_str = hint.to_string();
             let expanded = crate::completion::type_resolution::resolve_type_alias(
-                hint,
+                &hint_str,
                 &owner.name,
                 ctx.all_classes,
                 ctx.class_loader,
             );
-            let effective = expanded.as_deref().unwrap_or(hint);
-            let parsed_effective = PhpType::parse(effective);
+            let parsed_effective = match expanded {
+                Some(ref e) => PhpType::parse(e),
+                None => hint.clone(),
+            };
             if parsed_effective == PhpType::Named("void".into()) {
                 return vec![ResolvedType::from_type_string(PhpType::Named(
                     "null".into(),
@@ -1893,7 +1894,7 @@ fn resolve_rhs_static_call(
                     } else {
                         ret.clone()
                     };
-                    substituted.replace_self(&owner.name).to_string()
+                    substituted.replace_self(&owner.name)
                 });
 
             let results = Backend::resolve_method_return_types_with_args(
@@ -1906,9 +1907,7 @@ fn resolve_rhs_static_call(
                 let classes: Vec<ClassInfo> =
                     results.into_iter().map(Arc::unwrap_or_clone).collect();
                 return match ret_type_string {
-                    Some(ref hint) => {
-                        ResolvedType::from_classes_with_hint(classes, PhpType::parse(hint))
-                    }
+                    Some(hint) => ResolvedType::from_classes_with_hint(classes, hint),
                     None => ResolvedType::from_classes(classes),
                 };
             }
@@ -1919,13 +1918,12 @@ fn resolve_rhs_static_call(
             // that consumers reading `.type_string` (hover, raw-type
             // pipeline, null-coalesce stripping) still get the information.
             if let Some(ref hint) = ret_type_string {
-                let parsed_hint = PhpType::parse(hint);
-                if parsed_hint == PhpType::Named("void".into()) {
+                if *hint == PhpType::Named("void".into()) {
                     return vec![ResolvedType::from_type_string(PhpType::Named(
                         "null".into(),
                     ))];
                 }
-                return vec![ResolvedType::from_type_string(parsed_hint)];
+                return vec![ResolvedType::from_type_string(hint.clone())];
             }
         }
     }

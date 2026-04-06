@@ -428,7 +428,7 @@ The remaining work is eliminating `PhpType -> String -> PhpType`
 round-trips at internal API boundaries. Many functions still accept
 `&str` or return `Option<String>` for types, forcing callers to
 stringify and downstream consumers to re-parse. The concrete migration
-tasks are tracked as T27 through T30.
+tasks are tracked as T29 and T30.
 
 Subtype checking (`is Cat a subtype of Animal?`), union simplification
 (`string|string`, `true|false -> bool`), and intersection distribution
@@ -591,39 +591,6 @@ hover, diagnostics) once the forward walker covers enough cases.
 statement analyzers. Both converge on the same architecture: the
 scope is the single source of truth, populated eagerly as the walk
 progresses.
-
----
-
-## T27. Keep substituted return types as `PhpType` in RHS resolution
-**Impact: High · Effort: Low**
-
-In `rhs_resolution.rs`, `resolve_rhs_method_call_inner` (~L1699-1726)
-and `resolve_rhs_static_call` (~L1895-1916) produce a `PhpType` via
-`substitute() -> replace_self()`, then stringify it, only for the
-caller to immediately re-parse with `PhpType::parse(hint)`:
-
-```
-let substituted = ret.substitute(&subs).replace_self(&owner.name);
-let ret_type_string = substituted.to_string();  // stringify
-// ...
-ResolvedType::from_classes_with_hint(classes, PhpType::parse(hint))  // re-parse
-```
-
-This runs for every method/static call in an assignment RHS.
-
-**What to change:**
-
-1. Keep `ret_type_string` as `Option<PhpType>` instead of
-   `Option<String>` in both functions.
-
-2. Pass the `PhpType` directly to `from_classes_with_hint` (which
-   already accepts `PhpType`).
-
-3. Apply the same fix in `resolve_rhs_static_call`.
-
-**Files:** `src/completion/variable/rhs_resolution.rs`.
-
-**Part of:** T19.
 
 ---
 
