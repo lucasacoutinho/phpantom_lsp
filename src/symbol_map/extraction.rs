@@ -2752,6 +2752,7 @@ fn is_assert_instanceof(expr: &Expression<'_>) -> bool {
             Expression::Identifier(ident) => ident.value(),
             _ => return false,
         };
+        let func_name = func_name.strip_prefix('\\').unwrap_or(func_name);
         if !func_name.eq_ignore_ascii_case("assert") {
             return false;
         }

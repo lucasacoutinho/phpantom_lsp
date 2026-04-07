@@ -101,6 +101,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Array shape tracking from keyed assignments inside conditional branches.** Shape types built incrementally with variable keys inside loops with if/else branching are now preserved through foreach iteration.
 - **Deprecated class in `implements` renders with strikethrough.** Deprecated classes referenced in `implements` clauses are correctly tagged.
 - **Interleaved array access and property chains no longer produce false positives.** Expressions like `$results[$i]->activities[$id]->extras` where array subscript and property access alternate were incorrectly parsed, causing the intermediate property chain to be dropped. This led to "Property not found on class" false positives when the element type was resolved but the subsequent property lookup was skipped.
+- **FQN `\assert()` now narrows types.** Writing `\assert($var instanceof Foo)` with a leading backslash was not recognized as an instanceof narrowing, causing false-positive "property not found" diagnostics after the assertion.
 
 ## [0.6.0] - 2026-03-26
 

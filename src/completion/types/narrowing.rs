@@ -1057,11 +1057,12 @@ fn try_extract_assert_instanceof<'b>(
         other => other,
     };
     if let Expression::Call(Call::Function(func_call)) = expr {
-        let func_name = match func_call.function {
-            Expression::Identifier(ident) => ident.value().to_string(),
+        let func_name_raw = match func_call.function {
+            Expression::Identifier(ident) => ident.value(),
             _ => return None,
         };
-        if func_name != "assert" {
+        let func_name = func_name_raw.strip_prefix('\\').unwrap_or(func_name_raw);
+        if !func_name.eq_ignore_ascii_case("assert") {
             return None;
         }
         // The first argument should be the instanceof expression
@@ -1091,11 +1092,12 @@ fn try_extract_assert_compound_or_instanceof<'b>(
         other => other,
     };
     if let Expression::Call(Call::Function(func_call)) = expr {
-        let func_name = match func_call.function {
-            Expression::Identifier(ident) => ident.value().to_string(),
+        let func_name_raw = match func_call.function {
+            Expression::Identifier(ident) => ident.value(),
             _ => return None,
         };
-        if func_name != "assert" {
+        let func_name = func_name_raw.strip_prefix('\\').unwrap_or(func_name_raw);
+        if !func_name.eq_ignore_ascii_case("assert") {
             return None;
         }
         if let Some(first_arg) = func_call.argument_list.arguments.iter().next() {

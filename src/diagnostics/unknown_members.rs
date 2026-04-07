@@ -2078,6 +2078,73 @@ class Test {
     }
 
     #[test]
+    fn no_diagnostic_for_fqn_assert_instanceof() {
+        // `\assert($item instanceof Entity)` — the leading backslash
+        // is the global-namespace FQN form.  It should narrow the
+        // variable type identically to the unqualified `assert()`.
+        let php = r#"<?php
+/**
+ * @method string getName()
+ */
+class Entity {
+    public function __call(string $name, array $args): mixed { return null; }
+}
+
+class Base {}
+
+class Test {
+    public function run(Base $item): void {
+        \assert($item instanceof Entity);
+        echo $item->getName();
+    }
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for FQN \\assert instanceof narrowing, got: {diags:?}",
+        );
+    }
+
+    #[test]
+    fn no_diagnostic_for_fqn_assert_with_interleaved_array_access() {
+        // Combines both fixes: FQN `\assert()` narrowing and
+        // interleaved array-access/property-chain resolution.
+        // Reproduces the exact pattern from the bug report.
+        let php = r#"<?php
+class FormError {
+    public function getMessage(): string { return ''; }
+}
+
+class FormChild {
+    public function getName(): string { return ''; }
+}
+
+/** @var \Iterator<int, mixed> */
+$errorIterator = new \ArrayIterator([]);
+/** @var FormChild $child */
+$child = new FormChild();
+/** @var array<string, list<string>> */
+$errors = [];
+
+foreach ($errorIterator as $error) {
+    \assert(
+        $error instanceof FormError,
+        'Error is not a FormError!',
+    );
+    $errors[$child->getName()][] = $error->getMessage();
+}
+"#;
+        let backend = Backend::new_test();
+        let diags = collect(&backend, "file:///test.php", php);
+        assert!(
+            diags.is_empty(),
+            "expected no diagnostics for FQN \\assert with interleaved array access, got: {diags:?}",
+        );
+    }
+
+    #[test]
     fn no_diagnostic_for_phpdoc_members_after_instanceof_narrowing() {
         let php = r#"<?php
 /**
