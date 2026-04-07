@@ -971,6 +971,9 @@ impl PhpType {
                 }
             }
             PhpType::Nullable(inner) => inner.extract_value_type(skip_scalar),
+            PhpType::Union(members) => members
+                .iter()
+                .find_map(|m| m.extract_value_type(skip_scalar)),
             _ => None,
         }
     }
@@ -996,6 +999,7 @@ impl PhpType {
                 }
             }
             PhpType::Nullable(inner) => inner.extract_key_type(skip_scalar),
+            PhpType::Union(members) => members.iter().find_map(|m| m.extract_key_type(skip_scalar)),
             _ => None,
         }
     }
@@ -4300,6 +4304,44 @@ mod tests {
         assert!(ty.extract_value_type(true).is_none());
     }
 
+    #[test]
+    fn extract_value_type_union_with_generic_array() {
+        // User|array<User> — the array member carries the element type.
+        let ty = PhpType::parse("User|array<User>");
+        let val = ty.extract_value_type(true).unwrap();
+        assert_eq!(val, &PhpType::Named("User".to_owned()));
+    }
+
+    #[test]
+    fn extract_value_type_union_with_array_slice() {
+        // string|User[] — the array-slice member carries the element type.
+        let ty = PhpType::parse("string|User[]");
+        let val = ty.extract_value_type(true).unwrap();
+        assert_eq!(val, &PhpType::Named("User".to_owned()));
+    }
+
+    #[test]
+    fn extract_value_type_union_no_array_member() {
+        // string|int — no array-like member, so no value type.
+        let ty = PhpType::parse("string|int");
+        assert!(ty.extract_value_type(false).is_none());
+    }
+
+    #[test]
+    fn extract_value_type_union_skips_scalar_element() {
+        // User|array<int> — with skip_scalar=true, the int element is skipped.
+        let ty = PhpType::parse("User|array<int>");
+        assert!(ty.extract_value_type(true).is_none());
+    }
+
+    #[test]
+    fn extract_value_type_union_includes_scalar_element() {
+        // User|array<int> — with skip_scalar=false, the int element is returned.
+        let ty = PhpType::parse("User|array<int>");
+        let val = ty.extract_value_type(false).unwrap();
+        assert_eq!(val, &PhpType::Named("int".to_owned()));
+    }
+
     // ─── extract_key_type tests ─────────────────────────────────────────────
 
     #[test]
@@ -4332,6 +4374,21 @@ mod tests {
         let ty = PhpType::parse("array<Request, Response>");
         let key = ty.extract_key_type(true).unwrap();
         assert_eq!(*key, PhpType::Named("Request".to_owned()));
+    }
+
+    #[test]
+    fn extract_key_type_union_with_keyed_array() {
+        // User|array<string, User> — the array member carries the key type.
+        let ty = PhpType::parse("User|array<string, User>");
+        let key = ty.extract_key_type(false).unwrap();
+        assert_eq!(*key, PhpType::Named("string".to_owned()));
+    }
+
+    #[test]
+    fn extract_key_type_union_no_keyed_member() {
+        // string|int — no array-like member, so no key type.
+        let ty = PhpType::parse("string|int");
+        assert!(ty.extract_key_type(false).is_none());
     }
 
     // ─── non_null_type tests ────────────────────────────────────────────────

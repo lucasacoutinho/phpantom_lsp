@@ -418,3 +418,120 @@ async fn test_is_array_foreach_docblock_only() {
         methods
     );
 }
+
+// ── !is_array guard with reassignment, no inline @var ───────────────────
+// Same pattern but without the `/** @var array<User> $recipient */` hint.
+// The foreach pipeline should still resolve `$user` to `User` because
+// `$recipient` was reassigned to `[$recipient]` where `$recipient` was
+// narrowed to `User` by the `!is_array` guard.
+
+#[tokio::test]
+async fn test_not_is_array_reassignment_no_var_docblock() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///not_is_array_no_var.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $email = '';\n",
+        "    public function getName(): string { return ''; }\n",
+        "}\n",
+        "class Mailer {\n",
+        "    /**\n",
+        "     * @param User|array<User> $recipient\n",
+        "     */\n",
+        "    public function send(User|array $recipient): void {\n",
+        "        if (!\\is_array($recipient)) {\n",
+        "            $recipient = [$recipient];\n",
+        "        }\n",
+        "        foreach ($recipient as $user) {\n",
+        "            $user->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 14, 20).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getName"),
+        "After !is_array() guard with reassignment (no @var), foreach element should be User; got: {:?}",
+        methods
+    );
+}
+
+// ── Inline @var override on reassigned variable in foreach ───────────────
+// Simpler variant: no is_array guard, just an inline `@var` on the
+// reassigned variable.  Verifies the foreach pipeline picks up the
+// inline `@var` annotation on the iterated variable.
+
+#[tokio::test]
+async fn test_inline_var_override_on_reassigned_variable_foreach() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///inline_var_reassign.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $email = '';\n",
+        "    public function getName(): string { return ''; }\n",
+        "}\n",
+        "class Mailer {\n",
+        "    public function send(User|array $recipient): void {\n",
+        "        /** @var array<User> $recipient */\n",
+        "        $recipient = [$recipient];\n",
+        "        foreach ($recipient as $user) {\n",
+        "            $user->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 10, 20).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getName"),
+        "After inline @var override, foreach element should be User; got: {:?}",
+        methods
+    );
+}
+
+// ── !is_array guard with reassignment to array ──────────────────────────
+// Pattern: `if (!is_array($x)) { $x = [$x]; }` — after the if block,
+// $x is always `array<User>`, so foreach should yield `User`.
+
+#[tokio::test]
+async fn test_not_is_array_reassignment_to_array_foreach() {
+    let backend = create_test_backend();
+    let uri = Url::parse("file:///not_is_array_reassign.php").unwrap();
+    let text = concat!(
+        "<?php\n",
+        "class User {\n",
+        "    public string $email = '';\n",
+        "    public function getName(): string { return ''; }\n",
+        "}\n",
+        "class Mailer {\n",
+        "    /**\n",
+        "     * @param User|array<User> $recipient\n",
+        "     */\n",
+        "    public function send(User|array $recipient): void {\n",
+        "        if (!\\is_array($recipient)) {\n",
+        "            /** @var array<User> $recipient */\n",
+        "            $recipient = [$recipient];\n",
+        "        }\n",
+        "        foreach ($recipient as $user) {\n",
+        "            $user->\n",
+        "        }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    let items = complete_at(&backend, &uri, text, 15, 20).await;
+    let methods = method_names(&items);
+
+    assert!(
+        methods.contains(&"getName"),
+        "After !is_array() guard with reassignment, foreach element should be User; got: {:?}",
+        methods
+    );
+}
