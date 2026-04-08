@@ -2431,9 +2431,9 @@ async fn test_goto_definition_own_method_same_short_name_as_parent() {
 // ─── GTD self-reference suppression ─────────────────────────────────────────
 
 /// Ctrl+Click on a method name at its own declaration site should return
-/// `None` rather than jumping to itself.
+/// self-location so editors can fall back to Find References.
 #[tokio::test]
-async fn test_goto_definition_method_declaration_returns_none() {
+async fn test_goto_definition_method_declaration_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///self_ref_method.php").unwrap();
@@ -2471,17 +2471,19 @@ async fn test_goto_definition_method_declaration_returns_none() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "GTD on a method name at its declaration site should return None, got: {:?}",
-        result
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 2, "should point back to line 2");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 /// Ctrl+Click on a class name at its own declaration site should return
-/// `None` rather than jumping to itself.
+/// self-location so editors can fall back to Find References.
 #[tokio::test]
-async fn test_goto_definition_class_declaration_returns_none() {
+async fn test_goto_definition_class_declaration_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///self_ref_class.php").unwrap();
@@ -2516,11 +2518,13 @@ async fn test_goto_definition_class_declaration_returns_none() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "GTD on a class name at its declaration site should return None, got: {:?}",
-        result
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 1, "should point back to line 1");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 /// Ctrl+Click on a constant name inside its own `define()` call should

@@ -40,46 +40,9 @@ impl Backend {
         // Consult precomputed symbol map (retries one byte earlier for
         // end-of-token edge cases).
         let symbol = self.lookup_symbol_at_position(uri, content, position);
-        let result = if let Some(ref symbol) = symbol {
-            self.resolve_from_symbol(&symbol.kind, uri, content, position, symbol.start)
-        } else {
-            None
-        };
-
-        // ── Self-reference guard ────────────────────────────────────
-        // When the resolved location points back to the same file and
-        // the cursor is already within (or touching) the target range,
-        // the user is at the definition site.  Suppress the jump so
-        // that Ctrl+Click doesn't navigate to itself.
-        //
-        // Special case: zero-width (point) locations arise from
-        // `offset_to_position` and similar helpers that return the
-        // start of a construct (e.g. the `define` keyword) but the
-        // cursor may be anywhere on the same line (e.g. on the
-        // constant name inside the string argument).  For these we
-        // expand the check to the entire line.
-        if let Some(ref loc) = result
-            && let Ok(parsed_uri) = Url::parse(uri)
-            && loc.uri == parsed_uri
-        {
-            let is_point = loc.range.start == loc.range.end;
-            let within = if is_point {
-                // Zero-width target: suppress when cursor is on the same line.
-                position.line == loc.range.start.line
-            } else {
-                position.line >= loc.range.start.line
-                    && position.line <= loc.range.end.line
-                    && (position.line != loc.range.start.line
-                        || position.character >= loc.range.start.character)
-                    && (position.line != loc.range.end.line
-                        || position.character <= loc.range.end.character)
-            };
-            if within {
-                return None;
-            }
-        }
-
-        result
+        symbol
+            .as_ref()
+            .and_then(|s| self.resolve_from_symbol(&s.kind, uri, content, position, s.start))
     }
 
     /// Look up the symbol at the given byte offset in the precomputed
@@ -205,14 +168,19 @@ impl Backend {
                     // outer-scope lookup.
                     if def_kind != VarDefKind::ClosureCapture {
                         // The cursor is on a variable at its definition
-                        // site (assignment LHS, parameter, foreach
-                        // binding, catch binding, etc.).  GTD should not
-                        // trigger here — the user is already at the
-                        // definition.  Type hints next to the variable
-                        // (e.g. `Throwable` in `catch (Throwable $it)`)
-                        // are separate symbol spans that the user can
-                        // click directly.
-                        return None;
+                        // site.  Return the symbol's own location so
+                        // editors can fall back to Find References.
+                        let parsed_uri = Url::parse(uri).ok()?;
+                        let start =
+                            crate::util::offset_to_position(content, cursor_offset as usize);
+                        let end = crate::util::offset_to_position(
+                            content,
+                            cursor_offset as usize + 1 + name.len(),
+                        );
+                        return Some(Location {
+                            uri: parsed_uri,
+                            range: Range { start, end },
+                        });
                     }
                 }
 
@@ -275,11 +243,20 @@ impl Backend {
                 self.resolve_class_reference(uri, content, name, *is_fqn, cursor_offset)
             }
 
-            SymbolKind::ClassDeclaration { .. } | SymbolKind::MemberDeclaration { .. } => {
-                // The cursor is on a class/interface/trait/enum declaration
-                // name or a method/property/constant declaration name —
-                // the user is already at the definition site.
-                None
+            SymbolKind::ClassDeclaration { name } | SymbolKind::MemberDeclaration { name, .. } => {
+                // The cursor is on a declaration name.  Return the
+                // symbol's own location so that editors can detect
+                // "definition == current position" and fall back to
+                // Find References (e.g. VS Code's
+                // editor.gotoLocation.alternativeDefinitionCommand).
+                let parsed_uri = Url::parse(uri).ok()?;
+                let start = crate::util::offset_to_position(content, cursor_offset as usize);
+                let end =
+                    crate::util::offset_to_position(content, cursor_offset as usize + name.len());
+                Some(Location {
+                    uri: parsed_uri,
+                    range: Range { start, end },
+                })
             }
 
             SymbolKind::FunctionCall { name, .. } => {
