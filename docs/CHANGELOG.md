@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Faster startup.** Stub loading during initialization is significantly faster.
 - **More accurate generics resolution.** Type substitution and resolution for complex nested generic types is more correct, particularly for unions, intersections, array shapes, and deeply nested generic arguments.
 - **More accurate type predicates.** `NULL`, `Null`, and case variants of `null` are now handled consistently throughout type checking, matching PHP's case-insensitive treatment of type keywords.
+- **Go-to-definition at declaration sites returns the symbol's own location.** Class, member, and variable declaration names now return their own location instead of nothing, so editors that detect "definition == cursor" can automatically fall back to Find References. Contributed by @lucasacoutinho in https://github.com/AJenbo/phpantom_lsp/pull/76.
 
 ### Fixed
 

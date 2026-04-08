@@ -983,10 +983,10 @@ async fn test_goto_definition_variable_jumps_to_assignment() {
     }
 }
 
-/// When the cursor is already on the definition line (the assignment),
-/// go-to-definition should return None — the user is already there.
+/// When the cursor is on a variable at its definition site (the assignment),
+/// GTD should return the self-location so editors can fall back to Find References.
 #[tokio::test]
-async fn test_goto_definition_variable_on_definition_returns_none() {
+async fn test_goto_definition_variable_on_definition_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///var_goto_on_def.php").unwrap();
@@ -1021,10 +1021,13 @@ async fn test_goto_definition_variable_on_definition_returns_none() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "Should return None when cursor is already on the definition"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 2, "should point back to line 2");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 /// Go-to-definition on a variable should jump to a function parameter
@@ -1375,11 +1378,10 @@ async fn test_goto_definition_variable_foreach_key_value() {
 // ─── Type-Hint Resolution at Variable Definition ───────────────────────────
 
 /// When the cursor is on a promoted constructor property at its definition,
-/// GTD should not trigger when the cursor is on a variable at its
-/// definition site, even if the variable has a class type hint.
+/// GTD should return self-location so editors can fall back to Find References.
 /// The type hint is a separate symbol span the user can click directly.
 #[tokio::test]
-async fn test_goto_definition_variable_at_definition_returns_none() {
+async fn test_goto_definition_variable_at_definition_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///accordion.php").unwrap();
@@ -1406,7 +1408,7 @@ async fn test_goto_definition_variable_at_definition_returns_none() {
     // Cursor on `$content` on line 4 (the definition itself)
     let params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position {
                 line: 4,
                 character: 45,
@@ -1417,16 +1419,19 @@ async fn test_goto_definition_variable_at_definition_returns_none() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "GTD should not trigger on a variable at its definition site"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 4, "should point back to line 4");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
-/// GTD should not trigger when the cursor is on a parameter at its
-/// definition site, even with a class type hint.
+/// GTD on a parameter at its definition site should return self-location
+/// so editors can fall back to Find References.
 #[tokio::test]
-async fn test_goto_definition_parameter_at_definition_returns_none() {
+async fn test_goto_definition_parameter_at_definition_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///param_type.php").unwrap();
@@ -1454,7 +1459,7 @@ async fn test_goto_definition_parameter_at_definition_returns_none() {
     // Cursor on `$req` on line 5 (the parameter definition)
     let params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position {
                 line: 5,
                 character: 39,
@@ -1465,16 +1470,19 @@ async fn test_goto_definition_parameter_at_definition_returns_none() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "GTD should not trigger on a parameter at its definition site"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 5, "should point back to line 5");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
-/// GTD should not trigger when the cursor is on a parameter with a
-/// nullable class type hint (`?Foo`).
+/// GTD on a parameter with a nullable class type hint (`?Foo`) at its
+/// definition site should return self-location.
 #[tokio::test]
-async fn test_goto_definition_variable_at_definition_nullable_type_hint_returns_none() {
+async fn test_goto_definition_variable_at_definition_nullable_type_hint_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///nullable_type.php").unwrap();
@@ -1502,7 +1510,7 @@ async fn test_goto_definition_variable_at_definition_nullable_type_hint_returns_
     // Cursor on `$log` on line 5
     let params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position {
                 line: 5,
                 character: 37,
@@ -1513,16 +1521,19 @@ async fn test_goto_definition_variable_at_definition_nullable_type_hint_returns_
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "GTD should not trigger on a parameter at its definition site"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 5, "should point back to line 5");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
-/// When the type hint is purely scalar (e.g. `string $name`), go-to-definition
-/// at the definition site should return None — there is no class to jump to.
+/// GTD on a parameter with a scalar type hint (e.g. `string $name`) at its
+/// definition site should return self-location.
 #[tokio::test]
-async fn test_goto_definition_variable_at_definition_scalar_type_returns_none() {
+async fn test_goto_definition_variable_at_definition_scalar_type_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///scalar_type.php").unwrap();
@@ -1558,16 +1569,19 @@ async fn test_goto_definition_variable_at_definition_scalar_type_returns_none() 
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "Should return None when type hint is purely scalar"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 2, "should point back to line 2");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
-/// GTD should not trigger when the cursor is on a parameter with a
-/// union type hint, even when the class is the second member.
+/// GTD on a parameter with a union type hint at its definition site
+/// should return self-location, even when the class is the second member.
 #[tokio::test]
-async fn test_goto_definition_variable_at_definition_union_class_second_returns_none() {
+async fn test_goto_definition_variable_at_definition_union_class_second_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///union_second.php").unwrap();
@@ -1595,7 +1609,7 @@ async fn test_goto_definition_variable_at_definition_union_class_second_returns_
     // Cursor on `$out` on line 5
     let params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position {
                 line: 5,
                 character: 47,
@@ -1606,16 +1620,19 @@ async fn test_goto_definition_variable_at_definition_union_class_second_returns_
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "GTD should not trigger on a parameter at its definition site"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 5, "should point back to line 5");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
-/// GTD should not trigger when the cursor is on a property at its
-/// definition site, even with a class type hint.
+/// GTD on a property at its definition site should return self-location
+/// so editors can fall back to Find References.
 #[tokio::test]
-async fn test_goto_definition_property_at_definition_returns_none() {
+async fn test_goto_definition_property_at_definition_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///prop_type.php").unwrap();
@@ -1642,7 +1659,7 @@ async fn test_goto_definition_property_at_definition_returns_none() {
     // Cursor on `$logger` on line 5
     let params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position {
                 line: 5,
                 character: 21,
@@ -1653,10 +1670,13 @@ async fn test_goto_definition_property_at_definition_returns_none() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "GTD should not trigger on a property at its definition site"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 5, "should point back to line 5");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 // ─── Foreach Variable: Consecutive Loops with Same Variable Name ────────────
@@ -1901,10 +1921,9 @@ async fn test_goto_definition_rhs_variable_same_line_as_assignment() {
 }
 
 /// When the cursor is on the LHS `$value` of `$value = $value->value`,
-/// go-to-definition should still return None (already at a definition site)
-/// so that type-hint resolution can be attempted.
+/// GTD should return self-location (it is a definition site).
 #[tokio::test]
-async fn test_goto_definition_lhs_variable_same_line_still_returns_none() {
+async fn test_goto_definition_lhs_variable_same_line_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///lhs_same_line.php").unwrap();
@@ -1945,11 +1964,13 @@ async fn test_goto_definition_lhs_variable_same_line_still_returns_none() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    // `mixed` is a scalar type, so type-hint resolution also returns None.
-    assert!(
-        result.is_none(),
-        "LHS $value is a definition site with scalar type — should return None"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 4, "should point back to line 4");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 // ─── Arrow Function Parameter Go-to-Definition ─────────────────────────────
@@ -2040,12 +2061,10 @@ async fn test_goto_definition_arrow_fn_rhs_param_jumps_to_same_line_param() {
     }
 }
 
-/// When the cursor is on the LHS (definition site) of an arrow function
-/// parameter (`$o` in `fn(Order $o) =>`), go-to-definition should jump
-/// GTD should not trigger on an arrow function parameter at its
-/// definition site, even with a class type hint.
+/// GTD on an arrow function parameter at its definition site (`$o` in
+/// `fn(Order $o) =>`) should return self-location.
 #[tokio::test]
-async fn test_goto_definition_arrow_fn_lhs_param_returns_none() {
+async fn test_goto_definition_arrow_fn_lhs_param_returns_self_location() {
     let backend = create_test_backend();
 
     let uri = Url::parse("file:///arrow_fn_lhs.php").unwrap();
@@ -2074,7 +2093,7 @@ async fn test_goto_definition_arrow_fn_lhs_param_returns_none() {
     // Cursor on the defining `$o` parameter on line 6
     let params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri },
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
             position: Position {
                 line: 6,
                 character: 36,
@@ -2085,10 +2104,13 @@ async fn test_goto_definition_arrow_fn_lhs_param_returns_none() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "GTD should not trigger on a parameter at its definition site"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 6, "should point back to line 6");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 /// Arrow function parameter with no type hint: RHS usage should still
@@ -2697,9 +2719,9 @@ async fn test_goto_definition_for_loop_initializer() {
     }
 }
 
-/// Cursor on `$i` in `for ($i = 0; ...)` returns None — at definition.
+/// Cursor on `$i` in `for ($i = 0; ...)` returns self-location (at definition).
 #[tokio::test]
-async fn test_goto_definition_for_loop_initializer_at_definition() {
+async fn test_goto_definition_for_loop_initializer_at_definition_returns_self_location() {
     let backend = create_test_backend();
     let uri = Url::parse("file:///var_for_init_atdef.php").unwrap();
 
@@ -2742,10 +2764,13 @@ async fn test_goto_definition_for_loop_initializer_at_definition() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "Should return None when cursor is on the for-loop initializer definition"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 2, "should point back to line 2");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 /// Variable assigned before a while loop, goto-def from inside the while body.
@@ -2874,9 +2899,9 @@ async fn test_goto_definition_global_statement() {
     }
 }
 
-/// Cursor on `$gvar` in `global $gvar;` returns None — at definition.
+/// Cursor on `$gvar` in `global $gvar;` returns self-location (at definition).
 #[tokio::test]
-async fn test_goto_definition_global_statement_at_definition() {
+async fn test_goto_definition_global_statement_at_definition_returns_self_location() {
     let backend = create_test_backend();
     let uri = Url::parse("file:///var_global_atdef.php").unwrap();
 
@@ -2917,10 +2942,13 @@ async fn test_goto_definition_global_statement_at_definition() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "Should return None when cursor is on the global declaration itself"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 2, "should point back to line 2");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 /// `static $count = 0;` in a function, goto-def of `$count` usage.
@@ -2984,9 +3012,9 @@ async fn test_goto_definition_static_statement() {
     }
 }
 
-/// Cursor on `$count` in `static $count = 0;` returns None — at definition.
+/// Cursor on `$count` in `static $count = 0;` returns self-location (at definition).
 #[tokio::test]
-async fn test_goto_definition_static_statement_at_definition() {
+async fn test_goto_definition_static_statement_at_definition_returns_self_location() {
     let backend = create_test_backend();
     let uri = Url::parse("file:///var_static_atdef.php").unwrap();
 
@@ -3027,10 +3055,13 @@ async fn test_goto_definition_static_statement_at_definition() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "Should return None when cursor is on the static declaration itself"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 2, "should point back to line 2");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 /// Array destructuring: `[$a, $b] = getValues();`, goto-def of `$a` from later usage.
@@ -3091,9 +3122,9 @@ async fn test_goto_definition_array_destructuring() {
     }
 }
 
-/// Cursor on `$a` in `[$a, $b] = ...` returns None — at definition.
+/// Cursor on `$a` in `[$a, $b] = ...` returns self-location (at definition).
 #[tokio::test]
-async fn test_goto_definition_array_destructuring_at_definition() {
+async fn test_goto_definition_array_destructuring_at_definition_returns_self_location() {
     let backend = create_test_backend();
     let uri = Url::parse("file:///var_array_destruct_atdef.php").unwrap();
 
@@ -3134,10 +3165,13 @@ async fn test_goto_definition_array_destructuring_at_definition() {
     };
 
     let result = backend.goto_definition(params).await.unwrap();
-    assert!(
-        result.is_none(),
-        "Should return None when cursor is on the destructuring definition itself"
-    );
+    match result {
+        Some(GotoDefinitionResponse::Scalar(location)) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(location.range.start.line, 2, "should point back to line 2");
+        }
+        other => panic!("Expected self-location Scalar, got: {other:?}"),
+    }
 }
 
 /// List destructuring: `list($x, $y) = getValues();`, goto-def of `$x`.

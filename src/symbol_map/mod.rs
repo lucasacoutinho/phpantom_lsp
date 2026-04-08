@@ -76,9 +76,9 @@ pub(crate) enum SymbolKind {
         is_fqn: bool,
     },
     /// Class/interface/trait/enum name at its *declaration* site
-    /// (`class Foo`, `interface Bar`, etc.).  Not navigable for
-    /// go-to-definition (the cursor is already at the definition),
-    /// but useful for document highlights and other features.
+    /// (`class Foo`, `interface Bar`, etc.).  Go-to-definition returns
+    /// the symbol's own location so editors can fall back to
+    /// Find References.  Also useful for document highlights.
     ClassDeclaration { name: String },
 
     /// Member name on the RHS of `->`, `?->`, or `::`.
@@ -120,9 +120,10 @@ pub(crate) enum SymbolKind {
 
     /// A method, property, or constant name at its *declaration* site.
     ///
-    /// Not navigable for go-to-definition or hover (the cursor is
-    /// already at the definition), but needed for find-references and
-    /// rename so that the declaration site participates in the match.
+    /// Go-to-definition returns the symbol's own location so editors
+    /// can fall back to Find References.  Also needed for
+    /// find-references and rename so that the declaration site
+    /// participates in the match.
     MemberDeclaration {
         /// The member name (e.g. `"save"`, `"name"`, `"MAX_SIZE"`).
         /// For properties this is the name WITHOUT the `$` prefix.
