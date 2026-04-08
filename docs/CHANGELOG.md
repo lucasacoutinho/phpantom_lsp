@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-04-08
+
 ### Added
 
 - **`@psalm-return`, `@psalm-param`, and `@psalm-var` tag support.** Psalm-prefixed docblock tags are now recognized alongside their PHPStan equivalents for return types, parameter types, variable types, conditional return types, template parameter bindings, and semantic token highlighting.
@@ -358,7 +360,8 @@ Initial release.
 - **Embedded phpstorm-stubs.**
 - **Zed editor extension.**
 
-[Unreleased]: https://github.com/AJenbo/phpantom_lsp/compare/0.6.0...HEAD
+[Unreleased]: https://github.com/AJenbo/phpantom_lsp/compare/0.7.0...HEAD
+[0.7.0]: https://github.com/AJenbo/phpantom_lsp/compare/0.6.0...0.7.0
 [0.6.0]: https://github.com/AJenbo/phpantom_lsp/compare/0.5.0...0.6.0
 [0.5.0]: https://github.com/AJenbo/phpantom_lsp/compare/0.4.0...0.5.0
 [0.4.0]: https://github.com/AJenbo/phpantom_lsp/compare/0.3.0...0.4.0
