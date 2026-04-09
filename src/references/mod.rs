@@ -1244,58 +1244,28 @@ impl Backend {
             self.collect_ancestors(fqn, &class_loader, &mut hierarchy);
         }
 
-        // Walk down: collect all descendants from ast_map and class_index.
-        // We iterate until no new FQNs are added (transitive closure).
+        // Walk down: collect all descendants using the reverse
+        // children_index.  O(hierarchy_size) instead of O(total_classes).
+        let ci = self.children_index.read();
         let mut changed = true;
         let mut depth = 0u32;
         while changed && depth < MAX_INHERITANCE_DEPTH {
             changed = false;
             depth += 1;
 
-            // Snapshot the current hierarchy to check against.
             let current: Vec<String> = hierarchy.iter().cloned().collect();
-
-            // Scan all known classes for ones that extend/implement/use
-            // anything in the current hierarchy.
-            let all_classes: Vec<ClassInfo> = {
-                let map = self.ast_map.read();
-                map.values()
-                    .flat_map(|classes| classes.iter().map(|c| ClassInfo::clone(c)))
-                    .collect()
-            };
-
-            for cls in &all_classes {
-                let cls_fqn = normalize_fqn(&cls.fqn());
-                if hierarchy.contains(&cls_fqn) {
-                    continue;
-                }
-
-                if self.class_is_descendant_of(cls, &current, &class_loader) {
-                    hierarchy.insert(cls_fqn);
-                    changed = true;
-                }
-            }
-
-            // Also check class_index entries not yet in ast_map.
-            let index_entries: Vec<String> = {
-                let idx = self.class_index.read();
-                idx.keys().cloned().collect()
-            };
-
-            for fqn in &index_entries {
-                let normalized = normalize_fqn(fqn);
-                if hierarchy.contains(&normalized) {
-                    continue;
-                }
-
-                if let Some(cls) = class_loader(fqn)
-                    && self.class_is_descendant_of(&cls, &current, &class_loader)
-                {
-                    hierarchy.insert(normalized);
-                    changed = true;
+            for fqn in &current {
+                if let Some(children) = ci.get(fqn) {
+                    for child_fqn in children {
+                        let normalized = normalize_fqn(child_fqn);
+                        if hierarchy.insert(normalized) {
+                            changed = true;
+                        }
+                    }
                 }
             }
         }
+        drop(ci);
 
         hierarchy
     }
@@ -1345,96 +1315,6 @@ impl Backend {
         }
     }
 
-    /// Check whether a class directly extends, implements, or uses
-    /// anything in the given set of FQNs.
-    fn class_is_descendant_of(
-        &self,
-        cls: &ClassInfo,
-        targets: &[String],
-        class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-    ) -> bool {
-        // Direct parent.
-        if let Some(ref parent) = cls.parent_class {
-            let parent_fqn = normalize_fqn(parent);
-            if targets.contains(&parent_fqn) {
-                return true;
-            }
-            // Transitive: walk the parent chain.
-            if self.ancestor_in_set(&parent_fqn, targets, class_loader, 0) {
-                return true;
-            }
-        }
-
-        // Direct interfaces.
-        for iface in &cls.interfaces {
-            let iface_fqn = normalize_fqn(iface);
-            if targets.contains(&iface_fqn) {
-                return true;
-            }
-            if self.ancestor_in_set(&iface_fqn, targets, class_loader, 0) {
-                return true;
-            }
-        }
-
-        // Used traits.
-        for trait_name in &cls.used_traits {
-            let trait_fqn = normalize_fqn(trait_name);
-            if targets.contains(&trait_fqn) {
-                return true;
-            }
-        }
-
-        // Mixins.
-        for mixin in &cls.mixins {
-            let mixin_fqn = normalize_fqn(mixin);
-            if targets.contains(&mixin_fqn) {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Recursively check whether any ancestor of `fqn` is in the target set.
-    fn ancestor_in_set(
-        &self,
-        fqn: &str,
-        targets: &[String],
-        class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-        depth: u32,
-    ) -> bool {
-        if depth >= MAX_INHERITANCE_DEPTH {
-            return false;
-        }
-
-        let cls = match class_loader(fqn) {
-            Some(c) => c,
-            None => return false,
-        };
-
-        if let Some(ref parent) = cls.parent_class {
-            let parent_fqn = normalize_fqn(parent);
-            if targets.contains(&parent_fqn) {
-                return true;
-            }
-            if self.ancestor_in_set(&parent_fqn, targets, class_loader, depth + 1) {
-                return true;
-            }
-        }
-
-        for iface in &cls.interfaces {
-            let iface_fqn = normalize_fqn(iface);
-            if targets.contains(&iface_fqn) {
-                return true;
-            }
-            if self.ancestor_in_set(&iface_fqn, targets, class_loader, depth + 1) {
-                return true;
-            }
-        }
-
-        false
-    }
-
     /// Ensure all workspace PHP files have been parsed and have symbol maps.
     ///
     /// This lazily parses files that are in the workspace directory but
@@ -1443,6 +1323,17 @@ impl Backend {
     /// `composer.json` `config.vendor-dir`, defaulting to `vendor`) is
     /// skipped during the filesystem walk.
     pub(crate) fn ensure_workspace_indexed(&self) {
+        // Fast path: if the workspace scan already completed (Phase 2
+        // finished), all user files have symbol maps.  Phase 1 is a
+        // subset of Phase 2, so there is nothing left to do.
+        if self
+            .workspace_scan_state
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 2
+        {
+            return;
+        }
+
         let t0 = std::time::Instant::now();
 
         // Collect URIs that already have symbol maps.

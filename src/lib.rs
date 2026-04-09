@@ -301,6 +301,12 @@ pub struct Backend {
     /// Maintained alongside `class_index` in `update_ast_inner` and
     /// `parse_and_cache_content_versioned`.
     pub(crate) fqn_index: Arc<RwLock<HashMap<String, Arc<ClassInfo>>>>,
+    /// Reverse inheritance index: parent FQN → set of direct child FQNs.
+    ///
+    /// Enables O(hierarchy_size) descendant lookup in find-references
+    /// instead of O(total_classes) linear scan.  Updated alongside
+    /// `ast_map` in `update_ast_inner` and `parse_and_cache_content_versioned`.
+    pub(crate) children_index: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     /// Negative-result cache for [`find_or_load_class`].
     ///
     /// Stores fully-qualified class names that have been looked up and
@@ -597,6 +603,7 @@ impl Backend {
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
             class_index: Arc::new(RwLock::new(HashMap::new())),
             fqn_index: Arc::new(RwLock::new(HashMap::new())),
+            children_index: Arc::new(RwLock::new(HashMap::new())),
             class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
             classmap: Arc::new(RwLock::new(HashMap::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
@@ -657,6 +664,7 @@ impl Backend {
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
             class_index: Arc::new(RwLock::new(HashMap::new())),
             fqn_index: Arc::new(RwLock::new(HashMap::new())),
+            children_index: Arc::new(RwLock::new(HashMap::new())),
             class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
             classmap: Arc::new(RwLock::new(HashMap::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
@@ -918,6 +926,7 @@ impl Backend {
             autoload_file_paths: Arc::clone(&self.autoload_file_paths),
             class_index: Arc::clone(&self.class_index),
             fqn_index: Arc::clone(&self.fqn_index),
+            children_index: Arc::clone(&self.children_index),
             classmap: Arc::clone(&self.classmap),
             phar_archives: Arc::clone(&self.phar_archives),
             class_not_found_cache: Arc::clone(&self.class_not_found_cache),
@@ -945,7 +954,7 @@ impl Backend {
             supports_file_rename: Arc::clone(&self.supports_file_rename),
             supports_work_done_progress: Arc::clone(&self.supports_work_done_progress),
             shutdown_flag: Arc::clone(&self.shutdown_flag),
-            workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            workspace_scan_state: Arc::clone(&self.workspace_scan_state),
             config: Mutex::new(self.config.lock().clone()),
         }
     }

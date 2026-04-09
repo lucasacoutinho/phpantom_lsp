@@ -1449,6 +1449,15 @@ impl Backend {
             })
             .unwrap_or_default();
 
+        // Collect old class info for children_index cleanup before
+        // clearing ast_map.
+        let old_classes: Vec<Arc<ClassInfo>> = self
+            .ast_map
+            .read()
+            .get(uri)
+            .cloned()
+            .unwrap_or_default();
+
         self.ast_map.write().remove(uri);
         self.symbol_maps.write().remove(uri);
         self.use_map.write().remove(uri);
@@ -1460,6 +1469,38 @@ impl Backend {
             let mut idx = self.class_index.write();
             for fqn in &old_fqns {
                 idx.remove(fqn);
+            }
+
+            // Remove from children_index: unlink each class from its parents.
+            let mut ci = self.children_index.write();
+            for cls in &old_classes {
+                if cls.name.starts_with("__anonymous@") {
+                    continue;
+                }
+                let child_fqn = match &cls.file_namespace {
+                    Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
+                    _ => cls.name.clone(),
+                };
+                if let Some(ref parent) = cls.parent_class {
+                    if let Some(children) = ci.get_mut(parent.as_str()) {
+                        children.remove(&child_fqn);
+                    }
+                }
+                for iface in &cls.interfaces {
+                    if let Some(children) = ci.get_mut(iface.as_str()) {
+                        children.remove(&child_fqn);
+                    }
+                }
+                for t in &cls.used_traits {
+                    if let Some(children) = ci.get_mut(t.as_str()) {
+                        children.remove(&child_fqn);
+                    }
+                }
+                for m in &cls.mixins {
+                    if let Some(children) = ci.get_mut(m.as_str()) {
+                        children.remove(&child_fqn);
+                    }
+                }
             }
         }
     }
