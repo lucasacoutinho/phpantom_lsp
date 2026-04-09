@@ -198,6 +198,12 @@ pub struct Backend {
     /// variables, function calls, etc.).  Consulted by `resolve_definition`
     /// to replace character-level backward-walking with a binary search.
     pub(crate) symbol_maps: Arc<RwLock<HashMap<String, Arc<symbol_map::SymbolMap>>>>,
+    /// Inverted index: symbol short name → set of file URIs containing it.
+    ///
+    /// Enables O(1) lookup of which files reference a given symbol name,
+    /// avoiding the O(N) full-workspace scan in find-references.
+    /// Updated in `update_ast_inner` and cleaned in `clear_file_maps`.
+    pub(crate) symbol_name_index: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     /// Per-file parse errors from the Mago parser.
     ///
     /// Each entry is `(message, start_byte_offset, end_byte_offset)`.
@@ -587,6 +593,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            symbol_name_index: Arc::new(RwLock::new(HashMap::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
@@ -648,6 +655,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            symbol_name_index: Arc::new(RwLock::new(HashMap::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
@@ -910,6 +918,7 @@ impl Backend {
             open_files: Arc::clone(&self.open_files),
             ast_map: Arc::clone(&self.ast_map),
             symbol_maps: Arc::clone(&self.symbol_maps),
+            symbol_name_index: Arc::clone(&self.symbol_name_index),
             parse_errors: Arc::clone(&self.parse_errors),
             // RwLock fields are shared by Arc::clone — the diagnostic
             // worker reads them concurrently with the main Backend.

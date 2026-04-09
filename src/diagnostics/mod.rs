@@ -616,8 +616,7 @@ impl Backend {
         }
 
         // Set per-subproject PHP version context for stub filtering.
-        let _version_guard =
-            crate::VersionContextGuard::new(self.php_version_for_uri(uri_str));
+        let _version_guard = crate::VersionContextGuard::new(self.php_version_for_uri(uri_str));
 
         let pull_mode = self.supports_pull_diagnostics.load(Ordering::Acquire);
 

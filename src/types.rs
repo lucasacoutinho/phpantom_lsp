@@ -259,7 +259,7 @@ impl fmt::Display for PhpVersion {
 /// `subproject_roots` contains `(uri_prefix, php_version)` pairs
 /// sorted by prefix length descending so that the longest matching
 /// prefix wins.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SubprojectVersionMap {
     /// Fallback PHP version (from root `.phpantom.toml` or default).
     pub default_version: PhpVersion,
@@ -291,15 +291,6 @@ impl SubprojectVersionMap {
             .map(|(_, v)| *v)
             .max()
             .map_or(self.default_version, |v| v.max(self.default_version))
-    }
-}
-
-impl Default for SubprojectVersionMap {
-    fn default() -> Self {
-        Self {
-            default_version: PhpVersion::default(),
-            subproject_roots: Vec::new(),
-        }
     }
 }
 

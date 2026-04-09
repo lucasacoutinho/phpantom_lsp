@@ -180,13 +180,11 @@ impl Backend {
                 if let Some(cls) = self.find_stub_in_ast_map(&stub_uri, last_segment) {
                     return Some(cls);
                 }
-                if let Some(classes) =
-                    self.parse_and_cache_content_versioned(
-                        stub_content,
-                        &stub_uri,
-                        Some(active_ver),
-                    )
-                    && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
+                if let Some(classes) = self.parse_and_cache_content_versioned(
+                    stub_content,
+                    &stub_uri,
+                    Some(active_ver),
+                ) && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
                 {
                     return Some(Arc::clone(cls));
                 }
@@ -200,11 +198,7 @@ impl Backend {
                 return Some(cls);
             }
             if let Some(classes) =
-                self.parse_and_cache_content_versioned(
-                    stub_content,
-                    &stub_uri,
-                    Some(active_ver),
-                )
+                self.parse_and_cache_content_versioned(stub_content, &stub_uri, Some(active_ver))
                 && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
             {
                 return Some(Arc::clone(cls));
@@ -455,14 +449,10 @@ impl Backend {
                         .insert(child_fqn.clone());
                 }
                 for t in &cls.used_traits {
-                    ci.entry(t.clone())
-                        .or_default()
-                        .insert(child_fqn.clone());
+                    ci.entry(t.clone()).or_default().insert(child_fqn.clone());
                 }
                 for m in &cls.mixins {
-                    ci.entry(m.clone())
-                        .or_default()
-                        .insert(child_fqn.clone());
+                    ci.entry(m.clone()).or_default().insert(child_fqn.clone());
                 }
             }
         }

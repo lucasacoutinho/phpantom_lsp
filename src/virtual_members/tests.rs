@@ -1012,7 +1012,14 @@ fn make_cache() -> HashMap<ResolvedClassCacheKey, Arc<ClassInfo>> {
 fn evict_removes_direct_match() {
     let mut cache = make_cache();
     let cls = make_class("App\\Models\\User");
-    cache.insert(("App\\Models\\User".to_string(), Vec::new(), crate::types::PhpVersion::default()), Arc::new(cls));
+    cache.insert(
+        (
+            "App\\Models\\User".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
+        Arc::new(cls),
+    );
 
     evict_fqn(&mut cache, "App\\Models\\User");
     assert!(cache.is_empty(), "direct match should be evicted");
@@ -1024,14 +1031,22 @@ fn evict_transitively_removes_child_class() {
 
     let parent = make_class("Model");
     cache.insert(
-        ("App\\Models\\Model".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\Model".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(parent),
     );
 
     let mut child = make_class("User");
     child.parent_class = Some("App\\Models\\Model".to_string());
     cache.insert(
-        ("App\\Models\\User".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\User".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(child),
     );
 
@@ -1045,7 +1060,11 @@ fn evict_transitively_removes_model_referencing_cast_class() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Casts\\DecimalCast".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(cast_class),
     );
 
@@ -1053,7 +1072,11 @@ fn evict_transitively_removes_model_referencing_cast_class() {
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\Setting".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(model),
     );
 
@@ -1071,7 +1094,11 @@ fn evict_cast_class_with_colon_argument_transitively_removes_model() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Casts\\DecimalCast".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(cast_class),
     );
 
@@ -1080,7 +1107,11 @@ fn evict_cast_class_with_colon_argument_transitively_removes_model() {
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast:8:2".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\Setting".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(model),
     );
 
@@ -1097,7 +1128,11 @@ fn evict_cast_class_matched_by_short_name() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Casts\\DecimalCast".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(cast_class),
     );
 
@@ -1105,7 +1140,11 @@ fn evict_cast_class_matched_by_short_name() {
     // The model references the cast class by short name (same-file scenario).
     model.laravel_mut().casts_definitions = vec![("vat".to_string(), "DecimalCast".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\Setting".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(model),
     );
 
@@ -1122,7 +1161,11 @@ fn evict_cast_class_canonical() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Casts\\DecimalCast".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(cast_class),
     );
 
@@ -1131,7 +1174,11 @@ fn evict_cast_class_canonical() {
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\Setting".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(model),
     );
 
@@ -1152,7 +1199,11 @@ fn evict_builtin_cast_does_not_affect_model() {
         ("created_at".to_string(), "datetime".to_string()),
     ];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\Setting".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(model),
     );
 
@@ -1172,7 +1223,11 @@ fn evict_cast_class_chains_through_model_to_child() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Casts\\DecimalCast".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(cast_class),
     );
 
@@ -1180,14 +1235,22 @@ fn evict_cast_class_chains_through_model_to_child() {
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\Setting".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(model),
     );
 
     let mut child = make_class("AdvancedSetting");
     child.parent_class = Some("App\\Models\\Setting".to_string());
     cache.insert(
-        ("App\\Models\\AdvancedSetting".to_string(), Vec::new(), crate::types::PhpVersion::default()),
+        (
+            "App\\Models\\AdvancedSetting".to_string(),
+            Vec::new(),
+            crate::types::PhpVersion::default(),
+        ),
         Arc::new(child),
     );
 

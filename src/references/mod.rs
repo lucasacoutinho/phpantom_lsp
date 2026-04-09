@@ -378,25 +378,37 @@ impl Backend {
         locations
     }
 
-    /// Snapshot all symbol maps for user (non-vendor, non-stub) files.
-    ///
-    /// Ensures the workspace is indexed first, then returns a cloned
-    /// snapshot of every symbol map whose URI does not fall under the
-    /// vendor directory or the internal stub scheme.  All four cross-file
-    /// reference scanners use this to restrict results to user code.
-    fn user_file_symbol_maps(&self) -> Vec<(String, Arc<SymbolMap>)> {
+    /// Snapshot symbol maps for user files that contain the given symbol
+    /// name(s).  Uses the `symbol_name_index` for O(1) lookup instead
+    /// of scanning all files.
+    fn user_file_symbol_maps_for(&self, names: &[&str]) -> Vec<(String, Arc<SymbolMap>)> {
         self.ensure_workspace_indexed();
 
-        let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
+        // Collect candidate URIs from the inverted index.
+        let candidate_uris: HashSet<String> = {
+            let idx = self.symbol_name_index.read();
+            names
+                .iter()
+                .filter_map(|name| idx.get(*name))
+                .flat_map(|set| set.iter().cloned())
+                .collect()
+        };
 
+        if candidate_uris.is_empty() {
+            return Vec::new();
+        }
+
+        let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
         let maps = self.symbol_maps.read();
-        maps.iter()
-            .filter(|(uri, _)| {
+
+        candidate_uris
+            .iter()
+            .filter(|uri| {
                 !uri.starts_with("phpantom-stub://")
                     && !uri.starts_with("phpantom-stub-fn://")
                     && !vendor_prefixes.iter().any(|p| uri.starts_with(p.as_str()))
             })
-            .map(|(uri, map)| (uri.clone(), Arc::clone(map)))
+            .filter_map(|uri| maps.get(uri).map(|map| (uri.clone(), Arc::clone(map))))
             .collect()
     }
 
@@ -411,8 +423,9 @@ impl Backend {
         let target = strip_fqn_prefix(target_fqn);
         let target_short = crate::util::short_name(target);
 
-        // Snapshot user-file symbol maps (excludes vendor and stubs).
-        let snapshot = self.user_file_symbol_maps();
+        // Use the inverted index to only examine files containing
+        // the target class name.
+        let snapshot = self.user_file_symbol_maps_for(&[target_short]);
 
         for (file_uri, symbol_map) in &snapshot {
             // Quick pre-check: skip files that have no ClassReference,
@@ -420,8 +433,7 @@ impl Backend {
             // name could match the target.  This avoids lock acquisitions
             // and (crucially) disk reads for the vast majority of files.
             let has_candidate = symbol_map.spans.iter().any(|s| match &s.kind {
-                SymbolKind::ClassReference { name, .. }
-                | SymbolKind::ClassDeclaration { name } => {
+                SymbolKind::ClassReference { name, .. } | SymbolKind::ClassDeclaration { name } => {
                     crate::util::short_name(name) == target_short
                 }
                 SymbolKind::SelfStaticParent(k) => *k != SelfStaticParentKind::This,
@@ -447,8 +459,7 @@ impl Backend {
             // Defer file content loading: only read from disk when we
             // have a confirmed match that needs offset → position
             // conversion.  This avoids ~10k disk reads on remote mounts.
-            let content_cell: std::cell::OnceCell<Option<Arc<String>>> =
-                std::cell::OnceCell::new();
+            let content_cell: std::cell::OnceCell<Option<Arc<String>>> = std::cell::OnceCell::new();
             let load_content = || -> Option<&Arc<String>> {
                 content_cell
                     .get_or_init(|| self.get_file_content_arc(file_uri))
@@ -570,7 +581,7 @@ impl Backend {
     ) -> Vec<Location> {
         let mut locations = Vec::new();
 
-        let snapshot = self.user_file_symbol_maps();
+        let snapshot = self.user_file_symbol_maps_for(&[target_member]);
         let mut dbg_files_with_match = 0u32;
         let mut dbg_access_matches = 0u32;
 
@@ -583,9 +594,7 @@ impl Backend {
                     is_static,
                     ..
                 } => member_name == target_member && *is_static == target_is_static,
-                SymbolKind::MemberDeclaration { name, is_static }
-                    if include_declaration =>
-                {
+                SymbolKind::MemberDeclaration { name, is_static } if include_declaration => {
                     name == target_member && *is_static == target_is_static
                 }
                 _ => false,
@@ -741,7 +750,7 @@ impl Backend {
         // Input boundary: callers may pass FQNs with a leading `\`.
         let target = strip_fqn_prefix(target_fqn);
 
-        let snapshot = self.user_file_symbol_maps();
+        let snapshot = self.user_file_symbol_maps_for(&[target_short]);
 
         for (file_uri, symbol_map) in &snapshot {
             // Quick pre-check: skip files with no FunctionCall spans
@@ -765,8 +774,7 @@ impl Backend {
                 Err(_) => continue,
             };
 
-            let content_cell: std::cell::OnceCell<Option<Arc<String>>> =
-                std::cell::OnceCell::new();
+            let content_cell: std::cell::OnceCell<Option<Arc<String>>> = std::cell::OnceCell::new();
             let load_content = || -> Option<&Arc<String>> {
                 content_cell
                     .get_or_init(|| self.get_file_content_arc(file_uri))
@@ -841,7 +849,7 @@ impl Backend {
     ) -> Vec<Location> {
         let mut locations = Vec::new();
 
-        let snapshot = self.user_file_symbol_maps();
+        let snapshot = self.user_file_symbol_maps_for(&[target_name]);
 
         for (file_uri, symbol_map) in &snapshot {
             // Quick pre-check: skip files with no matching constant or
@@ -967,9 +975,7 @@ impl Backend {
         let classes: Vec<Arc<ClassInfo>> =
             self.ast_map.read().get(uri).cloned().unwrap_or_default();
         if classes.is_empty() {
-            tracing::info!(
-                "[find-refs:hierarchy] no classes in ast_map for uri={uri}"
-            );
+            tracing::info!("[find-refs:hierarchy] no classes in ast_map for uri={uri}");
             return None;
         }
         let current_class = find_class_at_offset(&classes, offset);
@@ -985,7 +991,7 @@ impl Backend {
             return None;
         }
         let fqn = current_class.unwrap().fqn();
-        let hierarchy = self.collect_hierarchy_for_fqns(&[fqn.clone()]);
+        let hierarchy = self.collect_hierarchy_for_fqns(std::slice::from_ref(&fqn));
         tracing::info!(
             "[find-refs:hierarchy] resolved {fqn}, hierarchy_size={} thread={:?}",
             hierarchy.len(),
@@ -1156,20 +1162,19 @@ impl Backend {
         }
 
         // Walk parent class.
-        if let Some(ref parent) = class.parent_class {
-            if let Some(parent_class) = self.find_or_load_class(parent) {
-                if let Some(ty) = self.find_property_type(&parent_class, property_name) {
-                    return Some(ty);
-                }
-            }
+        if let Some(ref parent) = class.parent_class
+            && let Some(parent_class) = self.find_or_load_class(parent)
+            && let Some(ty) = self.find_property_type(&parent_class, property_name)
+        {
+            return Some(ty);
         }
 
         // Walk traits.
         for trait_name in &class.used_traits {
-            if let Some(trait_class) = self.find_or_load_class(trait_name) {
-                if let Some(ty) = self.find_property_type(&trait_class, property_name) {
-                    return Some(ty);
-                }
+            if let Some(trait_class) = self.find_or_load_class(trait_name)
+                && let Some(ty) = self.find_property_type(&trait_class, property_name)
+            {
+                return Some(ty);
             }
         }
 

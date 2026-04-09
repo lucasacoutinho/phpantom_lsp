@@ -1246,11 +1246,19 @@ fn removed_function_filtered_by_active_version() {
 #[test]
 fn is_stub_constant_removed_checks_define() {
     assert!(
-        stubs::is_stub_constant_removed(REMOVED_CONSTANT_STUB, "OLD_CONSTANT", PhpVersion::new(8, 0)),
+        stubs::is_stub_constant_removed(
+            REMOVED_CONSTANT_STUB,
+            "OLD_CONSTANT",
+            PhpVersion::new(8, 0)
+        ),
         "constant should be removed at PHP 8.0"
     );
     assert!(
-        !stubs::is_stub_constant_removed(REMOVED_CONSTANT_STUB, "OLD_CONSTANT", PhpVersion::new(7, 4)),
+        !stubs::is_stub_constant_removed(
+            REMOVED_CONSTANT_STUB,
+            "OLD_CONSTANT",
+            PhpVersion::new(7, 4)
+        ),
         "constant should exist at PHP 7.4"
     );
 }
@@ -1316,10 +1324,7 @@ fn version_keyed_stub_returns_different_methods_per_version() {
     });
     let cls_81 = cls_81.expect("VersionedClass should exist at PHP 8.1");
     let has_method_81 = cls_81.methods.iter().any(|m| m.name == "onlyIn81Plus");
-    assert!(
-        has_method_81,
-        "onlyIn81Plus SHOULD be present at PHP 8.1"
-    );
+    assert!(has_method_81, "onlyIn81Plus SHOULD be present at PHP 8.1");
 
     // Both versions should have alwaysAvailable.
     assert!(cls_80.methods.iter().any(|m| m.name == "alwaysAvailable"));
@@ -1360,7 +1365,8 @@ fn version_keyed_function_returns_correct_signature() {
     let func_74 = backend.with_version_context(PhpVersion::new(7, 4), || {
         backend.find_or_load_function(&["versioned_func"])
     });
-    let func_74: phpantom_lsp::FunctionInfo = func_74.expect("versioned_func should exist at PHP 7.4");
+    let func_74: phpantom_lsp::FunctionInfo =
+        func_74.expect("versioned_func should exist at PHP 7.4");
     assert_eq!(
         func_74.return_type_str().as_deref(),
         None,

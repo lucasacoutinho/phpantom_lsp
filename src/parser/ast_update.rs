@@ -438,10 +438,10 @@ impl Backend {
                         Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, old_cls.name),
                         _ => old_cls.name.clone(),
                     };
-                    if let Some(ref parent) = old_cls.parent_class {
-                        if let Some(children) = ci.get_mut(parent.as_str()) {
-                            children.remove(&old_fqn);
-                        }
+                    if let Some(ref parent) = old_cls.parent_class
+                        && let Some(children) = ci.get_mut(parent.as_str())
+                    {
+                        children.remove(&old_fqn);
                     }
                     for iface in &old_cls.interfaces {
                         if let Some(children) = ci.get_mut(iface.as_str()) {
@@ -502,14 +502,10 @@ impl Backend {
                             .insert(child_fqn.clone());
                     }
                     for t in &class.used_traits {
-                        ci.entry(t.clone())
-                            .or_default()
-                            .insert(child_fqn.clone());
+                        ci.entry(t.clone()).or_default().insert(child_fqn.clone());
                     }
                     for m in &class.mixins {
-                        ci.entry(m.clone())
-                            .or_default()
-                            .insert(child_fqn.clone());
+                        ci.entry(m.clone()).or_default().insert(child_fqn.clone());
                     }
                 }
             }
@@ -548,7 +544,44 @@ impl Backend {
         );
         self.symbol_maps
             .write()
-            .insert(uri_string.clone(), symbol_map);
+            .insert(uri_string.clone(), Arc::clone(&symbol_map));
+
+        // Update the inverted symbol name index.
+        {
+            let mut idx = self.symbol_name_index.write();
+            // Remove old entries for this URI.
+            for file_set in idx.values_mut() {
+                file_set.remove(&uri_string);
+            }
+            // Insert new entries from the fresh symbol map.
+            for span in &symbol_map.spans {
+                let name = match &span.kind {
+                    crate::symbol_map::SymbolKind::MemberAccess { member_name, .. } => {
+                        Some(member_name.as_str())
+                    }
+                    crate::symbol_map::SymbolKind::MemberDeclaration { name, .. } => {
+                        Some(name.as_str())
+                    }
+                    crate::symbol_map::SymbolKind::ClassReference { name, .. } => {
+                        Some(crate::util::short_name(name))
+                    }
+                    crate::symbol_map::SymbolKind::ClassDeclaration { name } => Some(name.as_str()),
+                    crate::symbol_map::SymbolKind::FunctionCall { name, .. } => {
+                        Some(crate::util::short_name(name))
+                    }
+                    crate::symbol_map::SymbolKind::ConstantReference { name } => {
+                        Some(name.as_str())
+                    }
+                    _ => None,
+                };
+                if let Some(n) = name {
+                    idx.entry(n.to_string())
+                        .or_default()
+                        .insert(uri_string.clone());
+                }
+            }
+        }
+
         self.use_map.write().insert(uri_string.clone(), use_map);
         self.resolved_names
             .write()

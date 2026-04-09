@@ -26,11 +26,7 @@ pub(crate) fn strip_stub_version_suffix(key: &str) -> &str {
     // Only strip if the suffix looks like @<digit>.<digit>.
     if let Some(at_pos) = key.rfind('@') {
         let suffix = &key[at_pos + 1..];
-        if suffix
-            .bytes()
-            .all(|b| b.is_ascii_digit() || b == b'.')
-            && !suffix.is_empty()
-        {
+        if suffix.bytes().all(|b| b.is_ascii_digit() || b == b'.') && !suffix.is_empty() {
             return &key[..at_pos];
         }
     }
@@ -1451,15 +1447,18 @@ impl Backend {
 
         // Collect old class info for children_index cleanup before
         // clearing ast_map.
-        let old_classes: Vec<Arc<ClassInfo>> = self
-            .ast_map
-            .read()
-            .get(uri)
-            .cloned()
-            .unwrap_or_default();
+        let old_classes: Vec<Arc<ClassInfo>> =
+            self.ast_map.read().get(uri).cloned().unwrap_or_default();
 
         self.ast_map.write().remove(uri);
         self.symbol_maps.write().remove(uri);
+        // Remove this URI from the inverted symbol name index.
+        {
+            let mut idx = self.symbol_name_index.write();
+            for file_set in idx.values_mut() {
+                file_set.remove(uri);
+            }
+        }
         self.use_map.write().remove(uri);
         self.resolved_names.write().remove(uri);
         self.namespace_map.write().remove(uri);
@@ -1481,10 +1480,10 @@ impl Backend {
                     Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, cls.name),
                     _ => cls.name.clone(),
                 };
-                if let Some(ref parent) = cls.parent_class {
-                    if let Some(children) = ci.get_mut(parent.as_str()) {
-                        children.remove(&child_fqn);
-                    }
+                if let Some(ref parent) = cls.parent_class
+                    && let Some(children) = ci.get_mut(parent.as_str())
+                {
+                    children.remove(&child_fqn);
                 }
                 for iface in &cls.interfaces {
                     if let Some(children) = ci.get_mut(iface.as_str()) {
@@ -1884,13 +1883,19 @@ mod tests {
     #[test]
     fn strip_version_suffix_basic() {
         assert_eq!(strip_stub_version_suffix("PDO@8.1"), "PDO");
-        assert_eq!(strip_stub_version_suffix("BcMath\\Number@8.4"), "BcMath\\Number");
+        assert_eq!(
+            strip_stub_version_suffix("BcMath\\Number@8.4"),
+            "BcMath\\Number"
+        );
     }
 
     #[test]
     fn strip_version_suffix_no_suffix() {
         assert_eq!(strip_stub_version_suffix("PDO"), "PDO");
-        assert_eq!(strip_stub_version_suffix("BcMath\\Number"), "BcMath\\Number");
+        assert_eq!(
+            strip_stub_version_suffix("BcMath\\Number"),
+            "BcMath\\Number"
+        );
     }
 
     #[test]

@@ -183,22 +183,20 @@ pub fn is_stub_constant_removed(
     let define_needle = format!("define('{short}'");
     let const_needle = format!("const {short}");
 
-    let decl_pos = source
-        .find(&define_needle)
-        .or_else(|| {
-            source.find(&const_needle).and_then(|pos| {
-                let after = pos + const_needle.len();
-                if after >= source.len() {
-                    return Some(pos);
-                }
-                let ch = source.as_bytes()[after];
-                if ch == b' ' || ch == b'=' || ch == b'\n' || ch == b'\r' || ch == b';' {
-                    Some(pos)
-                } else {
-                    None
-                }
-            })
-        });
+    let decl_pos = source.find(&define_needle).or_else(|| {
+        source.find(&const_needle).and_then(|pos| {
+            let after = pos + const_needle.len();
+            if after >= source.len() {
+                return Some(pos);
+            }
+            let ch = source.as_bytes()[after];
+            if ch == b' ' || ch == b'=' || ch == b'\n' || ch == b'\r' || ch == b';' {
+                Some(pos)
+            } else {
+                None
+            }
+        })
+    });
 
     let Some(pos) = decl_pos else {
         return false;
