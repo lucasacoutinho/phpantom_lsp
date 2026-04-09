@@ -436,6 +436,35 @@ impl Backend {
                 let fqn = cls.fqn();
                 fqn_idx.insert(fqn, Arc::clone(cls));
             }
+
+            // Update the children_index with parent→child relationships.
+            let mut ci = self.children_index.write();
+            for cls in &arc_classes {
+                if cls.name.starts_with("__anonymous@") {
+                    continue;
+                }
+                let child_fqn = cls.fqn();
+                if let Some(ref parent) = cls.parent_class {
+                    ci.entry(parent.clone())
+                        .or_default()
+                        .insert(child_fqn.clone());
+                }
+                for iface in &cls.interfaces {
+                    ci.entry(iface.clone())
+                        .or_default()
+                        .insert(child_fqn.clone());
+                }
+                for t in &cls.used_traits {
+                    ci.entry(t.clone())
+                        .or_default()
+                        .insert(child_fqn.clone());
+                }
+                for m in &cls.mixins {
+                    ci.entry(m.clone())
+                        .or_default()
+                        .insert(child_fqn.clone());
+                }
+            }
         }
 
         // Remove newly-discovered FQNs from the negative-result cache.
