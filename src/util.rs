@@ -17,6 +17,26 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::*;
 
+/// Strip the version suffix (`@X.Y`) from a stub key.
+///
+/// Version-keyed stub URIs use the format `ClassName@8.1`.  When
+/// the key needs to be used as a lookup into `stub_index` or
+/// `stub_function_index`, the suffix must be removed first.
+pub(crate) fn strip_stub_version_suffix(key: &str) -> &str {
+    // Only strip if the suffix looks like @<digit>.<digit>.
+    if let Some(at_pos) = key.rfind('@') {
+        let suffix = &key[at_pos + 1..];
+        if suffix
+            .bytes()
+            .all(|b| b.is_ascii_digit() || b == b'.')
+            && !suffix.is_empty()
+        {
+            return &key[..at_pos];
+        }
+    }
+    key
+}
+
 use crate::php_type::PhpType;
 
 /// Resolve an unqualified or partially-qualified PHP class/function name
@@ -1249,7 +1269,10 @@ impl Backend {
 
         let map = self.ast_map.read();
 
-        for (_uri, classes) in map.iter() {
+        for (uri, classes) in map.iter() {
+            if uri.starts_with("phpantom-stub://") || uri.starts_with("phpantom-stub-fn://") {
+                continue;
+            }
             // Iterate ALL classes with the matching short name, not just
             // the first.  A multi-namespace file can contain two classes
             // with the same short name in different namespace blocks
@@ -1297,7 +1320,8 @@ impl Backend {
         // Embedded class stubs live under synthetic `phpantom-stub://`
         // URIs and have no on-disk file.  Retrieve the raw source from
         // the stub_index keyed by the class short name (the URI path).
-        if let Some(class_name) = uri.strip_prefix("phpantom-stub://") {
+        if let Some(raw_key) = uri.strip_prefix("phpantom-stub://") {
+            let class_name = strip_stub_version_suffix(raw_key);
             let stub_idx = self.stub_index.read();
             return stub_idx.get(class_name).map(|s| s.to_string());
         }
@@ -1305,7 +1329,8 @@ impl Backend {
         // Embedded function stubs use `phpantom-stub-fn://` URIs.
         // The path component is the function name used as key in
         // stub_function_index.
-        if let Some(func_name) = uri.strip_prefix("phpantom-stub-fn://") {
+        if let Some(raw_key) = uri.strip_prefix("phpantom-stub-fn://") {
+            let func_name = strip_stub_version_suffix(raw_key);
             let stub_fn_idx = self.stub_function_index.read();
             return stub_fn_idx.get(func_name).map(|s| s.to_string());
         }
@@ -1328,13 +1353,15 @@ impl Backend {
 
         // Embedded class stubs live under synthetic `phpantom-stub://`
         // URIs and have no on-disk file.
-        if let Some(class_name) = uri.strip_prefix("phpantom-stub://") {
+        if let Some(raw_key) = uri.strip_prefix("phpantom-stub://") {
+            let class_name = strip_stub_version_suffix(raw_key);
             let stub_idx = self.stub_index.read();
             return stub_idx.get(class_name).map(|s| Arc::new(s.to_string()));
         }
 
         // Embedded function stubs use `phpantom-stub-fn://` URIs.
-        if let Some(func_name) = uri.strip_prefix("phpantom-stub-fn://") {
+        if let Some(raw_key) = uri.strip_prefix("phpantom-stub-fn://") {
+            let func_name = strip_stub_version_suffix(raw_key);
             let stub_fn_idx = self.stub_function_index.read();
             return stub_fn_idx.get(func_name).map(|s| Arc::new(s.to_string()));
         }
@@ -1809,5 +1836,31 @@ mod tests {
         assert!(!is_self_or_static(""));
         assert!(!is_self_or_static("this"));
         assert!(!is_self_or_static("Foo"));
+    }
+
+    // ── strip_stub_version_suffix ──────────────────────────────────
+
+    #[test]
+    fn strip_version_suffix_basic() {
+        assert_eq!(strip_stub_version_suffix("PDO@8.1"), "PDO");
+        assert_eq!(strip_stub_version_suffix("BcMath\\Number@8.4"), "BcMath\\Number");
+    }
+
+    #[test]
+    fn strip_version_suffix_no_suffix() {
+        assert_eq!(strip_stub_version_suffix("PDO"), "PDO");
+        assert_eq!(strip_stub_version_suffix("BcMath\\Number"), "BcMath\\Number");
+    }
+
+    #[test]
+    fn strip_version_suffix_preserves_at_in_name() {
+        // Hypothetical class name with @ — shouldn't strip if suffix
+        // doesn't look like a version number.
+        assert_eq!(strip_stub_version_suffix("Foo@Bar"), "Foo@Bar");
+    }
+
+    #[test]
+    fn strip_version_suffix_single_digit() {
+        assert_eq!(strip_stub_version_suffix("X@8"), "X");
     }
 }

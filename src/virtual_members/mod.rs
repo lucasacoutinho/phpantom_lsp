@@ -77,7 +77,11 @@ use crate::virtual_members::laravel::patches::apply_laravel_patches;
 ///
 /// Generic args are stored normalized (fully qualified, sorted when
 /// order-independent) to avoid near-miss cache entries.
-pub type ResolvedClassCacheKey = (String, Vec<String>);
+///
+/// The `PhpVersion` component ensures that stubs resolved at different
+/// PHP versions (which may have different methods/properties due to
+/// `PhpStormStubsElementAvailable` filtering) don't collide.
+pub type ResolvedClassCacheKey = (String, Vec<String>, crate::types::PhpVersion);
 
 /// Thread-safe cache of fully-resolved classes, keyed by FQN + generic args.
 ///
@@ -186,7 +190,7 @@ pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn
 
     // Remove direct matches for this FQN (any generic-arg variant).
     let before = cache.len();
-    cache.retain(|(k, _), _| k != fqn);
+    cache.retain(|(k, _, _), _| k != fqn);
     let removed_direct = cache.len() < before;
 
     // If the FQN wasn't in the cache, do a single pass to check
@@ -208,7 +212,7 @@ pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn
     loop {
         let mut newly_evicted: Vec<String> = Vec::new();
 
-        for ((cached_fqn, _), cls) in cache.iter() {
+        for ((cached_fqn, _, _), cls) in cache.iter() {
             if depends_on_any(cls, &evicted) && !evicted.contains(cached_fqn) {
                 newly_evicted.push(cached_fqn.clone());
             }
@@ -219,7 +223,7 @@ pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn
         }
 
         for dep_fqn in &newly_evicted {
-            cache.retain(|(k, _), _| k != dep_fqn);
+            cache.retain(|(k, _, _), _| k != dep_fqn);
             evicted.push(dep_fqn.clone());
         }
     }
@@ -600,7 +604,10 @@ fn resolve_class_fully_inner(
     generic_args: &[String],
 ) -> Arc<ClassInfo> {
     let fqn = class.fqn();
-    let cache_key: ResolvedClassCacheKey = (fqn.clone(), generic_args.to_vec());
+    let active_ver = crate::ACTIVE_PHP_VERSION
+        .with(|c| c.get())
+        .unwrap_or_default();
+    let cache_key: ResolvedClassCacheKey = (fqn.clone(), generic_args.to_vec(), active_ver);
 
     // ── Cache lookup ────────────────────────────────────────────────
     if let Some(cache) = cache {
@@ -790,7 +797,7 @@ fn resolve_class_fully_inner(
             // has unsubstituted template parameters.  Only use the cache
             // for interfaces without generic substitutions.
             if iface_subs.is_empty() {
-                let iface_key: ResolvedClassCacheKey = (iface.fqn(), Vec::new());
+                let iface_key: ResolvedClassCacheKey = (iface.fqn(), Vec::new(), active_ver);
                 if let Some(c) = cache {
                     let map = c.lock();
                     if let Some(cached) = map.get(&iface_key) {

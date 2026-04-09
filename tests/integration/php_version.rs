@@ -3,9 +3,12 @@
 //! Tests that `#[PhpStormStubsElementAvailable]` attributes on functions,
 //! methods, and parameters are respected when a target PHP version is set.
 
+use std::collections::HashMap;
+
 use crate::common::create_test_backend;
 use phpantom_lsp::Backend;
-use phpantom_lsp::types::PhpVersion;
+use phpantom_lsp::stubs;
+use phpantom_lsp::types::{PhpVersion, SubprojectVersionMap};
 use tower_lsp::lsp_types::{HoverContents, Position};
 
 // ─── PhpVersion parsing ─────────────────────────────────────────────────────
@@ -1100,5 +1103,267 @@ function my_func(): string|false {}
         functions[0].return_type_str().as_deref(),
         Some("string"),
         "Double-quoted strings in attribute should work"
+    );
+}
+
+// ─── Per-subproject PHP version context ────────────────────────────────────
+
+#[test]
+fn subproject_version_map_affects_active_version() {
+    let backend = create_test_backend();
+    let map = SubprojectVersionMap {
+        default_version: PhpVersion::new(8, 5),
+        subproject_roots: vec![
+            (
+                "file:///workspace/legacy/".to_string(),
+                PhpVersion::new(8, 1),
+            ),
+            (
+                "file:///workspace/modern/".to_string(),
+                PhpVersion::new(8, 4),
+            ),
+        ],
+    };
+    backend.set_subproject_versions(map);
+
+    // Outside any subproject → default.
+    assert_eq!(
+        backend.php_version_for_uri("file:///workspace/scripts/run.php"),
+        PhpVersion::new(8, 5),
+    );
+
+    // Inside legacy subproject → 8.1.
+    assert_eq!(
+        backend.php_version_for_uri("file:///workspace/legacy/src/Foo.php"),
+        PhpVersion::new(8, 1),
+    );
+
+    // Inside modern subproject → 8.4.
+    assert_eq!(
+        backend.php_version_for_uri("file:///workspace/modern/src/Bar.php"),
+        PhpVersion::new(8, 4),
+    );
+
+    // highest_php_version returns the max across all.
+    assert_eq!(backend.highest_php_version(), PhpVersion::new(8, 5));
+}
+
+#[test]
+fn version_context_guard_sets_and_restores() {
+    let backend = create_test_backend();
+    backend.set_php_version(PhpVersion::new(8, 5));
+
+    // Default active version is the global default.
+    assert_eq!(backend.active_php_version(), PhpVersion::new(8, 5));
+
+    // with_version_context overrides the active version.
+    backend.with_version_context(PhpVersion::new(8, 1), || {
+        assert_eq!(backend.active_php_version(), PhpVersion::new(8, 1));
+
+        // Nested context overrides the outer one.
+        backend.with_version_context(PhpVersion::new(8, 3), || {
+            assert_eq!(backend.active_php_version(), PhpVersion::new(8, 3));
+        });
+
+        // Outer context is restored.
+        assert_eq!(backend.active_php_version(), PhpVersion::new(8, 1));
+    });
+
+    // Original default is restored.
+    assert_eq!(backend.active_php_version(), PhpVersion::new(8, 5));
+}
+
+// ─── Query-time @removed filtering ────────────────────────────────────────
+
+/// Stub source with a class that has @removed 8.0.
+static REMOVED_CLASS_STUB: &str = "\
+<?php
+/**
+ * @removed 8.0
+ */
+class OldClass {}
+";
+
+/// Stub source with a function that has @removed 8.0.
+static REMOVED_FUNCTION_STUB: &str = "\
+<?php
+/**
+ * @removed 8.0
+ */
+function old_function(): void {}
+";
+
+/// Stub source with a constant defined via `define` that has @removed 8.0.
+static REMOVED_CONSTANT_STUB: &str = "\
+<?php
+/**
+ * @removed 8.0
+ */
+define('OLD_CONSTANT', 42);
+";
+
+#[test]
+fn removed_class_filtered_by_active_version() {
+    let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
+    stubs.insert("OldClass", REMOVED_CLASS_STUB);
+    let backend = Backend::new_test_with_stubs(stubs);
+
+    // At PHP 8.1 the class should be @removed → not found.
+    let result = backend.with_version_context(PhpVersion::new(8, 1), || {
+        backend.find_or_load_class("OldClass")
+    });
+    assert!(result.is_none(), "OldClass should be removed in PHP 8.1");
+
+    // At PHP 7.4 the class should still exist.
+    let result = backend.with_version_context(PhpVersion::new(7, 4), || {
+        backend.find_or_load_class("OldClass")
+    });
+    assert!(result.is_some(), "OldClass should exist in PHP 7.4");
+}
+
+#[test]
+fn removed_function_filtered_by_active_version() {
+    let mut fn_stubs: HashMap<&'static str, &'static str> = HashMap::new();
+    fn_stubs.insert("old_function", REMOVED_FUNCTION_STUB);
+    let backend = Backend::new_test_with_all_stubs(HashMap::new(), fn_stubs, HashMap::new());
+
+    // At PHP 8.1 the function should be @removed → not found.
+    let result = backend.with_version_context(PhpVersion::new(8, 1), || {
+        backend.find_or_load_function(&["old_function"])
+    });
+    assert!(
+        result.is_none(),
+        "old_function should be removed in PHP 8.1"
+    );
+
+    // At PHP 7.4 the function should still exist.
+    let result = backend.with_version_context(PhpVersion::new(7, 4), || {
+        backend.find_or_load_function(&["old_function"])
+    });
+    assert!(result.is_some(), "old_function should exist in PHP 7.4");
+}
+
+#[test]
+fn is_stub_constant_removed_checks_define() {
+    assert!(
+        stubs::is_stub_constant_removed(REMOVED_CONSTANT_STUB, "OLD_CONSTANT", PhpVersion::new(8, 0)),
+        "constant should be removed at PHP 8.0"
+    );
+    assert!(
+        !stubs::is_stub_constant_removed(REMOVED_CONSTANT_STUB, "OLD_CONSTANT", PhpVersion::new(7, 4)),
+        "constant should exist at PHP 7.4"
+    );
+}
+
+// ─── Negative cache version isolation ─────────────────────────────────────
+
+#[test]
+fn negative_cache_does_not_cross_versions() {
+    let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
+    stubs.insert("OldClass", REMOVED_CLASS_STUB);
+    let backend = Backend::new_test_with_stubs(stubs);
+
+    // Look up OldClass at PHP 8.1 → not found (removed), enters negative cache.
+    let result = backend.with_version_context(PhpVersion::new(8, 1), || {
+        backend.find_or_load_class("OldClass")
+    });
+    assert!(result.is_none());
+
+    // Look up OldClass at PHP 7.4 → SHOULD be found (not removed).
+    // Without version-aware negative cache, this would incorrectly
+    // return None due to the cached "not found" from the 8.1 lookup.
+    let result = backend.with_version_context(PhpVersion::new(7, 4), || {
+        backend.find_or_load_class("OldClass")
+    });
+    assert!(
+        result.is_some(),
+        "negative cache from PHP 8.1 must not prevent finding OldClass in PHP 7.4"
+    );
+}
+
+// ─── Version-keyed stub class caching ─────────────────────────────────────
+
+/// Stub with a method that only exists in PHP >= 8.1.
+static VERSIONED_METHOD_STUB: &str = r#"<?php
+class VersionedClass {
+    public function alwaysAvailable(): void {}
+
+    #[\JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable(from: '8.1')]
+    public function onlyIn81Plus(): void {}
+}
+"#;
+
+#[test]
+fn version_keyed_stub_returns_different_methods_per_version() {
+    let mut stubs: HashMap<&'static str, &'static str> = HashMap::new();
+    stubs.insert("VersionedClass", VERSIONED_METHOD_STUB);
+    let backend = Backend::new_test_with_stubs(stubs);
+
+    // At PHP 8.0: the method onlyIn81Plus should be filtered out.
+    let cls_80 = backend.with_version_context(PhpVersion::new(8, 0), || {
+        backend.find_or_load_class("VersionedClass")
+    });
+    let cls_80 = cls_80.expect("VersionedClass should exist at PHP 8.0");
+    let has_method_80 = cls_80.methods.iter().any(|m| m.name == "onlyIn81Plus");
+    assert!(
+        !has_method_80,
+        "onlyIn81Plus should NOT be present at PHP 8.0"
+    );
+
+    // At PHP 8.1: the method should be present.
+    let cls_81 = backend.with_version_context(PhpVersion::new(8, 1), || {
+        backend.find_or_load_class("VersionedClass")
+    });
+    let cls_81 = cls_81.expect("VersionedClass should exist at PHP 8.1");
+    let has_method_81 = cls_81.methods.iter().any(|m| m.name == "onlyIn81Plus");
+    assert!(
+        has_method_81,
+        "onlyIn81Plus SHOULD be present at PHP 8.1"
+    );
+
+    // Both versions should have alwaysAvailable.
+    assert!(cls_80.methods.iter().any(|m| m.name == "alwaysAvailable"));
+    assert!(cls_81.methods.iter().any(|m| m.name == "alwaysAvailable"));
+}
+
+// ─── Version-keyed stub function caching ──────────────────────────────────
+
+/// Stub with two overloaded function signatures for different PHP versions.
+static VERSIONED_FUNCTION_STUB: &str = r#"<?php
+use JetBrains\PhpStorm\Internal\PhpStormStubsElementAvailable;
+
+#[PhpStormStubsElementAvailable(from: '8.0')]
+function versioned_func(string $input): array {}
+
+#[PhpStormStubsElementAvailable(to: '7.4')]
+function versioned_func($input) {}
+"#;
+
+#[test]
+fn version_keyed_function_returns_correct_signature() {
+    let mut fn_stubs: HashMap<&'static str, &'static str> = HashMap::new();
+    fn_stubs.insert("versioned_func", VERSIONED_FUNCTION_STUB);
+    let backend = Backend::new_test_with_all_stubs(HashMap::new(), fn_stubs, HashMap::new());
+
+    // At PHP 8.0: should get the typed signature.
+    let func_80 = backend.with_version_context(PhpVersion::new(8, 0), || {
+        backend.find_or_load_function(&["versioned_func"])
+    });
+    let func_80 = func_80.expect("versioned_func should exist at PHP 8.0");
+    assert_eq!(
+        func_80.return_type_str().as_deref(),
+        Some("array"),
+        "PHP 8.0 variant should return array"
+    );
+
+    // At PHP 7.4: should get the untyped signature.
+    let func_74 = backend.with_version_context(PhpVersion::new(7, 4), || {
+        backend.find_or_load_function(&["versioned_func"])
+    });
+    let func_74: phpantom_lsp::FunctionInfo = func_74.expect("versioned_func should exist at PHP 7.4");
+    assert_eq!(
+        func_74.return_type_str().as_deref(),
+        None,
+        "PHP 7.4 variant should have no return type"
     );
 }

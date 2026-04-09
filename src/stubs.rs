@@ -162,6 +162,51 @@ pub fn is_stub_class_removed(
     is_preceding_docblock_removed(source, pos, php_version)
 }
 
+/// Quick byte-level check whether a stub constant has been `@removed`
+/// at or before the given PHP version.
+///
+/// Looks for `define('NAME',` or `const NAME` patterns and checks the
+/// preceding docblock, following the same approach as
+/// [`is_stub_function_removed`] and [`is_stub_class_removed`].
+pub fn is_stub_constant_removed(
+    source: &str,
+    const_name: &str,
+    php_version: crate::types::PhpVersion,
+) -> bool {
+    if !source.contains("@removed") {
+        return false;
+    }
+
+    let short = const_name.rsplit('\\').next().unwrap_or(const_name);
+
+    // Try `define('NAME',` first (most common for global constants).
+    let define_needle = format!("define('{short}'");
+    let const_needle = format!("const {short}");
+
+    let decl_pos = source
+        .find(&define_needle)
+        .or_else(|| {
+            source.find(&const_needle).and_then(|pos| {
+                let after = pos + const_needle.len();
+                if after >= source.len() {
+                    return Some(pos);
+                }
+                let ch = source.as_bytes()[after];
+                if ch == b' ' || ch == b'=' || ch == b'\n' || ch == b'\r' || ch == b';' {
+                    Some(pos)
+                } else {
+                    None
+                }
+            })
+        });
+
+    let Some(pos) = decl_pos else {
+        return false;
+    };
+
+    is_preceding_docblock_removed(source, pos, php_version)
+}
+
 /// Shared helper: check if the docblock immediately preceding the
 /// declaration at `decl_pos` contains `@removed X.Y` where
 /// `php_version >= X.Y`.

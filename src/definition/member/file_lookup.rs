@@ -114,13 +114,15 @@ impl Backend {
         // Get the file content.
         let file_content = if uri == current_uri {
             current_content.to_string()
-        } else if let Some(stub_key) = uri.strip_prefix("phpantom-stub://") {
+        } else if let Some(raw_key) = uri.strip_prefix("phpantom-stub://") {
             // Embedded stubs are stored under synthetic URIs and have no
             // on-disk file.  Retrieve the raw stub source from the
             // stub_index instead.  The URI suffix is the exact stub key
             // (which may be a FQN like `BcMath\Number` for namespaced
-            // stubs, not just the short name).
+            // stubs, not just the short name).  Strip any version suffix
+            // (`@X.Y`) added by version-keyed caching.
             {
+                let stub_key = crate::util::strip_stub_version_suffix(raw_key);
                 let stub_idx = self.stub_index.read();
                 stub_idx.get(stub_key).map(|s| s.to_string())?
             }

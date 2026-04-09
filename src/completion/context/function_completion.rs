@@ -306,8 +306,12 @@ impl Backend {
         }
 
         // ── 3. Built-in PHP functions from stubs ────────────────────
+        let active_ver = self.active_php_version();
         let stub_fn_idx = self.stub_function_index.read();
-        for &name in stub_fn_idx.keys() {
+        for (&name, &source) in stub_fn_idx.iter() {
+            if crate::stubs::is_stub_function_removed(source, name, active_ver) {
+                continue;
+            }
             if !name.to_lowercase().contains(&prefix_lower) {
                 continue;
             }

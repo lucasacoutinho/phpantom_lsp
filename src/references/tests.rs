@@ -1290,9 +1290,11 @@ async fn test_self_static_method_references_scoped() {
 }
 
 #[tokio::test]
-async fn test_unresolvable_variable_included_conservatively() {
-    // When a variable's type cannot be resolved, the reference should
-    // be included conservatively rather than dropped.
+async fn test_unresolvable_variable_excluded_with_hierarchy() {
+    // When a variable's type cannot be resolved and we have a known
+    // hierarchy, the reference should be excluded rather than
+    // conservatively included.  Unresolvable subjects are more likely
+    // false positives than true matches.
     let backend = Backend::new_test();
     let uri = Url::parse("file:///test.php").unwrap();
     let text = concat!(
@@ -1317,10 +1319,11 @@ async fn test_unresolvable_variable_included_conservatively() {
         "Should find $a->save() on L5; got lines: {:?}",
         lines
     );
-    // $unknown has no type hint — should be included conservatively.
+    // $unknown has no type hint — excluded because we have a known
+    // hierarchy (MyClass) and can't confirm the subject matches.
     assert!(
-        lines.contains(&6),
-        "Should conservatively include $unknown->save() on L6 (unresolvable type); got lines: {:?}",
+        !lines.contains(&6),
+        "Should exclude $unknown->save() on L6 (unresolvable type); got lines: {:?}",
         lines
     );
 }

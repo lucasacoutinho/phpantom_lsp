@@ -27,8 +27,11 @@ impl Backend {
         params: InlayHintParams,
     ) -> jsonrpc::Result<Option<Vec<InlayHint>>> {
         let uri = params.text_document.uri.to_string();
-        let result = self.with_file_content("textDocument/inlayHint", &uri, None, |content| {
-            self.handle_inlay_hints(&uri, content, params.range)
+        let ver = self.php_version_for_uri(&uri);
+        let result = self.with_version_context(ver, || {
+            self.with_file_content("textDocument/inlayHint", &uri, None, |content| {
+                self.handle_inlay_hints(&uri, content, params.range)
+            })
         });
         Ok(result.flatten())
     }

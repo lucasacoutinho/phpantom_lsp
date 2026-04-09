@@ -1819,8 +1819,12 @@ impl Backend {
         }
 
         // ── 5. Built-in PHP classes from stubs (lowest priority) ────
+        let active_ver = self.active_php_version();
         let stub_idx = self.stub_index.read();
-        for &name in stub_idx.keys() {
+        for (&name, &source) in stub_idx.iter() {
+            if crate::stubs::is_stub_class_removed(source, name, active_ver) {
+                continue;
+            }
             let sn = short_name(name);
             if !matches_class_prefix(
                 sn,

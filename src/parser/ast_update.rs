@@ -104,7 +104,7 @@ impl Backend {
         let doc_ctx = DocblockCtx {
             trivias: program.trivia.as_slice(),
             content,
-            php_version: Some(self.php_version()),
+            php_version: Some(self.active_php_version()),
             use_map: HashMap::new(),
             namespace: None,
         };
@@ -445,20 +445,23 @@ impl Backend {
 
         // Remove newly-discovered FQNs from the negative-result cache
         // so classes that just became available are not suppressed.
+        // Entries are version-keyed (`FQN@X.Y`), so remove all versions.
         {
             let nf_cache = self.class_not_found_cache.read();
             if !nf_cache.is_empty() {
                 drop(nf_cache);
-                let mut nf_cache = self.class_not_found_cache.write();
-                for (class, class_ns) in &classes_with_ns {
-                    if class.name.starts_with("__anonymous@") {
-                        continue;
-                    }
-                    let fqn = match class_ns {
+                let fqns: Vec<String> = classes_with_ns
+                    .iter()
+                    .filter(|(c, _)| !c.name.starts_with("__anonymous@"))
+                    .map(|(class, class_ns)| match class_ns {
                         Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, class.name),
                         _ => class.name.clone(),
-                    };
-                    nf_cache.remove(&fqn);
+                    })
+                    .collect();
+                if !fqns.is_empty() {
+                    self.class_not_found_cache
+                        .write()
+                        .retain(|key| !fqns.iter().any(|fqn| key.starts_with(fqn)));
                 }
             }
         }

@@ -36,6 +36,7 @@ use tower_lsp::lsp_types::*;
 use crate::Backend;
 use crate::classmap_scanner::{self, WorkspaceScanResult};
 use crate::composer;
+use crate::config;
 use crate::config::IndexingStrategy;
 use crate::formatting;
 use crate::phar;
@@ -269,6 +270,12 @@ impl LanguageServer for Backend {
                     progress_token.as_ref(),
                 )
                 .await;
+
+                // ── Per-subproject PHP version detection ────────────────
+                // Even in single-project mode, nested composer.json files
+                // may declare different PHP versions.  Discover them for
+                // the version map without altering autoload behaviour.
+                self.detect_subproject_versions(&root, php_version).await;
             } else {
                 // ── Monorepo / non-Composer path ────────────────────────
                 let subprojects = composer::discover_subproject_roots(&root);
@@ -292,6 +299,19 @@ impl LanguageServer for Backend {
             self.log(MessageType::INFO, "PHPantom initialized!".to_string())
                 .await;
         }
+
+        // ── Background workspace indexing for find-references ───────
+        // Build symbol maps for all user PHP files in the workspace so
+        // that the first find-references request is fast.  The walk +
+        // parse runs on a blocking thread pool thread and sets
+        // `workspace_scan_state` to COMPLETE when done.  If the user
+        // triggers find-references before this completes, the CAS guard
+        // in `ensure_workspace_indexed` sees IN_PROGRESS and skips
+        // Phase 2 (the background thread will finish shortly).
+        let index_backend = self.clone_for_diagnostic_worker();
+        tokio::task::spawn_blocking(move || {
+            index_backend.ensure_workspace_indexed();
+        });
 
         // Spawn the background diagnostic worker. We build a shallow
         // clone of `self` that shares every `Arc`-wrapped field (maps,
@@ -429,9 +449,12 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        self.handle_with_position("goto_definition", &uri, position, |content| {
-            self.resolve_definition(&uri, content, position)
-                .map(GotoDefinitionResponse::Scalar)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_position("goto_definition", &uri, position, |content| {
+                self.resolve_definition(&uri, content, position)
+                    .map(GotoDefinitionResponse::Scalar)
+            })
         })
     }
 
@@ -459,11 +482,19 @@ impl LanguageServer for Backend {
         // flush progress notifications to the client.
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
+        let ver = self.php_version_for_uri(&uri);
         let result = tokio::task::spawn_blocking(move || {
-            backend.handle_with_position("goto_implementation", &uri_clone, position, |content| {
-                backend
-                    .resolve_implementation(&uri_clone, content, position)
-                    .and_then(wrap_locations)
+            backend.with_version_context(ver, || {
+                backend.handle_with_position(
+                    "goto_implementation",
+                    &uri_clone,
+                    position,
+                    |content| {
+                        backend
+                            .resolve_implementation(&uri_clone, content, position)
+                            .and_then(wrap_locations)
+                    },
+                )
             })
         })
         .await
@@ -487,9 +518,12 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        self.handle_with_position("goto_type_definition", &uri, position, |content| {
-            self.resolve_type_definition(&uri, content, position)
-                .and_then(wrap_locations)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_position("goto_type_definition", &uri, position, |content| {
+                self.resolve_type_definition(&uri, content, position)
+                    .and_then(wrap_locations)
+            })
         })
     }
 
@@ -501,8 +535,11 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        self.handle_with_position("hover", &uri, position, |content| {
-            self.handle_hover(&uri, content, position)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_position("hover", &uri, position, |content| {
+                self.handle_hover(&uri, content, position)
+            })
         })
     }
 
@@ -511,7 +548,16 @@ impl LanguageServer for Backend {
     }
 
     async fn completion_resolve(&self, params: CompletionItem) -> Result<CompletionItem> {
-        Ok(self.handle_completion_resolve(params))
+        // Extract the file URI from the completion item data to set
+        // the per-subproject PHP version context.
+        let ver = params
+            .data
+            .as_ref()
+            .and_then(|d| serde_json::from_value::<serde_json::Value>(d.clone()).ok())
+            .and_then(|v| v.get("uri")?.as_str().map(String::from))
+            .map(|uri| self.php_version_for_uri(&uri))
+            .unwrap_or_else(|| self.php_version());
+        Ok(self.with_version_context(ver, || self.handle_completion_resolve(params)))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -532,9 +578,12 @@ impl LanguageServer for Backend {
         // flush progress notifications to the client.
         let backend = self.clone_for_blocking();
         let uri_clone = uri.clone();
+        let ver = self.php_version_for_uri(&uri);
         let result = tokio::task::spawn_blocking(move || {
-            backend.handle_with_position("references", &uri_clone, position, |content| {
-                backend.find_references(&uri_clone, content, position, include_declaration)
+            backend.with_version_context(ver, || {
+                backend.handle_with_position("references", &uri_clone, position, |content| {
+                    backend.find_references(&uri_clone, content, position, include_declaration)
+                })
             })
         })
         .await
@@ -550,13 +599,16 @@ impl LanguageServer for Backend {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = params.text_document.uri.to_string();
 
-        self.handle_with_uri("code_action", &uri, |content| {
-            let actions = self.handle_code_action(&uri, content, &params);
-            if actions.is_empty() {
-                None
-            } else {
-                Some(actions)
-            }
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_uri("code_action", &uri, |content| {
+                let actions = self.handle_code_action(&uri, content, &params);
+                if actions.is_empty() {
+                    None
+                } else {
+                    Some(actions)
+                }
+            })
         })
     }
 
@@ -582,8 +634,11 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        self.handle_with_position("signature_help", &uri, position, |content| {
-            self.handle_signature_help(&uri, content, position)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_position("signature_help", &uri, position, |content| {
+                self.handle_signature_help(&uri, content, position)
+            })
         })
     }
 
@@ -598,8 +653,11 @@ impl LanguageServer for Backend {
             .to_string();
         let position = params.text_document_position_params.position;
 
-        self.handle_with_position("document_highlight", &uri, position, |content| {
-            self.handle_document_highlight(&uri, content, position)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_position("document_highlight", &uri, position, |content| {
+                self.handle_document_highlight(&uri, content, position)
+            })
         })
     }
 
@@ -626,8 +684,11 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri.to_string();
         let position = params.position;
 
-        self.handle_with_position("prepare_rename", &uri, position, |content| {
-            self.handle_prepare_rename(&uri, content, position)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_position("prepare_rename", &uri, position, |content| {
+                self.handle_prepare_rename(&uri, content, position)
+            })
         })
     }
 
@@ -636,8 +697,11 @@ impl LanguageServer for Backend {
         let position = params.text_document_position.position;
         let new_name = params.new_name.clone();
 
-        self.handle_with_position("rename", &uri, position, |content| {
-            self.handle_rename(&uri, content, position, &new_name)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_position("rename", &uri, position, |content| {
+                self.handle_rename(&uri, content, position, &new_name)
+            })
         })
     }
 
@@ -669,8 +733,11 @@ impl LanguageServer for Backend {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = params.text_document.uri.to_string();
-        self.handle_with_uri("code_lens", &uri, |content| {
-            self.handle_code_lens(&uri, content)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_uri("code_lens", &uri, |content| {
+                self.handle_code_lens(&uri, content)
+            })
         })
     }
 
@@ -697,8 +764,11 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri.to_string();
-        self.handle_with_uri("semantic_tokens_full", &uri, |content| {
-            self.handle_semantic_tokens_full(&uri, content)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_uri("semantic_tokens_full", &uri, |content| {
+                self.handle_semantic_tokens_full(&uri, content)
+            })
         })
     }
 
@@ -716,8 +786,11 @@ impl LanguageServer for Backend {
             .uri
             .to_string();
         let position = params.text_document_position_params.position;
-        self.handle_with_position("prepare_type_hierarchy", &uri, position, |content| {
-            self.prepare_type_hierarchy_impl(&uri, content, position)
+        let ver = self.php_version_for_uri(&uri);
+        self.with_version_context(ver, || {
+            self.handle_with_position("prepare_type_hierarchy", &uri, position, |content| {
+                self.prepare_type_hierarchy_impl(&uri, content, position)
+            })
         })
     }
 
@@ -821,7 +894,7 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let php_version = self.php_version();
+        let php_version = self.php_version_for_uri(&uri);
 
         // Execute the resolved formatting strategy on a blocking thread
         // to avoid stalling the async runtime while external tools run.
@@ -1340,6 +1413,23 @@ impl Backend {
             }
         }
 
+        // ── Build per-subproject PHP version map ─────────────────────
+        let root_config_version = self
+            .config()
+            .php
+            .version
+            .as_deref()
+            .and_then(crate::types::PhpVersion::from_composer_constraint);
+        if let Some(map) = build_subproject_version_map(
+            root,
+            Some(subprojects),
+            &[],
+            root_config_version,
+            php_version,
+        ) {
+            self.set_subproject_versions(map);
+        }
+
         // Re-sort PSR-4 mappings by prefix length descending so
         // longest-prefix-first matching works.
         {
@@ -1368,18 +1458,70 @@ impl Backend {
             + self.autoload_function_index.read().len()
             + self.autoload_constant_index.read().len();
 
-        self.log(
-            MessageType::INFO,
+        let log_msg = {
+            let vmap = self.version_map.lock();
+            let versions: Vec<String> = vmap
+                .subproject_roots
+                .iter()
+                .map(|(prefix, ver)| format!("  {} → PHP {}", prefix, ver))
+                .collect();
             format!(
-                "PHPantom v{}: PHP {}, {} symbols from {} subprojects, stubs {}",
+                "PHPantom v{}: {} symbols from {} subprojects, stubs {}\nPHP versions:\n{}{}",
                 self.version,
-                php_version,
                 symbol_count,
                 subprojects.len(),
-                crate::stubs::STUBS_VERSION
-            ),
-        )
+                crate::stubs::STUBS_VERSION,
+                versions.join("\n"),
+                if versions.is_empty() {
+                    String::new()
+                } else {
+                    format!("\n  (default: PHP {})", vmap.default_version)
+                }
+            )
+        };
+        self.log(MessageType::INFO, log_msg).await;
+    }
+
+    /// Discover nested `composer.json` files and build a
+    /// [`SubprojectVersionMap`](crate::types::SubprojectVersionMap)
+    /// from their PHP version constraints.
+    ///
+    /// This is a **version-only** scan: it does not alter PSR-4
+    /// mappings, classmaps, or autoload behaviour.  Used after
+    /// `init_single_project` so that monorepos with a root
+    /// `composer.json` still get per-subproject PHP versions.
+    ///
+    /// Runs the filesystem walk and per-subproject config reads on a
+    /// blocking thread so the async runtime stays free.
+    async fn detect_subproject_versions(
+        &self,
+        root: &std::path::Path,
+        default_version: crate::types::PhpVersion,
+    ) {
+        // Snapshot inputs before moving into the blocking closure.
+        let root = root.to_path_buf();
+        let vendor_dirs = self.vendor_dir_paths.lock().clone();
+        let root_config_version = self
+            .config()
+            .php
+            .version
+            .as_deref()
+            .and_then(crate::types::PhpVersion::from_composer_constraint);
+
+        let result = tokio::task::spawn_blocking(move || {
+            build_subproject_version_map(
+                &root,
+                None,
+                &vendor_dirs,
+                root_config_version,
+                default_version,
+            )
+        })
         .await;
+
+        if let Ok(Some(map)) = result {
+            self.set_subproject_versions(map);
+        }
     }
 
     /// Initialize a pure non-Composer workspace (no `composer.json`
@@ -1738,4 +1880,85 @@ impl Backend {
             }
         }
     }
+}
+
+// ── Subproject Version Detection (free function) ────────────────────────────
+
+/// Build a [`SubprojectVersionMap`](crate::types::SubprojectVersionMap) from
+/// discovered subprojects.
+///
+/// This is a pure function with no `&self` — it can run on any thread
+/// (including `spawn_blockicng`).
+///
+/// When `subprojects` is `None`, the function discovers them via
+/// [`discover_subproject_roots`](composer::discover_subproject_roots).
+/// Pass `Some` to reuse an already-discovered list and avoid a redundant
+/// filesystem walk.
+///
+/// Returns `None` when there are no subprojects or every subproject uses
+/// the same version as `default_version`.
+fn build_subproject_version_map(
+    root: &std::path::Path,
+    subprojects: Option<&[(PathBuf, String)]>,
+    vendor_dirs: &[PathBuf],
+    root_config_version: Option<crate::types::PhpVersion>,
+    default_version: crate::types::PhpVersion,
+) -> Option<crate::types::SubprojectVersionMap> {
+    let discovered;
+    let subprojects = match subprojects {
+        Some(s) => s,
+        None => {
+            discovered = composer::discover_subproject_roots(root);
+            &discovered
+        }
+    };
+
+    if subprojects.is_empty() {
+        return None;
+    }
+
+    let mut version_entries: Vec<(String, crate::types::PhpVersion)> =
+        Vec::with_capacity(subprojects.len());
+
+    for (sub_root, _vendor_dir) in subprojects {
+        // Skip anything inside a vendor directory.
+        if vendor_dirs.iter().any(|v| sub_root.starts_with(v)) {
+            continue;
+        }
+
+        let sub_package = composer::read_composer_package(sub_root);
+        let sub_config_version = config::load_config(sub_root)
+            .ok()
+            .and_then(|cfg| cfg.php.version)
+            .and_then(|v| crate::types::PhpVersion::from_composer_constraint(&v));
+
+        let sub_version = sub_config_version
+            .or(root_config_version)
+            .or_else(|| {
+                sub_package
+                    .as_ref()
+                    .and_then(composer::detect_php_version_from_package)
+            })
+            .unwrap_or(default_version);
+
+        let sub_uri_prefix = crate::util::path_to_uri(sub_root);
+        let sub_uri_prefix = if sub_uri_prefix.ends_with('/') {
+            sub_uri_prefix
+        } else {
+            format!("{sub_uri_prefix}/")
+        };
+        version_entries.push((sub_uri_prefix, sub_version));
+    }
+
+    // Only install the map if at least one subproject has a
+    // different version than the default — otherwise no benefit.
+    if version_entries.iter().all(|(_, v)| *v == default_version) {
+        return None;
+    }
+
+    version_entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    Some(crate::types::SubprojectVersionMap {
+        default_version,
+        subproject_roots: version_entries,
+    })
 }

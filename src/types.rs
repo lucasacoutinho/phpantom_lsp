@@ -153,7 +153,7 @@ pub type FunctionLoader<'a> = Option<&'a dyn Fn(&str) -> Option<FunctionInfo>>;
 /// The version is detected from `composer.json` (`require.php`) during
 /// server initialization. When no version is found, [`PhpVersion::default`]
 /// returns PHP 8.5.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PhpVersion {
     /// Major version number (e.g. `8` in PHP 8.4).
     pub major: u8,
@@ -249,6 +249,57 @@ impl Default for PhpVersion {
 impl fmt::Display for PhpVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+/// Maps file URIs to their subproject's PHP version.
+///
+/// In single-project mode, `subproject_roots` is empty and
+/// `default_version` covers everything.  In monorepo mode,
+/// `subproject_roots` contains `(uri_prefix, php_version)` pairs
+/// sorted by prefix length descending so that the longest matching
+/// prefix wins.
+#[derive(Debug, Clone)]
+pub struct SubprojectVersionMap {
+    /// Fallback PHP version (from root `.phpantom.toml` or default).
+    pub default_version: PhpVersion,
+    /// `(uri_prefix, version)` sorted by prefix length descending.
+    pub subproject_roots: Vec<(String, PhpVersion)>,
+}
+
+impl SubprojectVersionMap {
+    /// Look up the PHP version for a given file URI.
+    ///
+    /// Finds the longest URI prefix in `subproject_roots` that matches
+    /// and returns its version.  Falls back to `default_version`.
+    pub fn version_for_uri(&self, uri: &str) -> PhpVersion {
+        for (prefix, version) in &self.subproject_roots {
+            if uri.starts_with(prefix.as_str()) {
+                return *version;
+            }
+        }
+        self.default_version
+    }
+
+    /// Return the highest PHP version across all subprojects and the default.
+    ///
+    /// Used to parse stubs with the most inclusive version so that all
+    /// methods/functions are available in the cached AST.
+    pub fn highest_version(&self) -> PhpVersion {
+        self.subproject_roots
+            .iter()
+            .map(|(_, v)| *v)
+            .max()
+            .map_or(self.default_version, |v| v.max(self.default_version))
+    }
+}
+
+impl Default for SubprojectVersionMap {
+    fn default() -> Self {
+        Self {
+            default_version: PhpVersion::default(),
+            subproject_roots: Vec::new(),
+        }
     }
 }
 
@@ -3071,5 +3122,72 @@ mod tests {
         rt.replace_type(PhpType::Named("string".to_owned()));
         assert_eq!(rt.type_string, PhpType::Named("string".to_owned()));
         assert!(rt.class_info.is_none());
+    }
+
+    // ── SubprojectVersionMap tests ─────────────────────────────────
+
+    #[test]
+    fn version_map_empty_returns_default() {
+        let map = SubprojectVersionMap::default();
+        assert_eq!(
+            map.version_for_uri("file:///any/path.php"),
+            PhpVersion::default()
+        );
+    }
+
+    #[test]
+    fn version_map_matches_longest_prefix() {
+        let map = SubprojectVersionMap {
+            default_version: PhpVersion::new(8, 5),
+            subproject_roots: vec![
+                (
+                    "file:///workspace/app-legacy/".to_string(),
+                    PhpVersion::new(8, 1),
+                ),
+                (
+                    "file:///workspace/app-new/".to_string(),
+                    PhpVersion::new(8, 4),
+                ),
+            ],
+        };
+
+        assert_eq!(
+            map.version_for_uri("file:///workspace/app-legacy/src/Foo.php"),
+            PhpVersion::new(8, 1),
+        );
+        assert_eq!(
+            map.version_for_uri("file:///workspace/app-new/src/Bar.php"),
+            PhpVersion::new(8, 4),
+        );
+        // Falls back to default for files outside known subprojects.
+        assert_eq!(
+            map.version_for_uri("file:///workspace/scripts/run.php"),
+            PhpVersion::new(8, 5),
+        );
+    }
+
+    #[test]
+    fn version_map_highest_version() {
+        let map = SubprojectVersionMap {
+            default_version: PhpVersion::new(8, 2),
+            subproject_roots: vec![
+                ("file:///a/".to_string(), PhpVersion::new(8, 1)),
+                ("file:///b/".to_string(), PhpVersion::new(8, 4)),
+            ],
+        };
+        assert_eq!(map.highest_version(), PhpVersion::new(8, 4));
+
+        // When default is the highest:
+        let map2 = SubprojectVersionMap {
+            default_version: PhpVersion::new(8, 5),
+            subproject_roots: vec![("file:///a/".to_string(), PhpVersion::new(8, 1))],
+        };
+        assert_eq!(map2.highest_version(), PhpVersion::new(8, 5));
+
+        // Empty subprojects — returns default:
+        assert_eq!(
+            SubprojectVersionMap::default().highest_version(),
+            PhpVersion::default()
+        );
     }
 }

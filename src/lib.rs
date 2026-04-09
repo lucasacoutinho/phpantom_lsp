@@ -78,6 +78,7 @@
 //!     parsing (`parse_object_shape`, `extract_object_shape_property_type`,
 //!     `is_object_shape`)
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -368,18 +369,17 @@ pub struct Backend {
     /// remove stubs that do not exist in the target PHP version.
     /// Can be consulted when resolving standalone constant references.
     pub(crate) stub_constant_index: RwLock<HashMap<&'static str, &'static str>>,
-    /// The target PHP version used for version-aware stub filtering.
+    /// Per-subproject PHP version map.
     ///
-    /// Detected from `composer.json` (`require.php`) during server
-    /// initialization.  When no version constraint is found, defaults
-    /// to PHP 8.5.  Stub elements annotated with
-    /// `#[PhpStormStubsElementAvailable]` are filtered against this
-    /// version so that only the correct variant is presented.
+    /// In single-project mode, contains only the default version
+    /// (detected from `composer.json` or `.phpantom.toml`).
+    /// In monorepo mode, maps subproject root URI prefixes to their
+    /// respective PHP versions, enabling per-file version lookups.
     ///
     /// Wrapped in a `Mutex` so that `set_php_version` can be called
     /// during `initialized` (which receives `&self`, not `&mut self`).
-    pub(crate) php_version: Mutex<types::PhpVersion>,
-    // NOTE: php_version, vendor_uri_prefixes, vendor_dir_paths, config,
+    pub(crate) version_map: Mutex<types::SubprojectVersionMap>,
+    // NOTE: version_map, vendor_uri_prefixes, vendor_dir_paths, config,
     // and diag_pending_uris use parking_lot::Mutex (not RwLock) because
     // they are rarely accessed or always written.
     /// `file://` URI prefixes for all known vendor directories, used to
@@ -537,6 +537,19 @@ pub struct Backend {
     /// running child process is killed promptly instead of waiting up
     /// to 60 seconds.
     pub(crate) shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// Tri-state flag for the workspace directory scan in
+    /// [`ensure_workspace_indexed`](crate::references).
+    ///
+    /// - `0` (NOT_STARTED): no scan has been attempted yet.
+    /// - `1` (IN_PROGRESS): a thread is currently running the scan.
+    /// - `2` (COMPLETE): the scan finished; Phase 2 can be skipped.
+    ///
+    /// Uses `compare_exchange` to ensure only one thread (background
+    /// indexing or the first find-references call) runs the expensive
+    /// filesystem walk.  If a find-references call arrives while the
+    /// background scan is in progress, Phase 2 is skipped (the
+    /// background thread will finish and set COMPLETE).
+    pub(crate) workspace_scan_state: Arc<std::sync::atomic::AtomicU8>,
     // NOTE: resolved_class_cache uses parking_lot::Mutex because it is
     // frequently written (cache stores) and RwLock read→write upgrades
     // are error-prone.
@@ -591,7 +604,7 @@ impl Backend {
             stub_function_index: RwLock::new(stubs::build_stub_function_index()),
             stub_constant_index: RwLock::new(stubs::build_stub_constant_index()),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
-            php_version: Mutex::new(types::PhpVersion::default()),
+            version_map: Mutex::new(types::SubprojectVersionMap::default()),
             diag_version: Arc::new(AtomicU64::new(0)),
             diag_notify: Arc::new(tokio::sync::Notify::new()),
             diag_pending_uris: Arc::new(Mutex::new(Vec::new())),
@@ -609,6 +622,7 @@ impl Backend {
             supports_file_rename: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_work_done_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             config: Mutex::new(config::Config::default()),
         }
     }
@@ -650,7 +664,7 @@ impl Backend {
             stub_function_index: RwLock::new(HashMap::new()),
             stub_constant_index: RwLock::new(HashMap::new()),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
-            php_version: Mutex::new(types::PhpVersion::default()),
+            version_map: Mutex::new(types::SubprojectVersionMap::default()),
             diag_version: Arc::new(AtomicU64::new(0)),
             diag_notify: Arc::new(tokio::sync::Notify::new()),
             diag_pending_uris: Arc::new(Mutex::new(Vec::new())),
@@ -668,6 +682,7 @@ impl Backend {
             supports_file_rename: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_work_done_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             config: Mutex::new(config::Config::default()),
         }
     }
@@ -852,13 +867,22 @@ impl Backend {
 
     /// Return the configured PHP version.
     pub fn php_version(&self) -> types::PhpVersion {
-        *self.php_version.lock()
+        self.version_map.lock().default_version
+    }
+
+    /// Get the PHP version for a specific file URI.
+    ///
+    /// In monorepo mode, returns the version of the subproject that
+    /// owns this URI (longest URI prefix match).  In single-project
+    /// mode, returns the default version.
+    pub fn php_version_for_uri(&self, uri: &str) -> types::PhpVersion {
+        self.version_map.lock().version_for_uri(uri)
     }
 
     /// Create a shallow clone of this `Backend` that shares every
     /// `Arc`-wrapped field with the original.
     ///
-    /// Non-`Arc` fields (`php_version`, `vendor_uri_prefixes`,
+    /// Non-`Arc` fields (`version_map`, `vendor_uri_prefixes`,
     /// `vendor_dir_paths`) are snapshotted at call time.  The stub
     /// indices (`stub_index`, `stub_function_index`,
     /// `stub_constant_index`) are cloned (they are static `&str`
@@ -901,7 +925,7 @@ impl Backend {
             resolved_class_cache: Arc::clone(&self.resolved_class_cache),
             stub_function_index: RwLock::new(self.stub_function_index.read().clone()),
             stub_constant_index: RwLock::new(self.stub_constant_index.read().clone()),
-            php_version: Mutex::new(self.php_version()),
+            version_map: Mutex::new(self.version_map.lock().clone()),
             vendor_uri_prefixes: Mutex::new(self.vendor_uri_prefixes.lock().clone()),
             vendor_dir_paths: Mutex::new(self.vendor_dir_paths.lock().clone()),
             diag_version: Arc::clone(&self.diag_version),
@@ -921,6 +945,7 @@ impl Backend {
             supports_file_rename: Arc::clone(&self.supports_file_rename),
             supports_work_done_progress: Arc::clone(&self.supports_work_done_progress),
             shutdown_flag: Arc::clone(&self.shutdown_flag),
+            workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             config: Mutex::new(self.config.lock().clone()),
         }
     }
@@ -950,18 +975,92 @@ impl Backend {
         *self.config.lock() = config;
     }
 
-    /// Set the PHP version (used by integration tests and during
-    /// server initialization after reading `composer.json`).
+    /// Set the default PHP version (used by integration tests and
+    /// during server initialization after reading `composer.json`).
     ///
-    /// Also filters `stub_function_index` and `stub_index` to remove
-    /// entries that do not exist in the given PHP version.
+    /// Stub indices are **not** destructively filtered; instead,
+    /// `@removed` checks happen at query time via
+    /// [`active_php_version`](Self::active_php_version) so that
+    /// monorepo subprojects with different PHP versions each get
+    /// correct results.
     pub fn set_php_version(&self, version: types::PhpVersion) {
-        *self.php_version.lock() = version;
-        self.stub_function_index
-            .write()
-            .retain(|name, source| !stubs::is_stub_function_removed(source, name, version));
-        self.stub_index
-            .write()
-            .retain(|name, source| !stubs::is_stub_class_removed(source, name, version));
+        self.version_map.lock().default_version = version;
+    }
+
+    /// Replace the entire subproject version map.
+    ///
+    /// Used by `init_monorepo` after detecting per-subproject PHP
+    /// versions from `composer.json` and `.phpantom.toml` files.
+    pub fn set_subproject_versions(&self, map: types::SubprojectVersionMap) {
+        *self.version_map.lock() = map;
+    }
+
+    /// Execute a closure with a specific PHP version as the active
+    /// context for stub filtering.
+    ///
+    /// During the closure, [`active_php_version`](Self::active_php_version)
+    /// returns `ver` instead of the global default.  This allows deep
+    /// call sites (e.g. `find_or_load_class`) to use the correct
+    /// per-subproject PHP version without threading a parameter through
+    /// every function signature.
+    pub fn with_version_context<F, R>(&self, ver: types::PhpVersion, f: F) -> R
+    where
+        F: FnOnce() -> R,
+    {
+        ACTIVE_PHP_VERSION.with(|cell| {
+            let prev = cell.replace(Some(ver));
+            let result = f();
+            cell.set(prev);
+            result
+        })
+    }
+
+    /// Get the active PHP version for stub filtering.
+    ///
+    /// Returns the version set by the innermost
+    /// [`with_version_context`](Self::with_version_context) call, or
+    /// falls back to the global default version.
+    pub fn active_php_version(&self) -> types::PhpVersion {
+        ACTIVE_PHP_VERSION.with(|cell| cell.get().unwrap_or_else(|| self.php_version()))
+    }
+
+    /// Return the highest PHP version across all subprojects.
+    ///
+    /// Used when parsing stubs so that the cached AST contains the
+    /// most complete set of methods/functions.
+    pub fn highest_php_version(&self) -> types::PhpVersion {
+        self.version_map.lock().highest_version()
+    }
+}
+
+thread_local! {
+    /// Per-thread PHP version context for version-aware stub filtering.
+    ///
+    /// Set by [`Backend::with_version_context`] at the handler level
+    /// (completion, hover, diagnostics, etc.) and read by resolution
+    /// functions deep in the call stack.
+    pub(crate) static ACTIVE_PHP_VERSION: Cell<Option<types::PhpVersion>> = const { Cell::new(None) };
+}
+
+/// RAII guard for setting the active PHP version context.
+///
+/// Use this in `async` handlers where a closure-based
+/// [`Backend::with_version_context`] is inconvenient.  The guard
+/// sets the thread-local on creation and restores the previous value
+/// on drop.
+pub(crate) struct VersionContextGuard {
+    prev: Option<types::PhpVersion>,
+}
+
+impl VersionContextGuard {
+    pub(crate) fn new(ver: types::PhpVersion) -> Self {
+        let prev = ACTIVE_PHP_VERSION.with(|cell| cell.replace(Some(ver)));
+        Self { prev }
+    }
+}
+
+impl Drop for VersionContextGuard {
+    fn drop(&mut self) {
+        ACTIVE_PHP_VERSION.with(|cell| cell.set(self.prev));
     }
 }

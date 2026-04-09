@@ -265,6 +265,10 @@ impl Backend {
         let uri = params.text_document_position.text_document.uri.to_string();
         let position = params.text_document_position.position;
 
+        // Set per-subproject PHP version context for stub filtering.
+        let ver = self.php_version_for_uri(&uri);
+        let _version_guard = crate::VersionContextGuard::new(ver);
+
         // Get file content for offset calculation
         let content = self.get_file_content(&uri);
 

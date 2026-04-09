@@ -40,6 +40,7 @@ use std::path::Path;
 use crate::Backend;
 use crate::composer;
 use crate::php_type::PhpType;
+use crate::stubs;
 use crate::types::{ClassInfo, FileContext, FunctionInfo, PhpVersion};
 use crate::util::short_name;
 
@@ -52,8 +53,23 @@ impl Backend {
     ///   - A namespace-qualified name like `"Klarna\\Customer"`
     ///   - A fully-qualified name like `"\\Klarna\\Customer"` (leading `\` is stripped)
     ///
+    /// Check `ast_map` for an already-parsed stub at a specific
+    /// version-keyed URI.  Returns the class matching `short_name`
+    /// if found.  This is the fast path for Phase 3 stub lookups
+    /// where the stub has already been parsed for the active version.
+    fn find_stub_in_ast_map(&self, stub_uri: &str, short_name: &str) -> Option<Arc<ClassInfo>> {
+        let map = self.ast_map.read();
+        if let Some(classes) = map.get(stub_uri) {
+            return classes
+                .iter()
+                .find(|c| c.name == short_name)
+                .map(Arc::clone);
+        }
+        None
+    }
+
     /// Returns a shared `Arc<ClassInfo>` if found, or `None`.
-    pub(crate) fn find_or_load_class(&self, class_name: &str) -> Option<Arc<ClassInfo>> {
+    pub fn find_or_load_class(&self, class_name: &str) -> Option<Arc<ClassInfo>> {
         // Defensively strip nullable prefix (`?Foo` → `Foo`) and generic
         // parameters (`Collection<int, User>` → `Collection`) so that
         // callers don't need to normalise before lookup.
@@ -86,7 +102,12 @@ impl Backend {
         };
 
         // ── Negative cache: skip the full multi-phase search ──
-        if self.class_not_found_cache.read().contains(class_name) {
+        // The cache key includes the active PHP version so that a
+        // class `@removed` in one subproject's version doesn't poison
+        // lookups for a different subproject where it exists.
+        let active_ver = self.active_php_version();
+        let nf_key = format!("{}@{}", class_name, active_ver);
+        if self.class_not_found_cache.read().contains(&nf_key) {
             return None;
         }
 
@@ -149,24 +170,41 @@ impl Backend {
         //
         // Strategy (a) is tried first because it is more specific.
         let stub_idx = self.stub_index.read();
+        let active_ver = self.active_php_version();
         if expected_ns.is_some() {
-            // Namespaced lookup — try the full FQN as a stub key.
             if let Some(&stub_content) = stub_idx.get(class_name) {
-                let stub_uri = format!("phpantom-stub://{}", class_name);
-                let ver = Some(self.php_version());
+                if stubs::is_stub_class_removed(stub_content, class_name, active_ver) {
+                    return None;
+                }
+                let stub_uri = format!("phpantom-stub://{}@{}", class_name, active_ver);
+                if let Some(cls) = self.find_stub_in_ast_map(&stub_uri, last_segment) {
+                    return Some(cls);
+                }
                 if let Some(classes) =
-                    self.parse_and_cache_content_versioned(stub_content, &stub_uri, ver)
+                    self.parse_and_cache_content_versioned(
+                        stub_content,
+                        &stub_uri,
+                        Some(active_ver),
+                    )
                     && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
                 {
                     return Some(Arc::clone(cls));
                 }
             }
         } else if let Some(&stub_content) = stub_idx.get(last_segment) {
-            // Global-namespace lookup — match by short name only.
-            let stub_uri = format!("phpantom-stub://{}", last_segment);
-            let ver = Some(self.php_version());
+            if stubs::is_stub_class_removed(stub_content, last_segment, active_ver) {
+                return None;
+            }
+            let stub_uri = format!("phpantom-stub://{}@{}", last_segment, active_ver);
+            if let Some(cls) = self.find_stub_in_ast_map(&stub_uri, last_segment) {
+                return Some(cls);
+            }
             if let Some(classes) =
-                self.parse_and_cache_content_versioned(stub_content, &stub_uri, ver)
+                self.parse_and_cache_content_versioned(
+                    stub_content,
+                    &stub_uri,
+                    Some(active_ver),
+                )
                 && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
             {
                 return Some(Arc::clone(cls));
@@ -175,9 +213,7 @@ impl Backend {
 
         // Cache the negative result so subsequent lookups for the same
         // unknown class skip the expensive multi-phase search.
-        self.class_not_found_cache
-            .write()
-            .insert(class_name.to_owned());
+        self.class_not_found_cache.write().insert(nf_key);
         None
     }
 
@@ -194,8 +230,15 @@ impl Backend {
     /// use [`find_or_load_class`] instead.
     pub(crate) fn load_stub_class(&self, class_name: &str) -> Option<Arc<ClassInfo>> {
         let last_segment = short_name(class_name);
+        let active_ver = self.active_php_version();
 
-        // Fast path: already parsed and cached.
+        // Fast path: check version-keyed ast_map entry.
+        let stub_uri = format!("phpantom-stub://{}@{}", class_name, active_ver);
+        if let Some(cls) = self.find_stub_in_ast_map(&stub_uri, last_segment) {
+            return Some(cls);
+        }
+
+        // Also check non-stub ast_map entries (user code classes).
         if let Some(cls) = self.find_class_in_ast_map(class_name) {
             return Some(cls);
         }
@@ -203,17 +246,22 @@ impl Backend {
         // Look up in the in-memory stub index.
         let stub_idx = self.stub_index.read();
         let stub_content = if class_name.contains('\\') {
-            // Namespaced lookup (e.g. "BcMath\\Number").
             stub_idx.get(class_name).copied()
         } else {
-            // Global-namespace lookup (e.g. "PDO").
             stub_idx.get(last_segment).copied()
         };
 
         if let Some(content) = stub_content {
-            let stub_uri = format!("phpantom-stub://{}", class_name);
-            let ver = Some(self.php_version());
-            if let Some(classes) = self.parse_and_cache_content_versioned(content, &stub_uri, ver)
+            let lookup_name = if class_name.contains('\\') {
+                class_name
+            } else {
+                last_segment
+            };
+            if stubs::is_stub_class_removed(content, lookup_name, active_ver) {
+                return None;
+            }
+            if let Some(classes) =
+                self.parse_and_cache_content_versioned(content, &stub_uri, Some(active_ver))
                 && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
             {
                 return Some(Arc::clone(cls));
@@ -378,7 +426,8 @@ impl Backend {
 
         // Populate the fqn_index so that `find_class_in_ast_map` can
         // resolve these classes via O(1) hash lookup.
-        {
+        //
+        if !uri.starts_with("phpantom-stub://") {
             let mut fqn_idx = self.fqn_index.write();
             for cls in &arc_classes {
                 if cls.name.starts_with("__anonymous@") {
@@ -390,17 +439,21 @@ impl Backend {
         }
 
         // Remove newly-discovered FQNs from the negative-result cache.
+        // Entries are version-keyed (`FQN@X.Y`), so remove all versions
+        // of each discovered class.
         {
             let nf_cache = self.class_not_found_cache.read();
             if !nf_cache.is_empty() {
                 drop(nf_cache);
-                let mut nf_cache = self.class_not_found_cache.write();
-                for cls in &arc_classes {
-                    if cls.name.starts_with("__anonymous@") {
-                        continue;
-                    }
-                    let fqn = cls.fqn();
-                    nf_cache.remove(&fqn);
+                let fqns: Vec<String> = arc_classes
+                    .iter()
+                    .filter(|c| !c.name.starts_with("__anonymous@"))
+                    .map(|c| c.fqn())
+                    .collect();
+                if !fqns.is_empty() {
+                    self.class_not_found_cache
+                        .write()
+                        .retain(|key| !fqns.iter().any(|fqn| key.starts_with(fqn)));
                 }
             }
         }
@@ -452,9 +505,19 @@ impl Backend {
     pub fn find_or_load_function(&self, candidates: &[&str]) -> Option<FunctionInfo> {
         // ── Phase 1: Check global_functions (user code + already-cached stubs) ──
         {
+            let active_ver = self.active_php_version();
+            let ver_suffix = format!("@{}", active_ver);
             let fmap = self.global_functions.read();
             for &name in candidates {
-                if let Some((_, info)) = fmap.get(name) {
+                if let Some((uri, info)) = fmap.get(name) {
+                    // For stub functions, verify the cached version matches
+                    // the active subproject's PHP version.  A mismatch means
+                    // the function was parsed for a different version and may
+                    // have different parameter types; fall through to Phase 2
+                    // to re-parse.
+                    if uri.starts_with("phpantom-stub-fn://") && !uri.ends_with(&ver_suffix) {
+                        continue;
+                    }
                     return Some(info.clone());
                 }
             }
@@ -533,16 +596,21 @@ impl Backend {
         // that defines them.  We parse the entire file, cache all discovered
         // functions in global_functions, and return the one we need.
         let stub_fn_idx = self.stub_function_index.read();
+        let active_ver = self.active_php_version();
         for &name in candidates {
             if let Some(&stub_content) = stub_fn_idx.get(name) {
-                let ver = Some(self.php_version());
+                // Skip functions removed in the active subproject's PHP version.
+                if stubs::is_stub_function_removed(stub_content, name, active_ver) {
+                    continue;
+                }
+                let ver = Some(active_ver);
                 let functions = self.parse_functions_versioned(stub_content, ver);
 
                 if functions.is_empty() {
                     continue;
                 }
 
-                let stub_uri = format!("phpantom-stub-fn://{}", name);
+                let stub_uri = format!("phpantom-stub-fn://{}@{}", name, active_ver);
                 let mut result: Option<FunctionInfo> = None;
 
                 {
@@ -559,11 +627,11 @@ impl Backend {
                             result = Some(func.clone());
                         }
 
-                        // Cache the FQN so future lookups hit Phase 1.
-                        // No short-name fallback: `resolve_function_name`
-                        // already builds namespace-qualified candidates.
-                        fmap.entry(fqn)
-                            .or_insert_with(|| (stub_uri.clone(), func.clone()));
+                        // Cache with version-keyed URI so Phase 1 can
+                        // detect version mismatches.  Use `insert` (not
+                        // `entry().or_insert`) to overwrite stale entries
+                        // from a different PHP version.
+                        fmap.insert(fqn, (stub_uri.clone(), func.clone()));
                     }
                 }
 
@@ -575,7 +643,7 @@ impl Backend {
                     let empty_use_map = HashMap::new();
                     let stub_namespace = self.parse_namespace(stub_content);
                     Self::resolve_parent_class_names(&mut classes, &empty_use_map, &stub_namespace);
-                    let class_uri = format!("phpantom-stub-fn://{}", name);
+                    let class_uri = format!("phpantom-stub-fn://{}@{}", name, active_ver);
                     let arc_classes: Vec<Arc<ClassInfo>> =
                         classes.into_iter().map(Arc::new).collect();
                     self.ast_map.write().insert(class_uri, arc_classes);
