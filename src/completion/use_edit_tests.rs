@@ -232,6 +232,7 @@ fn insert_alphabetically_before_first() {
     let info = UseBlockInfo {
         existing: vec![(2, "app\\zoo".to_string())],
         fallback_line: 1,
+        has_namespace: false,
     };
     assert_eq!(
         info.insert_position_for("App\\Alpha"),
@@ -248,6 +249,7 @@ fn insert_alphabetically_after_last() {
     let info = UseBlockInfo {
         existing: vec![(2, "app\\alpha".to_string())],
         fallback_line: 1,
+        has_namespace: false,
     };
     assert_eq!(
         info.insert_position_for("App\\Zoo"),
@@ -265,6 +267,7 @@ fn insert_alphabetically_in_the_middle() {
     let info = UseBlockInfo {
         existing: vec![(2, "app\\alpha".to_string()), (3, "app\\zoo".to_string())],
         fallback_line: 1,
+        has_namespace: false,
     };
     assert_eq!(
         info.insert_position_for("App\\Middle"),
@@ -280,6 +283,7 @@ fn insert_uses_fallback_when_no_existing() {
     let info = UseBlockInfo {
         existing: vec![],
         fallback_line: 2,
+        has_namespace: false,
     };
     assert_eq!(
         info.insert_position_for("App\\Foo"),
@@ -297,6 +301,7 @@ fn insert_case_insensitive_comparison() {
     let info = UseBlockInfo {
         existing: vec![(2, "app\\alpha".to_string()), (3, "app\\zoo".to_string())],
         fallback_line: 1,
+        has_namespace: false,
     };
     assert_eq!(
         info.insert_position_for("APP\\MIDDLE"),
@@ -318,6 +323,7 @@ fn insert_among_three_existing() {
             (4, "e\\e".to_string()),
         ],
         fallback_line: 1,
+        has_namespace: false,
     };
     assert_eq!(
         info.insert_position_for("D\\D"),
@@ -390,6 +396,7 @@ fn build_edit_inserts_at_correct_alpha_position() {
     let info = UseBlockInfo {
         existing: vec![(2, "app\\alpha".to_string()), (3, "app\\zoo".to_string())],
         fallback_line: 1,
+        has_namespace: false,
     };
     let edits = build_use_edit("App\\Middle", &info, &Some("App".to_string()))
         .expect("should produce edit");
@@ -409,6 +416,7 @@ fn build_edit_skips_global_class_without_namespace() {
     let info = UseBlockInfo {
         existing: vec![],
         fallback_line: 1,
+        has_namespace: false,
     };
     assert!(build_use_edit("PDO", &info, &None).is_none());
 }
@@ -418,10 +426,11 @@ fn build_edit_includes_global_class_with_namespace() {
     let info = UseBlockInfo {
         existing: vec![],
         fallback_line: 2,
+        has_namespace: true,
     };
     let edits =
         build_use_edit("PDO", &info, &Some("App".to_string())).expect("should produce edit");
-    assert_eq!(edits[0].new_text, "use PDO;\n");
+    assert_eq!(edits[0].new_text, "\nuse PDO;\n");
     assert_eq!(
         edits[0].range.start,
         Position {
@@ -515,6 +524,7 @@ fn build_function_edit_skips_global_function() {
     let info = UseBlockInfo {
         existing: vec![],
         fallback_line: 1,
+        has_namespace: false,
     };
     assert!(
         build_use_function_edit("array_map", &info).is_none(),
@@ -527,6 +537,7 @@ fn build_function_edit_namespaced_no_existing_imports() {
     let info = UseBlockInfo {
         existing: vec![],
         fallback_line: 2,
+        has_namespace: false,
     };
     let edits = build_use_function_edit("Illuminate\\Support\\enum_value", &info)
         .expect("namespaced function should produce edit");
@@ -638,6 +649,7 @@ fn build_function_edit_deeply_namespaced() {
     let info = UseBlockInfo {
         existing: vec![],
         fallback_line: 3,
+        has_namespace: false,
     };
     let edits = build_use_function_edit("Vendor\\Package\\Sub\\Module\\helper_func", &info)
         .expect("deeply namespaced function should produce edit");

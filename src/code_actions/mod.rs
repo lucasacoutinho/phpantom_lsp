@@ -4,7 +4,9 @@
 //!
 //! - **Import class** — when the cursor is on an unresolved class name,
 //!   offer to add a `use` statement for matching classes found in the
-//!   class index, classmap, and stubs.
+//!   class index, classmap, and stubs.  Also offers a bulk "Import all
+//!   missing classes" action when two or more unresolved names exist in
+//!   the file, importing the best candidate for each in one step.
 //! - **Remove unused import** — when the cursor is on (or a diagnostic
 //!   overlaps with) an unused `use` statement, offer to remove it.
 //!   Also offers a bulk "Remove all unused imports" action.
@@ -170,6 +172,9 @@ impl Backend {
         // ── Import class ────────────────────────────────────────────────
         self.collect_import_class_actions(uri, content, params, &mut actions);
 
+        // ── Import all missing classes (bulk) ───────────────────────────
+        self.collect_import_all_classes_action(uri, content, params, &mut actions);
+
         // ── Remove unused imports ───────────────────────────────────────
         self.collect_remove_unused_import_actions(uri, content, params, &mut actions);
 
@@ -306,6 +311,8 @@ impl Backend {
             "refactor.extractVariable" | "refactor.extractVariableAll" => {
                 self.resolve_extract_variable(&data, &content)
             }
+            // ── Import all missing classes ───────────────────────────────
+            "source.importAllClasses" => self.resolve_import_all_classes(&data, &content),
             "refactor.extractFunction" => self.resolve_extract_function(&data, &content),
             "refactor.inlineVariable" => self.resolve_inline_variable(&data, &content),
             _ => None,

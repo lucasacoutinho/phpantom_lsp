@@ -426,39 +426,6 @@ which can silently break filtering, mapping, or event-handling logic.
 
 ---
 
-### A36. Import all missing classes
-
-**Impact: Medium · Effort: Low**
-
-Bulk code action that imports all unresolvable class names in a file at
-once, instead of requiring the user to trigger "Import class" on each
-name individually.
-
-### Behaviour
-
-- **Trigger:** File contains one or more unresolved class names (the
-  same condition that triggers the existing single-class import action).
-  The bulk action appears in the source action menu.
-- **Code action kind:** `source.organizeImports` or
-  `source.importAll`.
-- **Result:** For each unresolved class name, resolve candidates using
-  the same logic as the existing import action. When exactly one
-  candidate exists, import it. When multiple candidates exist, pick the
-  one with the highest namespace affinity (same ranking the single
-  import action uses). Insert all new `use` statements in alphabetical
-  order.
-
-### Edge cases
-
-- If any class name has zero candidates (truly unknown), skip it
-  silently.
-- If two unresolved names would import different classes with the same
-  short name, import the first and skip the second (a conflict that
-  requires manual resolution).
-- Already-imported names are excluded.
-
----
-
 ### A37. Simplify with `?->` (nullsafe operator)
 
 **Impact: Low-Medium · Effort: Medium**

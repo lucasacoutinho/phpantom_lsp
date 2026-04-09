@@ -2550,6 +2550,9 @@ class HoverOriginsDemo extends Model implements Renderable
 // Place cursor on `MutateArrayInsertSpec` and press Ctrl+. (or Cmd+. on Mac)
 // to see "Import `Couchbase\MutateArrayInsertSpec`" in the quick-fix menu.
 // Accepting inserts a `use Couchbase\MutateArrayInsertSpec;` at the top.
+//
+// Because this file has two unresolved names, the quick-fix menu also shows
+// "Import all missing classes" which imports both at once.
 
 class ImportClassDemo
 {
@@ -3362,7 +3365,10 @@ class InvalidClassKindDemo
     }
 
     // These also produce diagnostics but would crash at class-load time,
-    // so they are═══════════════════════════════════════════════════════════════════════════
+    // so they are commented out.  See the AGENTS.md hoisting pitfall note.
+}
+
+
 // ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 // ┃  SCAFFOLDING — Supporting definitions below this line.              ┃
 

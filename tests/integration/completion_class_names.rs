@@ -1108,8 +1108,8 @@ async fn test_auto_import_class_index_adds_use_statement() {
         .expect("class_index class should have additional_text_edits");
 
     assert_eq!(edits.len(), 1);
-    assert_eq!(edits[0].new_text, "use App\\Services\\PaymentService;\n",);
-    // No existing use statements; should insert after namespace (line 1), so at line 2
+    assert_eq!(edits[0].new_text, "\nuse App\\Services\\PaymentService;\n",);
+    // No existing use statements; insert after namespace (line 1) at line 2
     assert_eq!(
         edits[0].range.start,
         Position {
@@ -1328,7 +1328,7 @@ async fn test_auto_import_global_class_when_file_has_namespace() {
         .expect("Global class should get auto-import when file has a namespace");
 
     assert_eq!(edits.len(), 1);
-    assert_eq!(edits[0].new_text, "use PDO;\n");
+    assert_eq!(edits[0].new_text, "\nuse PDO;\n");
     // Insert after `namespace App\Db;` (line 2), so at line 3
     assert_eq!(
         edits[0].range.start,

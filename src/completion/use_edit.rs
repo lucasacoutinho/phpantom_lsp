@@ -22,10 +22,14 @@ pub(crate) struct UseBlockInfo {
     /// `sort_key` is the lowercased FQN extracted from the statement,
     /// used for case-insensitive alphabetical comparison.
     /// Entries are in file order (sorted by line number).
-    existing: Vec<(u32, String)>,
+    pub(crate) existing: Vec<(u32, String)>,
     /// The line to insert at when there are no existing `use` statements.
     /// Points after the `namespace` declaration, or after `<?php`.
-    fallback_line: u32,
+    pub(crate) fallback_line: u32,
+    /// Whether the file declares a namespace.  When there are no
+    /// existing imports, a blank line is inserted before the first
+    /// `use` statement to separate it from the `namespace` line.
+    pub(crate) has_namespace: bool,
 }
 
 impl UseBlockInfo {
@@ -270,10 +274,12 @@ pub(crate) fn analyze_use_block(content: &str) -> UseBlockInfo {
 
     // Fallback: insert after `namespace`, or after `<?php`.
     let fallback_line = namespace_line.or(php_open_line).map(|l| l + 1).unwrap_or(0);
+    let has_namespace = namespace_line.is_some();
 
     UseBlockInfo {
         existing,
         fallback_line,
+        has_namespace,
     }
 }
 
@@ -323,6 +329,10 @@ pub(crate) fn use_import_conflicts(fqn: &str, file_use_map: &HashMap<String, Str
 /// an import is only needed if the current file declares a namespace —
 /// otherwise we are already in the global namespace and no `use`
 /// statement is required.  Returns `None` in that case.
+///
+/// When there are no existing `use` statements and the file declares a
+/// namespace, a blank line (`\n`) is prepended to separate the new
+/// import from the `namespace` declaration.
 pub(crate) fn build_use_edit(
     fqn: &str,
     use_block: &UseBlockInfo,
@@ -337,12 +347,21 @@ pub(crate) fn build_use_edit(
 
     let insert_pos = use_block.insert_position_for(fqn);
 
+    // When there are no existing imports and the file has a namespace,
+    // prepend a blank line to separate the namespace declaration from
+    // the use block.
+    let prefix = if use_block.existing.is_empty() && use_block.has_namespace {
+        "\n"
+    } else {
+        ""
+    };
+
     Some(vec![TextEdit {
         range: Range {
             start: insert_pos,
             end: insert_pos,
         },
-        new_text: format!("use {};\n", fqn),
+        new_text: format!("{}use {};\n", prefix, fqn),
     }])
 }
 
@@ -373,9 +392,14 @@ pub(crate) fn build_use_function_edit(
     let sort_key = format!("function {}", fqn.to_lowercase());
     let insert_pos = use_block.insert_position_for_key(&sort_key);
 
-    // When this is the first function import and there are already
-    // class imports, prepend a blank line to separate the groups.
-    let separator = if !use_block.has_function_imports() && use_block.has_class_imports() {
+    // Prepend a blank line when:
+    // - There are no existing imports at all and the file has a
+    //   namespace (separate namespace from the use block), or
+    // - This is the first function import and there are already class
+    //   imports (group separator).
+    let separator = if (use_block.existing.is_empty() && use_block.has_namespace)
+        || (!use_block.has_function_imports() && use_block.has_class_imports())
+    {
         "\n"
     } else {
         ""
