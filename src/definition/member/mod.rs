@@ -138,8 +138,19 @@ impl Backend {
         );
 
         if candidates.is_empty() {
+            tracing::info!(
+                "[goto-def:member] no candidates for subject={:?} member={:?}",
+                subject,
+                member_name
+            );
             return None;
         }
+        tracing::info!(
+            "[goto-def:member] subject={:?} member={:?} candidates={:?}",
+            subject,
+            member_name,
+            candidates.iter().map(|c| c.fqn()).collect::<Vec<_>>()
+        );
 
         // 4. Try each candidate class and pick the first one where the
         //    member actually exists (directly or via inheritance).

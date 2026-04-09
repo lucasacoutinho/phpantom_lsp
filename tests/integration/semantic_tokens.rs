@@ -32,6 +32,7 @@ const TT_FUNCTION: u32 = 9;
 const TT_METHOD: u32 = 10;
 #[allow(dead_code)]
 const TT_ENUM_MEMBER: u32 = 12;
+const TT_KEYWORD: u32 = 13;
 
 // ─── Token modifier bits (must match src/semantic_tokens.rs) ────────────────
 
@@ -402,7 +403,7 @@ function main() {
 }
 
 #[test]
-fn this_is_variable_with_readonly_and_default_library() {
+fn this_is_keyword() {
     let php = r#"<?php
 class Foo {
     public function bar(): void {
@@ -412,17 +413,15 @@ class Foo {
 "#;
     let tokens = get_tokens(php);
     let decoded = decode_tokens(&tokens);
-    // "$this" on line 3 should be a variable with readonly + defaultLibrary
+    // "$this" on line 3 should be a keyword token
     let this_tokens: Vec<_> = decoded
         .iter()
-        .filter(|t| t.token_type == TT_VARIABLE && t.length == 5 && t.line == 3)
+        .filter(|t| t.token_type == TT_KEYWORD && t.length == 5 && t.line == 3)
         .collect();
-    assert!(!this_tokens.is_empty(), "expected variable token for $this");
     assert!(
-        this_tokens
-            .iter()
-            .any(|t| has_modifier(t, TM_READONLY) && has_modifier(t, TM_DEFAULT_LIBRARY)),
-        "expected readonly + defaultLibrary modifiers on $this"
+        !this_tokens.is_empty(),
+        "expected keyword token for $this; all tokens on line 3: {:?}",
+        decoded.iter().filter(|t| t.line == 3).collect::<Vec<_>>()
     );
 }
 

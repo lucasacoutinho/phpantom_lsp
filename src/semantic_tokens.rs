@@ -41,6 +41,7 @@ const TT_FUNCTION: u32 = 9;
 const TT_METHOD: u32 = 10;
 const TT_DECORATOR: u32 = 11;
 const TT_ENUM_MEMBER: u32 = 12;
+const TT_KEYWORD: u32 = 13;
 
 // ─── Token modifier bit positions ───────────────────────────────────────────
 
@@ -74,6 +75,7 @@ pub fn legend() -> SemanticTokensLegend {
         assert!(TT_METHOD == 10);
         assert!(TT_DECORATOR == 11);
         assert!(TT_ENUM_MEMBER == 12);
+        assert!(TT_KEYWORD == 13);
     };
 
     SemanticTokensLegend {
@@ -91,6 +93,7 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::METHOD,         // 10
             SemanticTokenType::DECORATOR,      // 11
             SemanticTokenType::ENUM_MEMBER,    // 12
+            SemanticTokenType::KEYWORD,        // 13
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,     // bit 0
@@ -238,7 +241,7 @@ impl Backend {
                 }
 
                 SymbolKind::SelfStaticParent(ssp_kind) => match ssp_kind {
-                    SelfStaticParentKind::This => (TT_VARIABLE, TM_READONLY | TM_DEFAULT_LIBRARY),
+                    SelfStaticParentKind::This => (TT_KEYWORD, 0),
                     SelfStaticParentKind::Parent => {
                         let tt = self
                             .resolve_self_static_parent_token_type(ssp_kind, uri, ctx, span.start);
@@ -574,8 +577,8 @@ mod tests {
     fn legend_has_correct_type_count() {
         let l = legend();
         // Ensure the legend has all the token types we reference.
-        assert!(l.token_types.len() > TT_ENUM_MEMBER as usize);
-        assert_eq!(l.token_types.len(), 13);
+        assert!(l.token_types.len() > TT_KEYWORD as usize);
+        assert_eq!(l.token_types.len(), 14);
         assert_eq!(l.token_modifiers.len(), 7);
     }
 

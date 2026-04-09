@@ -4056,3 +4056,347 @@ async fn test_goto_definition_see_tag_cross_file_no_namespace() {
         other => panic!("Expected Scalar location, got: {:?}", other),
     }
 }
+
+// ─── Chained Property Access (cross-file) ─────────────────────────────────
+
+/// Go-to-definition on a method called through a chained property where
+/// the property type is defined in a different file.
+#[tokio::test]
+async fn test_goto_definition_chained_property_cross_file() {
+    let (backend, dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+        &[
+            (
+                "src/UserRepository.php",
+                "<?php\nnamespace App;\n\nclass UserRepository {\n    public function getById(int $id): void {}\n}\n",
+            ),
+            (
+                "src/UserService.php",
+                "<?php\nnamespace App;\n\nuse App\\UserRepository;\n\nclass UserService {\n    private UserRepository $userRepository;\n\n    public function find(int $id): void {\n        $this->userRepository->getById($id);\n    }\n}\n",
+            ),
+        ],
+    );
+
+    // Open UserService.php
+    let svc_path = dir.path().join("src/UserService.php");
+    let svc_uri = Url::from_file_path(&svc_path).unwrap();
+    let svc_content = std::fs::read_to_string(&svc_path).unwrap();
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: svc_uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: svc_content,
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on "getById" in `$this->userRepository->getById($id)` on line 9
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: svc_uri.clone(),
+            },
+            position: Position {
+                line: 9,
+                character: 35,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve $this->userRepository->getById() cross-file via PSR-4"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert!(
+                location.uri.path().ends_with("UserRepository.php"),
+                "Should jump to UserRepository.php, got: {}",
+                location.uri
+            );
+            assert_eq!(
+                location.range.start.line, 4,
+                "getById is declared on line 4 in UserRepository.php"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+// ─── Chained Property Access (cross-file, docblock-only) ──────────────────
+
+/// Go-to-definition on a method through a chained property where the
+/// property's type is declared ONLY via a `@var` docblock and the target
+/// class is in a different file.  This is the common pattern in legacy
+/// PHP codebases (< 7.4) with dependency injection.
+#[tokio::test]
+async fn test_goto_definition_chained_property_cross_file_docblock() {
+    let (backend, dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+        &[
+            (
+                "src/UserRepository.php",
+                "<?php\nnamespace App;\n\nclass UserRepository {\n    public function getById(int $id): void {}\n}\n",
+            ),
+            (
+                "src/UserService.php",
+                "<?php\nnamespace App;\n\nuse App\\UserRepository;\n\nclass UserService {\n    /** @var UserRepository */\n    private $userRepository;\n\n    public function find(int $id): void {\n        $this->userRepository->getById($id);\n    }\n}\n",
+            ),
+        ],
+    );
+
+    let svc_path = dir.path().join("src/UserService.php");
+    let svc_uri = Url::from_file_path(&svc_path).unwrap();
+    let svc_content = std::fs::read_to_string(&svc_path).unwrap();
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: svc_uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: svc_content,
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on "getById" on line 10
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: svc_uri.clone(),
+            },
+            position: Position {
+                line: 10,
+                character: 35,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve $this->userRepository->getById() cross-file via @var docblock"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert!(
+                location.uri.path().ends_with("UserRepository.php"),
+                "Should jump to UserRepository.php, got: {}",
+                location.uri
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+// ─── Chained Property Access (docblock-only type, single file) ────────────
+
+/// Go-to-definition on a method called through a chained property whose
+/// type is declared only via a `@var` docblock (no native PHP type hint).
+/// This is common in legacy codebases (PHP < 7.4).
+#[tokio::test]
+async fn test_goto_definition_chained_property_docblock_type() {
+    let backend = create_test_backend();
+
+    let uri = Url::parse("file:///test.php").unwrap();
+    let text = concat!(
+        "<?php\n",                                        // 0
+        "class UserRepository {\n",                       // 1
+        "    public function getById(int $id): void {}\n",// 2
+        "}\n",                                            // 3
+        "\n",                                             // 4
+        "class UserService {\n",                          // 5
+        "    /** @var UserRepository */\n",               // 6
+        "    private $userRepository;\n",                 // 7
+        "\n",                                             // 8
+        "    public function find(int $id): void {\n",    // 9
+        "        $this->userRepository->getById($id);\n", // 10
+        "    }\n",                                        // 11
+        "}\n",                                            // 12
+    );
+
+    let open_params = DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: uri.clone(),
+            language_id: "php".to_string(),
+            version: 1,
+            text: text.to_string(),
+        },
+    };
+    backend.did_open(open_params).await;
+
+    // Click on "getById" in `$this->userRepository->getById($id)` on line 10
+    // "        $this->userRepository->getById($id);\n"
+    //  01234567890123456789012345678901234567
+    //                                      ^-- char 32 is 'g' in getById
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: uri.clone() },
+            position: Position {
+                line: 10,
+                character: 35,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve $this->userRepository->getById() via @var docblock type"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(location.uri, uri);
+            assert_eq!(
+                location.range.start.line, 2,
+                "getById is declared on line 2"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+// ─── Chained Property Access (cross-file with trait + promoted props) ──────
+
+/// Reproduces a real-world scenario where go-to-definition on a method
+/// through a chained property fails when:
+/// - The class uses a trait (from another unopened file)
+/// - The class has constructor-promoted properties
+/// - Only the file containing the call site is open
+///
+/// This mirrors the MetrificationService pattern reported by the user.
+#[tokio::test]
+async fn test_goto_definition_chain_with_trait_and_promoted_props() {
+    let (backend, dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+        &[
+            (
+                "src/SomeTrait.php",
+                "<?php\nnamespace App;\n\ntrait SomeTrait {\n    private function helper(): bool { return true; }\n}\n",
+            ),
+            (
+                "src/Repository.php",
+                "<?php\nnamespace App;\n\nclass Repository {\n    public function findById(int $id): void {}\n}\n",
+            ),
+            (
+                "src/Service.php",
+                concat!(
+                    "<?php\n",
+                    "namespace App;\n",
+                    "\n",
+                    "use App\\SomeTrait;\n",
+                    "use App\\Repository;\n",
+                    "\n",
+                    "class Service {\n",
+                    "    use SomeTrait;\n",
+                    "\n",
+                    "    private Repository $repository;\n",
+                    "\n",
+                    "    public function __construct(\n",
+                    "        private Repository $otherRepo,\n",
+                    "    ) {\n",
+                    "        $this->repository = new Repository();\n",
+                    "    }\n",
+                    "\n",
+                    "    public function handle(int $id): void {\n",
+                    "        $this->repository->findById($id);\n",
+                    "        $this->otherRepo->findById($id);\n",
+                    "    }\n",
+                    "}\n",
+                ),
+            ),
+        ],
+    );
+
+    // Only open Service.php — Repository.php and SomeTrait.php stay closed.
+    let svc_path = dir.path().join("src/Service.php");
+    let svc_uri = Url::from_file_path(&svc_path).unwrap();
+    let svc_content = std::fs::read_to_string(&svc_path).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: svc_uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: svc_content.clone(),
+            },
+        })
+        .await;
+
+    // ── Test 1: chained access through regular property ────────────
+    // "$this->repository->findById($id);" is on line 18
+    // "        $this->repository->findById($id);\n"
+    //  01234567890123456789012345678901234
+    //                                    ^ char 34 = 'f' in findById
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: svc_uri.clone(),
+            },
+            position: Position {
+                line: 18,
+                character: 34,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve $this->repository->findById() cross-file (regular property)"
+    );
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert!(
+                location.uri.path().ends_with("Repository.php"),
+                "Should jump to Repository.php, got: {}",
+                location.uri
+            );
+        }
+        other => panic!("Expected Scalar, got: {:?}", other),
+    }
+
+    // ── Test 2: chained access through promoted property ───────────
+    // "$this->otherRepo->findById($id);" is on line 19
+    let params2 = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: svc_uri.clone(),
+            },
+            position: Position {
+                line: 19,
+                character: 32,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result2 = backend.goto_definition(params2).await.unwrap();
+    assert!(
+        result2.is_some(),
+        "Should resolve $this->otherRepo->findById() cross-file (promoted property)"
+    );
+    match result2.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert!(
+                location.uri.path().ends_with("Repository.php"),
+                "Should jump to Repository.php, got: {}",
+                location.uri
+            );
+        }
+        other => panic!("Expected Scalar, got: {:?}", other),
+    }
+}
