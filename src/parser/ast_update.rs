@@ -424,6 +424,43 @@ impl Backend {
                 fqn_idx.remove(old_fqn);
             }
 
+            // Remove old classes from the children_index.  We only
+            // need to remove them as children of their parents — the
+            // parent entries themselves stay (other children may still
+            // reference them).
+            if !old_fqns.is_empty() {
+                let mut ci = self.children_index.write();
+                for old_cls in &old_classes_snapshot {
+                    if old_cls.name.starts_with("__anonymous@") {
+                        continue;
+                    }
+                    let old_fqn = match &old_cls.file_namespace {
+                        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, old_cls.name),
+                        _ => old_cls.name.clone(),
+                    };
+                    if let Some(ref parent) = old_cls.parent_class
+                        && let Some(children) = ci.get_mut(parent.as_str())
+                    {
+                        children.remove(&old_fqn);
+                    }
+                    for iface in &old_cls.interfaces {
+                        if let Some(children) = ci.get_mut(iface.as_str()) {
+                            children.remove(&old_fqn);
+                        }
+                    }
+                    for t in &old_cls.used_traits {
+                        if let Some(children) = ci.get_mut(t.as_str()) {
+                            children.remove(&old_fqn);
+                        }
+                    }
+                    for m in &old_cls.mixins {
+                        if let Some(children) = ci.get_mut(m.as_str()) {
+                            children.remove(&old_fqn);
+                        }
+                    }
+                }
+            }
+
             for (i, (class, class_ns)) in classes_with_ns.iter().enumerate() {
                 // Anonymous classes (named `__anonymous@<offset>`) are
                 // internal bookkeeping — they should never appear in
@@ -440,6 +477,37 @@ impl Backend {
                 // The `classes` vec already has `file_namespace` set,
                 // so use it for the fqn_index entry.
                 fqn_idx.insert(fqn, Arc::new(classes[i].clone()));
+            }
+
+            // Insert new classes into the children_index.
+            {
+                let mut ci = self.children_index.write();
+                for (class, class_ns) in &classes_with_ns {
+                    if class.name.starts_with("__anonymous@") {
+                        continue;
+                    }
+                    let child_fqn = if let Some(ns) = class_ns {
+                        format!("{}\\{}", ns, &class.name)
+                    } else {
+                        class.name.clone()
+                    };
+                    if let Some(ref parent) = class.parent_class {
+                        ci.entry(parent.clone())
+                            .or_default()
+                            .insert(child_fqn.clone());
+                    }
+                    for iface in &class.interfaces {
+                        ci.entry(iface.clone())
+                            .or_default()
+                            .insert(child_fqn.clone());
+                    }
+                    for t in &class.used_traits {
+                        ci.entry(t.clone()).or_default().insert(child_fqn.clone());
+                    }
+                    for m in &class.mixins {
+                        ci.entry(m.clone()).or_default().insert(child_fqn.clone());
+                    }
+                }
             }
         }
 
@@ -473,7 +541,44 @@ impl Backend {
         );
         self.symbol_maps
             .write()
-            .insert(uri_string.clone(), symbol_map);
+            .insert(uri_string.clone(), Arc::clone(&symbol_map));
+
+        // Update the inverted symbol name index.
+        {
+            let mut idx = self.symbol_name_index.write();
+            // Remove old entries for this URI.
+            for file_set in idx.values_mut() {
+                file_set.remove(&uri_string);
+            }
+            // Insert new entries from the fresh symbol map.
+            for span in &symbol_map.spans {
+                let name = match &span.kind {
+                    crate::symbol_map::SymbolKind::MemberAccess { member_name, .. } => {
+                        Some(member_name.as_str())
+                    }
+                    crate::symbol_map::SymbolKind::MemberDeclaration { name, .. } => {
+                        Some(name.as_str())
+                    }
+                    crate::symbol_map::SymbolKind::ClassReference { name, .. } => {
+                        Some(crate::util::short_name(name))
+                    }
+                    crate::symbol_map::SymbolKind::ClassDeclaration { name } => Some(name.as_str()),
+                    crate::symbol_map::SymbolKind::FunctionCall { name, .. } => {
+                        Some(crate::util::short_name(name))
+                    }
+                    crate::symbol_map::SymbolKind::ConstantReference { name } => {
+                        Some(name.as_str())
+                    }
+                    _ => None,
+                };
+                if let Some(n) = name {
+                    idx.entry(n.to_string())
+                        .or_default()
+                        .insert(uri_string.clone());
+                }
+            }
+        }
+
         self.use_map.write().insert(uri_string.clone(), use_map);
         self.resolved_names
             .write()
