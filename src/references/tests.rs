@@ -1391,3 +1391,23 @@ async fn test_this_method_references_excludes_unrelated() {
         lines
     );
 }
+
+#[test]
+fn workspace_scan_state_shared_across_clones() {
+    let backend = Backend::defaults();
+    let clone = backend.clone_for_blocking();
+
+    // Simulate the background worker marking the scan as COMPLETE.
+    clone
+        .workspace_scan_state
+        .store(2, std::sync::atomic::Ordering::Release);
+
+    // The original backend must observe the update through the shared Arc.
+    let state = backend
+        .workspace_scan_state
+        .load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        state, 2,
+        "workspace_scan_state must be shared via Arc::clone, not Arc::new"
+    );
+}

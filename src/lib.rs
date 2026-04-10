@@ -197,6 +197,12 @@ pub struct Backend {
     /// variables, function calls, etc.).  Consulted by `resolve_definition`
     /// to replace character-level backward-walking with a binary search.
     pub(crate) symbol_maps: Arc<RwLock<HashMap<String, Arc<symbol_map::SymbolMap>>>>,
+    /// Inverted index: symbol short name → set of file URIs containing it.
+    ///
+    /// Enables O(1) lookup of which files reference a given symbol name,
+    /// avoiding the O(N) full-workspace scan in find-references.
+    /// Updated in `update_ast_inner` and cleaned in `clear_file_maps`.
+    pub(crate) symbol_name_index: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     /// Per-file parse errors from the Mago parser.
     ///
     /// Each entry is `(message, start_byte_offset, end_byte_offset)`.
@@ -300,6 +306,12 @@ pub struct Backend {
     /// Maintained alongside `class_index` in `update_ast_inner` and
     /// `parse_and_cache_content_versioned`.
     pub(crate) fqn_index: Arc<RwLock<HashMap<String, Arc<ClassInfo>>>>,
+    /// Reverse inheritance index: parent FQN → set of direct child FQNs.
+    ///
+    /// Enables O(hierarchy_size) descendant lookup in find-references
+    /// instead of O(total_classes) linear scan.  Updated alongside
+    /// `ast_map` in `update_ast_inner` and `parse_and_cache_content_versioned`.
+    pub(crate) children_index: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     /// Negative-result cache for [`find_or_load_class`].
     ///
     /// Stores fully-qualified class names that have been looked up and
@@ -537,6 +549,19 @@ pub struct Backend {
     /// running child process is killed promptly instead of waiting up
     /// to 60 seconds.
     pub(crate) shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
+    /// Tri-state flag for the workspace directory scan in
+    /// [`ensure_workspace_indexed`](crate::references).
+    ///
+    /// - `0` (NOT_STARTED): no scan has been attempted yet.
+    /// - `1` (IN_PROGRESS): a thread is currently running the scan.
+    /// - `2` (COMPLETE): the scan finished; Phase 2 can be skipped.
+    ///
+    /// Uses `compare_exchange` to ensure only one thread (background
+    /// indexing or the first find-references call) runs the expensive
+    /// filesystem walk.  If a find-references call arrives while the
+    /// background scan is in progress, Phase 2 is skipped (the
+    /// background thread will finish and set COMPLETE).
+    pub(crate) workspace_scan_state: Arc<std::sync::atomic::AtomicU8>,
     // NOTE: resolved_class_cache uses parking_lot::Mutex because it is
     // frequently written (cache stores) and RwLock read→write upgrades
     // are error-prone.
@@ -568,6 +593,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            symbol_name_index: Arc::new(RwLock::new(HashMap::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
@@ -584,6 +610,7 @@ impl Backend {
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
             class_index: Arc::new(RwLock::new(HashMap::new())),
             fqn_index: Arc::new(RwLock::new(HashMap::new())),
+            children_index: Arc::new(RwLock::new(HashMap::new())),
             class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
             classmap: Arc::new(RwLock::new(HashMap::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
@@ -609,6 +636,7 @@ impl Backend {
             supports_file_rename: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_work_done_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             config: Mutex::new(config::Config::default()),
         }
     }
@@ -627,6 +655,7 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            symbol_name_index: Arc::new(RwLock::new(HashMap::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
@@ -643,6 +672,7 @@ impl Backend {
             autoload_file_paths: Arc::new(RwLock::new(Vec::new())),
             class_index: Arc::new(RwLock::new(HashMap::new())),
             fqn_index: Arc::new(RwLock::new(HashMap::new())),
+            children_index: Arc::new(RwLock::new(HashMap::new())),
             class_not_found_cache: Arc::new(RwLock::new(HashSet::new())),
             classmap: Arc::new(RwLock::new(HashMap::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
@@ -668,6 +698,7 @@ impl Backend {
             supports_file_rename: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             supports_work_done_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             config: Mutex::new(config::Config::default()),
         }
     }
@@ -878,6 +909,7 @@ impl Backend {
             open_files: Arc::clone(&self.open_files),
             ast_map: Arc::clone(&self.ast_map),
             symbol_maps: Arc::clone(&self.symbol_maps),
+            symbol_name_index: Arc::clone(&self.symbol_name_index),
             parse_errors: Arc::clone(&self.parse_errors),
             // RwLock fields are shared by Arc::clone — the diagnostic
             // worker reads them concurrently with the main Backend.
@@ -894,6 +926,7 @@ impl Backend {
             autoload_file_paths: Arc::clone(&self.autoload_file_paths),
             class_index: Arc::clone(&self.class_index),
             fqn_index: Arc::clone(&self.fqn_index),
+            children_index: Arc::clone(&self.children_index),
             classmap: Arc::clone(&self.classmap),
             phar_archives: Arc::clone(&self.phar_archives),
             class_not_found_cache: Arc::clone(&self.class_not_found_cache),
@@ -921,6 +954,7 @@ impl Backend {
             supports_file_rename: Arc::clone(&self.supports_file_rename),
             supports_work_done_progress: Arc::clone(&self.supports_work_done_progress),
             shutdown_flag: Arc::clone(&self.shutdown_flag),
+            workspace_scan_state: Arc::clone(&self.workspace_scan_state),
             config: Mutex::new(self.config.lock().clone()),
         }
     }

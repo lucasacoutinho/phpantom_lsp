@@ -364,25 +364,37 @@ impl Backend {
         locations
     }
 
-    /// Snapshot all symbol maps for user (non-vendor, non-stub) files.
-    ///
-    /// Ensures the workspace is indexed first, then returns a cloned
-    /// snapshot of every symbol map whose URI does not fall under the
-    /// vendor directory or the internal stub scheme.  All four cross-file
-    /// reference scanners use this to restrict results to user code.
-    fn user_file_symbol_maps(&self) -> Vec<(String, Arc<SymbolMap>)> {
+    /// Snapshot symbol maps for user files that contain the given symbol
+    /// name(s).  Uses the `symbol_name_index` for O(1) lookup instead
+    /// of scanning all files.
+    fn user_file_symbol_maps_for(&self, names: &[&str]) -> Vec<(String, Arc<SymbolMap>)> {
         self.ensure_workspace_indexed();
 
-        let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
+        // Collect candidate URIs from the inverted index.
+        let candidate_uris: HashSet<String> = {
+            let idx = self.symbol_name_index.read();
+            names
+                .iter()
+                .filter_map(|name| idx.get(*name))
+                .flat_map(|set| set.iter().cloned())
+                .collect()
+        };
 
+        if candidate_uris.is_empty() {
+            return Vec::new();
+        }
+
+        let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
         let maps = self.symbol_maps.read();
-        maps.iter()
-            .filter(|(uri, _)| {
+
+        candidate_uris
+            .iter()
+            .filter(|uri| {
                 !uri.starts_with("phpantom-stub://")
                     && !uri.starts_with("phpantom-stub-fn://")
                     && !vendor_prefixes.iter().any(|p| uri.starts_with(p.as_str()))
             })
-            .map(|(uri, map)| (uri.clone(), Arc::clone(map)))
+            .filter_map(|uri| maps.get(uri).map(|map| (uri.clone(), Arc::clone(map))))
             .collect()
     }
 
@@ -397,8 +409,9 @@ impl Backend {
         let target = strip_fqn_prefix(target_fqn);
         let target_short = crate::util::short_name(target);
 
-        // Snapshot user-file symbol maps (excludes vendor and stubs).
-        let snapshot = self.user_file_symbol_maps();
+        // Use the inverted index to only examine files containing
+        // the target class name.
+        let snapshot = self.user_file_symbol_maps_for(&[target_short]);
 
         for (file_uri, symbol_map) in &snapshot {
             // Prefer mago-names resolved_names for FQN resolution (byte-offset
@@ -525,9 +538,26 @@ impl Backend {
     ) -> Vec<Location> {
         let mut locations = Vec::new();
 
-        let snapshot = self.user_file_symbol_maps();
+        let snapshot = self.user_file_symbol_maps_for(&[target_member]);
 
         for (file_uri, symbol_map) in &snapshot {
+            // Quick pre-check: skip files with no MemberAccess or
+            // MemberDeclaration spans matching the target name.
+            let has_candidate = symbol_map.spans.iter().any(|s| match &s.kind {
+                SymbolKind::MemberAccess {
+                    member_name,
+                    is_static,
+                    ..
+                } => member_name == target_member && *is_static == target_is_static,
+                SymbolKind::MemberDeclaration { name, is_static } if include_declaration => {
+                    name == target_member && *is_static == target_is_static
+                }
+                _ => false,
+            });
+            if !has_candidate {
+                continue;
+            }
+
             let parsed_uri = match Url::parse(file_uri) {
                 Ok(u) => u,
                 Err(_) => continue,
@@ -662,9 +692,19 @@ impl Backend {
         // Input boundary: callers may pass FQNs with a leading `\`.
         let target = strip_fqn_prefix(target_fqn);
 
-        let snapshot = self.user_file_symbol_maps();
+        let snapshot = self.user_file_symbol_maps_for(&[target_short]);
 
         for (file_uri, symbol_map) in &snapshot {
+            // Quick pre-check: skip files with no FunctionCall spans
+            // whose short name could match the target.
+            let has_candidate = symbol_map.spans.iter().any(|s| {
+                matches!(&s.kind, SymbolKind::FunctionCall { name, .. }
+                    if crate::util::short_name(name) == target_short)
+            });
+            if !has_candidate {
+                continue;
+            }
+
             // Prefer mago-names resolved_names; lazy-load use_map only
             // when an offset is not tracked (e.g. docblock references).
             let resolved_names = self.resolved_names.read().get(file_uri).cloned();
@@ -746,9 +786,22 @@ impl Backend {
     ) -> Vec<Location> {
         let mut locations = Vec::new();
 
-        let snapshot = self.user_file_symbol_maps();
+        let snapshot = self.user_file_symbol_maps_for(&[target_name]);
 
         for (file_uri, symbol_map) in &snapshot {
+            // Quick pre-check: skip files with no matching constant or
+            // member-declaration spans.
+            let has_candidate = symbol_map.spans.iter().any(|s| match &s.kind {
+                SymbolKind::ConstantReference { name } => name == target_name,
+                SymbolKind::MemberDeclaration { name, is_static } if include_declaration => {
+                    name == target_name && *is_static
+                }
+                _ => false,
+            });
+            if !has_candidate {
+                continue;
+            }
+
             let parsed_uri = match Url::parse(file_uri) {
                 Ok(u) => u,
                 Err(_) => continue,
@@ -970,58 +1023,28 @@ impl Backend {
             self.collect_ancestors(fqn, &class_loader, &mut hierarchy);
         }
 
-        // Walk down: collect all descendants from ast_map and class_index.
-        // We iterate until no new FQNs are added (transitive closure).
+        // Walk down: collect all descendants using the reverse
+        // children_index.  O(hierarchy_size) instead of O(total_classes).
+        let ci = self.children_index.read();
         let mut changed = true;
         let mut depth = 0u32;
         while changed && depth < MAX_INHERITANCE_DEPTH {
             changed = false;
             depth += 1;
 
-            // Snapshot the current hierarchy to check against.
             let current: Vec<String> = hierarchy.iter().cloned().collect();
-
-            // Scan all known classes for ones that extend/implement/use
-            // anything in the current hierarchy.
-            let all_classes: Vec<ClassInfo> = {
-                let map = self.ast_map.read();
-                map.values()
-                    .flat_map(|classes| classes.iter().map(|c| ClassInfo::clone(c)))
-                    .collect()
-            };
-
-            for cls in &all_classes {
-                let cls_fqn = normalize_fqn(&cls.fqn());
-                if hierarchy.contains(&cls_fqn) {
-                    continue;
-                }
-
-                if self.class_is_descendant_of(cls, &current, &class_loader) {
-                    hierarchy.insert(cls_fqn);
-                    changed = true;
-                }
-            }
-
-            // Also check class_index entries not yet in ast_map.
-            let index_entries: Vec<String> = {
-                let idx = self.class_index.read();
-                idx.keys().cloned().collect()
-            };
-
-            for fqn in &index_entries {
-                let normalized = normalize_fqn(fqn);
-                if hierarchy.contains(&normalized) {
-                    continue;
-                }
-
-                if let Some(cls) = class_loader(fqn)
-                    && self.class_is_descendant_of(&cls, &current, &class_loader)
-                {
-                    hierarchy.insert(normalized);
-                    changed = true;
+            for fqn in &current {
+                if let Some(children) = ci.get(fqn) {
+                    for child_fqn in children {
+                        let normalized = normalize_fqn(child_fqn);
+                        if hierarchy.insert(normalized) {
+                            changed = true;
+                        }
+                    }
                 }
             }
         }
+        drop(ci);
 
         hierarchy
     }
@@ -1071,96 +1094,6 @@ impl Backend {
         }
     }
 
-    /// Check whether a class directly extends, implements, or uses
-    /// anything in the given set of FQNs.
-    fn class_is_descendant_of(
-        &self,
-        cls: &ClassInfo,
-        targets: &[String],
-        class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-    ) -> bool {
-        // Direct parent.
-        if let Some(ref parent) = cls.parent_class {
-            let parent_fqn = normalize_fqn(parent);
-            if targets.contains(&parent_fqn) {
-                return true;
-            }
-            // Transitive: walk the parent chain.
-            if self.ancestor_in_set(&parent_fqn, targets, class_loader, 0) {
-                return true;
-            }
-        }
-
-        // Direct interfaces.
-        for iface in &cls.interfaces {
-            let iface_fqn = normalize_fqn(iface);
-            if targets.contains(&iface_fqn) {
-                return true;
-            }
-            if self.ancestor_in_set(&iface_fqn, targets, class_loader, 0) {
-                return true;
-            }
-        }
-
-        // Used traits.
-        for trait_name in &cls.used_traits {
-            let trait_fqn = normalize_fqn(trait_name);
-            if targets.contains(&trait_fqn) {
-                return true;
-            }
-        }
-
-        // Mixins.
-        for mixin in &cls.mixins {
-            let mixin_fqn = normalize_fqn(mixin);
-            if targets.contains(&mixin_fqn) {
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// Recursively check whether any ancestor of `fqn` is in the target set.
-    fn ancestor_in_set(
-        &self,
-        fqn: &str,
-        targets: &[String],
-        class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-        depth: u32,
-    ) -> bool {
-        if depth >= MAX_INHERITANCE_DEPTH {
-            return false;
-        }
-
-        let cls = match class_loader(fqn) {
-            Some(c) => c,
-            None => return false,
-        };
-
-        if let Some(ref parent) = cls.parent_class {
-            let parent_fqn = normalize_fqn(parent);
-            if targets.contains(&parent_fqn) {
-                return true;
-            }
-            if self.ancestor_in_set(&parent_fqn, targets, class_loader, depth + 1) {
-                return true;
-            }
-        }
-
-        for iface in &cls.interfaces {
-            let iface_fqn = normalize_fqn(iface);
-            if targets.contains(&iface_fqn) {
-                return true;
-            }
-            if self.ancestor_in_set(&iface_fqn, targets, class_loader, depth + 1) {
-                return true;
-            }
-        }
-
-        false
-    }
-
     /// Ensure all workspace PHP files have been parsed and have symbol maps.
     ///
     /// This lazily parses files that are in the workspace directory but
@@ -1169,6 +1102,17 @@ impl Backend {
     /// `composer.json` `config.vendor-dir`, defaulting to `vendor`) is
     /// skipped during the filesystem walk.
     pub(crate) fn ensure_workspace_indexed(&self) {
+        // Fast path: if the workspace scan already completed (Phase 2
+        // finished), all user files have symbol maps.  Phase 1 is a
+        // subset of Phase 2, so there is nothing left to do.
+        if self
+            .workspace_scan_state
+            .load(std::sync::atomic::Ordering::Acquire)
+            == 2
+        {
+            return;
+        }
+
         // Collect URIs that already have symbol maps.
         let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
 
@@ -1208,35 +1152,63 @@ impl Backend {
 
         // ── Phase 2: workspace directory scan ───────────────────────────
         // Recursively discover PHP files in the workspace root that are
-        // not yet indexed.  This catches files that are not in the
-        // classmap, class_index, or already opened.  The vendor directory
-        // is skipped — find references only reports user code.  The walk
-        // respects .gitignore so that generated/cached directories (e.g.
-        // storage/framework/views/, var/cache/, node_modules/) are
-        // automatically excluded.
-        let workspace_root = self.workspace_root.read().clone();
+        // not yet indexed.  Guarded by a tri-state CAS so only one
+        // thread (background indexer or first find-references call) runs
+        // the expensive filesystem walk.
+        //
+        // States: 0 = NOT_STARTED, 1 = IN_PROGRESS, 2 = COMPLETE.
+        const NOT_STARTED: u8 = 0;
+        const IN_PROGRESS: u8 = 1;
+        const COMPLETE: u8 = 2;
 
-        if let Some(root) = workspace_root {
-            let vendor_dir_paths = self.vendor_dir_paths.lock().clone();
+        let prev = self.workspace_scan_state.compare_exchange(
+            NOT_STARTED,
+            IN_PROGRESS,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        );
 
-            // Re-read existing URIs after phase 1 may have added more.
-            let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
+        match prev {
+            Ok(_) => {
+                // We won the race -- run the walk + parse.
+                let workspace_root = self.workspace_root.read().clone();
 
-            let php_files = collect_php_files_gitignore(&root, &vendor_dir_paths);
+                if let Some(root) = workspace_root {
+                    let vendor_dir_paths = self.vendor_dir_paths.lock().clone();
 
-            let phase2_work: Vec<(String, PathBuf)> = php_files
-                .into_iter()
-                .filter_map(|path| {
-                    let uri = crate::util::path_to_uri(&path);
-                    if existing_uris.contains(&uri) {
-                        None
-                    } else {
-                        Some((uri, path))
-                    }
-                })
-                .collect();
+                    // Re-read existing URIs after phase 1 may have added more.
+                    let existing_uris: HashSet<String> =
+                        self.symbol_maps.read().keys().cloned().collect();
 
-            self.parse_paths_parallel(&phase2_work);
+                    let php_files = collect_php_files_gitignore(&root, &vendor_dir_paths);
+
+                    let phase2_work: Vec<(String, PathBuf)> = php_files
+                        .into_iter()
+                        .filter_map(|path| {
+                            let uri = crate::util::path_to_uri(&path);
+                            if existing_uris.contains(&uri) {
+                                None
+                            } else {
+                                Some((uri, path))
+                            }
+                        })
+                        .collect();
+
+                    self.parse_paths_parallel(&phase2_work);
+
+                    self.workspace_scan_state
+                        .store(COMPLETE, std::sync::atomic::Ordering::Release);
+                } else {
+                    self.workspace_scan_state
+                        .store(COMPLETE, std::sync::atomic::Ordering::Release);
+                }
+            }
+            Err(IN_PROGRESS) => {
+                // Background thread is running the walk -- skip Phase 2.
+            }
+            Err(_) => {
+                // COMPLETE -- skip Phase 2.
+            }
         }
     }
 

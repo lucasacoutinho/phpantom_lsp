@@ -777,6 +777,83 @@ fn bench_diagnostics_phpactor_fixtures(c: &mut Criterion) {
     group.finish();
 }
 
+// ─── Find-references benchmarks ───────────────────────────────────────────
+//
+// Measures find-references with class hierarchies of varying size.
+// The children_index optimization turns O(total_classes) hierarchy
+// descent into O(hierarchy_size), which matters on large codebases.
+
+/// Set up a backend simulating a large codebase: `noise_count` unrelated
+/// classes (each in its own file) plus a small hierarchy of 10
+/// implementors of one interface.  The hierarchy size is fixed — what
+/// varies is the total codebase size, which is what the old O(N) scan
+/// had to iterate through.
+fn setup_large_codebase_backend(noise_count: usize) -> (Backend, String, String) {
+    let backend = Backend::new_test();
+
+    // Bulk-insert unrelated "noise" classes — one per file.
+    for i in 0..noise_count {
+        let src =
+            format!("<?php\nclass Noise{i} {{\n    public function doStuff(): void {{}}\n}}\n");
+        backend.update_ast(&format!("file:///noise_{i}.php"), &src);
+    }
+
+    // Small hierarchy: 1 interface + 10 implementors.
+    backend.update_ast(
+        "file:///iface.php",
+        "<?php\ninterface Notifiable {\n    public function notify(): void;\n}\n",
+    );
+    for i in 0..10 {
+        let src = format!(
+            "<?php\nclass Listener{i} implements Notifiable {{\n    public function notify(): void {{}}\n}}\n"
+        );
+        backend.update_ast(&format!("file:///listener_{i}.php"), &src);
+    }
+
+    // Dispatcher file with usage.
+    let dispatcher = "<?php\nclass Dispatcher {\n    public function dispatch(Notifiable $n): void {\n        $n->notify();\n    }\n}\n".to_string();
+    let uri = "file:///dispatcher.php".to_string();
+    backend.update_ast(&uri, &dispatcher);
+
+    (backend, uri, dispatcher)
+}
+
+fn bench_find_references_hierarchy(c: &mut Criterion) {
+    let mut group = c.benchmark_group("find_references_hierarchy");
+    // Increase measurement time for larger variants.
+    group.measurement_time(std::time::Duration::from_secs(10));
+
+    for &noise in &[0, 1_000, 10_000, 100_000] {
+        let label = if noise == 0 {
+            "10_impl_no_noise".to_string()
+        } else {
+            format!("10_impl_{noise}_noise")
+        };
+
+        let (backend, uri, source) = setup_large_codebase_backend(noise);
+
+        let lines: Vec<&str> = source.lines().collect();
+        let notify_line = lines
+            .iter()
+            .rposition(|l| l.contains("$n->notify()"))
+            .unwrap() as u32;
+        let notify_col = lines[notify_line as usize].find("notify()").unwrap() as u32;
+
+        group.bench_function(&label, |b| {
+            b.iter(|| {
+                black_box(backend.find_references(
+                    &uri,
+                    &source,
+                    Position::new(notify_line, notify_col),
+                    true,
+                ))
+            })
+        });
+    }
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_cold_start,
@@ -797,5 +874,6 @@ criterion_group!(
     bench_update_ast,
     bench_reparse_after_edit,
     bench_diagnostics_phpactor_fixtures,
+    bench_find_references_hierarchy,
 );
 criterion_main!(benches);
