@@ -344,7 +344,7 @@ impl Backend {
             }
 
             // ── Too many arguments ──────────────────────────────────
-            if !self.config().diagnostics.extra_arguments_enabled() {
+            if !self.config_for(uri).diagnostics.extra_arguments_enabled() {
                 continue;
             }
 

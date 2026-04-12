@@ -492,7 +492,11 @@ impl Backend {
                     // subject type could not be resolved — regardless of
                     // whether the subject is a bare variable, a chain, an
                     // array access, or a function call result.
-                    if self.config().diagnostics.unresolved_member_access_enabled() {
+                    if self
+                        .config_for(uri)
+                        .diagnostics
+                        .unresolved_member_access_enabled()
+                    {
                         let range = match offset_range_to_lsp_range(
                             content,
                             span.start as usize,

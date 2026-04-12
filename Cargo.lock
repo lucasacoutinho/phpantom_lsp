@@ -1381,6 +1381,7 @@ dependencies = [
  "datatest-stable",
  "etcetera",
  "flate2",
+ "glob",
  "ignore",
  "mago-composer",
  "mago-database",

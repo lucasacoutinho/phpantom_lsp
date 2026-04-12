@@ -10,6 +10,7 @@
 //! Project settings override global settings.  When neither file
 //! exists, all settings use their defaults.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use etcetera::BaseStrategy as _;
@@ -31,6 +32,11 @@ pub struct Config {
     pub phpstan: PhpStanConfig,
     /// PHPCS (PHP_CodeSniffer) proxy settings.
     pub phpcs: PhpcsConfig,
+    /// Workspace configuration for monorepo support.
+    ///
+    /// When present, defines subproject members and optional per-member
+    /// overrides.  Only meaningful in the root `.phpantom.toml`.
+    pub workspace: Option<WorkspaceConfig>,
 }
 
 /// `[php]` section — PHP version override.
@@ -218,6 +224,61 @@ impl PhpcsConfig {
     }
 }
 
+/// `[workspace]` section — monorepo configuration.
+///
+/// Allows a root `.phpantom.toml` to define which subdirectories are
+/// independent PHP projects and to override settings per member without
+/// requiring a `.phpantom.toml` in each subdirectory.
+///
+/// Example:
+/// ```toml
+/// [workspace]
+/// members = ["packages/*", "apps/*"]
+///
+/// [workspace.member."packages/legacy-lib"]
+/// php.version = "7.4"
+///
+/// [workspace.member."apps/api"]
+/// php.version = "8.4"
+/// ```
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct WorkspaceConfig {
+    /// Glob patterns or directory paths for subproject members.
+    ///
+    /// Each pattern is resolved relative to the workspace root.
+    /// Only directories that contain a `composer.json` are considered
+    /// valid members.  Example: `["packages/*", "apps/frontend"]`.
+    pub members: Vec<String>,
+    /// Per-member configuration overrides, keyed by relative path from
+    /// the workspace root.
+    ///
+    /// Example key: `"packages/legacy-lib"`.  Values are partial
+    /// configs that are merged on top of the root config for that
+    /// specific member.
+    pub member: Option<HashMap<String, MemberOverride>>,
+}
+
+/// Per-member override config.  Same shape as [`Config`] but all
+/// sections are optional — only specified sections override the root
+/// config.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct MemberOverride {
+    /// Override PHP version settings for this member.
+    pub php: Option<PhpConfig>,
+    /// Override diagnostic toggles for this member.
+    pub diagnostics: Option<DiagnosticsConfig>,
+    /// Override indexing strategy for this member.
+    pub indexing: Option<IndexingConfig>,
+    /// Override formatting settings for this member.
+    pub formatting: Option<FormattingConfig>,
+    /// Override PHPStan settings for this member.
+    pub phpstan: Option<PhpStanConfig>,
+    /// Override PHPCS settings for this member.
+    pub phpcs: Option<PhpcsConfig>,
+}
+
 /// `[indexing]` section — controls how PHPantom discovers classes across
 /// the workspace.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -397,6 +458,148 @@ pub fn load_config(workspace_root: &Path) -> Result<Config, ConfigError> {
     })?;
 
     Ok(config)
+}
+
+/// Load configuration for a specific subproject in a monorepo.
+///
+/// Merges in order (later layers override earlier ones):
+///   1. `root_config` (already includes global + root `.phpantom.toml`)
+///   2. Subproject's own `.phpantom.toml` (if present)
+///   3. `[workspace.member."<rel_path>"]` override from root config
+///
+/// This gives subproject-local config files the highest base priority,
+/// but allows the root workspace config to centrally override specific
+/// members without requiring per-directory config files.
+pub fn load_subproject_config(
+    workspace_root: &Path,
+    subproject_root: &Path,
+    root_config: &Config,
+) -> Config {
+    // Start from the root config as baseline.
+    let mut config = root_config.clone();
+
+    // Layer the subproject's own .phpantom.toml if present.
+    let sub_config_path = subproject_root.join(CONFIG_FILE_NAME);
+    if let Ok(Some(sub_table)) = load_toml_table(&sub_config_path)
+        && let Ok(sub_config) = toml::Value::Table(sub_table).try_into::<Config>()
+    {
+        // Merge non-default fields from sub_config into config.
+        if sub_config.php.version.is_some() {
+            config.php = sub_config.php;
+        }
+        if sub_config.diagnostics.unresolved_member_access.is_some()
+            || sub_config.diagnostics.extra_arguments.is_some()
+        {
+            config.diagnostics = sub_config.diagnostics;
+        }
+        if sub_config.indexing.strategy.is_some() {
+            config.indexing = sub_config.indexing;
+        }
+        if sub_config.formatting.php_cs_fixer.is_some()
+            || sub_config.formatting.phpcbf.is_some()
+            || sub_config.formatting.timeout.is_some()
+        {
+            config.formatting = sub_config.formatting;
+        }
+        if sub_config.phpstan.command.is_some()
+            || sub_config.phpstan.memory_limit.is_some()
+            || sub_config.phpstan.timeout.is_some()
+        {
+            config.phpstan = sub_config.phpstan;
+        }
+        if sub_config.phpcs.command.is_some()
+            || sub_config.phpcs.standard.is_some()
+            || sub_config.phpcs.timeout.is_some()
+        {
+            config.phpcs = sub_config.phpcs;
+        }
+    }
+
+    // Apply member-specific overrides from root config's [workspace.member.*].
+    if let Some(ref ws) = root_config.workspace
+        && let Some(ref members) = ws.member
+    {
+        let rel_path = subproject_root
+            .strip_prefix(workspace_root)
+            .unwrap_or(subproject_root);
+        let key = rel_path.to_string_lossy();
+        if let Some(ovr) = members.get(key.as_ref()) {
+            apply_member_override(&mut config, ovr);
+        }
+    }
+
+    // Strip the workspace section — subproject configs should not nest.
+    config.workspace = None;
+
+    config
+}
+
+/// Apply a [`MemberOverride`] to a config, overriding only the
+/// sections that are explicitly set.
+fn apply_member_override(config: &mut Config, ovr: &MemberOverride) {
+    if let Some(ref php) = ovr.php
+        && php.version.is_some()
+    {
+        config.php = php.clone();
+    }
+    if let Some(ref diag) = ovr.diagnostics
+        && (diag.unresolved_member_access.is_some() || diag.extra_arguments.is_some())
+    {
+        config.diagnostics = diag.clone();
+    }
+    if let Some(ref idx) = ovr.indexing
+        && idx.strategy.is_some()
+    {
+        config.indexing = idx.clone();
+    }
+    if let Some(ref fmt) = ovr.formatting {
+        config.formatting = fmt.clone();
+    }
+    if let Some(ref ps) = ovr.phpstan {
+        config.phpstan = ps.clone();
+    }
+    if let Some(ref cs) = ovr.phpcs {
+        config.phpcs = cs.clone();
+    }
+}
+
+/// Expand workspace member glob patterns into concrete subproject root
+/// paths.
+///
+/// Each pattern in `patterns` is resolved relative to `workspace_root`.
+/// Only directories that contain a `composer.json` are included in the
+/// result.  Glob patterns like `"packages/*"` expand to all matching
+/// child directories.
+pub fn expand_workspace_members(workspace_root: &Path, patterns: &[String]) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+
+    for pattern in patterns {
+        let full_pattern = workspace_root.join(pattern);
+        let pattern_str = full_pattern.to_string_lossy();
+
+        if let Ok(entries) = glob::glob(&pattern_str) {
+            for entry in entries.flatten() {
+                if entry.is_dir() && entry.join("composer.json").exists() {
+                    // Avoid duplicates.
+                    if !results.contains(&entry) {
+                        results.push(entry);
+                    }
+                }
+            }
+        } else {
+            // Pattern is not a valid glob — try it as a literal path.
+            let literal = workspace_root.join(pattern);
+            if literal.is_dir()
+                && literal.join("composer.json").exists()
+                && !results.contains(&literal)
+            {
+                results.push(literal);
+            }
+        }
+    }
+
+    results.sort();
+    results
 }
 
 /// Errors that can occur when loading the config file.
@@ -936,5 +1139,167 @@ timeout = 15000
         merge_toml(&mut base, overlay);
         let config: Config = base.try_into().unwrap();
         assert_eq!(config.indexing.strategy, Some(IndexingStrategy::SelfScan));
+    }
+
+    #[test]
+    fn parses_workspace_section() {
+        let toml_str = r#"
+[php]
+version = "8.4"
+
+[workspace]
+members = ["packages/*", "apps/*"]
+
+[workspace.member."packages/legacy"]
+php.version = "7.4"
+
+[workspace.member."apps/api"]
+php.version = "8.3"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.php.version.as_deref(), Some("8.4"));
+        let ws = config.workspace.as_ref().unwrap();
+        assert_eq!(ws.members, vec!["packages/*", "apps/*"]);
+        let members = ws.member.as_ref().unwrap();
+        assert_eq!(members.len(), 2);
+        assert_eq!(
+            members["packages/legacy"]
+                .php
+                .as_ref()
+                .unwrap()
+                .version
+                .as_deref(),
+            Some("7.4")
+        );
+        assert_eq!(
+            members["apps/api"].php.as_ref().unwrap().version.as_deref(),
+            Some("8.3")
+        );
+    }
+
+    #[test]
+    fn workspace_section_is_optional() {
+        let config: Config = toml::from_str("[php]\nversion = \"8.4\"\n").unwrap();
+        assert!(config.workspace.is_none());
+    }
+
+    #[test]
+    fn load_subproject_config_applies_member_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Create workspace root config with member overrides.
+        let root_toml = r#"
+[php]
+version = "8.4"
+
+[workspace]
+members = ["packages/*"]
+
+[workspace.member."packages/legacy"]
+php.version = "7.4"
+"#;
+        std::fs::write(root.join(CONFIG_FILE_NAME), root_toml).unwrap();
+        let root_config = load_config(root).unwrap();
+
+        // Create a subproject directory (no subproject-level config).
+        let sub_root = root.join("packages").join("legacy");
+        std::fs::create_dir_all(&sub_root).unwrap();
+
+        let sub_config = load_subproject_config(root, &sub_root, &root_config);
+        assert_eq!(sub_config.php.version.as_deref(), Some("7.4"));
+        // workspace section should be stripped
+        assert!(sub_config.workspace.is_none());
+    }
+
+    #[test]
+    fn load_subproject_config_subproject_file_overrides_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Root config: PHP 8.4
+        std::fs::write(root.join(CONFIG_FILE_NAME), "[php]\nversion = \"8.4\"\n").unwrap();
+        let root_config = load_config(root).unwrap();
+
+        // Subproject has its own .phpantom.toml: PHP 8.1
+        let sub_root = root.join("packages").join("app");
+        std::fs::create_dir_all(&sub_root).unwrap();
+        std::fs::write(
+            sub_root.join(CONFIG_FILE_NAME),
+            "[php]\nversion = \"8.1\"\n",
+        )
+        .unwrap();
+
+        let sub_config = load_subproject_config(root, &sub_root, &root_config);
+        assert_eq!(sub_config.php.version.as_deref(), Some("8.1"));
+    }
+
+    #[test]
+    fn load_subproject_config_member_override_wins_over_subproject_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Root config with member override: PHP 7.4
+        let root_toml = r#"
+[php]
+version = "8.4"
+
+[workspace.member."packages/legacy"]
+php.version = "7.4"
+"#;
+        std::fs::write(root.join(CONFIG_FILE_NAME), root_toml).unwrap();
+        let root_config = load_config(root).unwrap();
+
+        // Subproject's own .phpantom.toml says 8.1
+        let sub_root = root.join("packages").join("legacy");
+        std::fs::create_dir_all(&sub_root).unwrap();
+        std::fs::write(
+            sub_root.join(CONFIG_FILE_NAME),
+            "[php]\nversion = \"8.1\"\n",
+        )
+        .unwrap();
+
+        let sub_config = load_subproject_config(root, &sub_root, &root_config);
+        // Member override (7.4) wins over subproject file (8.1)
+        assert_eq!(sub_config.php.version.as_deref(), Some("7.4"));
+    }
+
+    #[test]
+    fn load_subproject_config_falls_back_to_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        std::fs::write(root.join(CONFIG_FILE_NAME), "[php]\nversion = \"8.4\"\n").unwrap();
+        let root_config = load_config(root).unwrap();
+
+        // Subproject with no config file and no member override.
+        let sub_root = root.join("packages").join("app");
+        std::fs::create_dir_all(&sub_root).unwrap();
+
+        let sub_config = load_subproject_config(root, &sub_root, &root_config);
+        assert_eq!(sub_config.php.version.as_deref(), Some("8.4"));
+    }
+
+    #[test]
+    fn expand_workspace_members_finds_matching_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        // Create packages/app-a and packages/app-b with composer.json
+        let app_a = root.join("packages").join("app-a");
+        let app_b = root.join("packages").join("app-b");
+        let no_composer = root.join("packages").join("scripts");
+        std::fs::create_dir_all(&app_a).unwrap();
+        std::fs::create_dir_all(&app_b).unwrap();
+        std::fs::create_dir_all(&no_composer).unwrap();
+        std::fs::write(app_a.join("composer.json"), "{}").unwrap();
+        std::fs::write(app_b.join("composer.json"), "{}").unwrap();
+        // no_composer has no composer.json
+
+        let members = expand_workspace_members(root, &["packages/*".to_string()]);
+        assert_eq!(members.len(), 2);
+        assert!(members.contains(&app_a));
+        assert!(members.contains(&app_b));
+        assert!(!members.contains(&no_composer));
     }
 }

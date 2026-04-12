@@ -89,6 +89,44 @@
           "minimum": 0
         }
       }
+    },
+    "workspace": {
+      "type": "object",
+      "description": "Monorepo workspace configuration. Defines which subdirectories are independent PHP projects and allows per-member configuration overrides. Only meaningful in the root .phpantom.toml.",
+      "properties": {
+        "members": {
+          "type": "array",
+          "description": "Glob patterns or directory paths for subproject members, relative to the workspace root. Only directories containing a composer.json are valid. Example: [\"packages/*\", \"apps/*\"].",
+          "items": {
+            "type": "string"
+          }
+        },
+        "member": {
+          "type": "object",
+          "description": "Per-member configuration overrides, keyed by relative path from the workspace root. Each value is a partial config that overrides the root config for that member.",
+          "additionalProperties": {
+            "type": "object",
+            "description": "Configuration overrides for a specific workspace member.",
+            "properties": {
+              "php": {
+                "$ref": "#/properties/php"
+              },
+              "diagnostics": {
+                "$ref": "#/properties/diagnostics"
+              },
+              "indexing": {
+                "$ref": "#/properties/indexing"
+              },
+              "formatting": {
+                "$ref": "#/properties/formatting"
+              },
+              "phpstan": {
+                "$ref": "#/properties/phpstan"
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

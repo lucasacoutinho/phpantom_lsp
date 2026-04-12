@@ -104,7 +104,7 @@ impl Backend {
         let doc_ctx = DocblockCtx {
             trivias: program.trivia.as_slice(),
             content,
-            php_version: Some(self.php_version()),
+            php_version: Some(self.php_version_for(uri)),
             use_map: HashMap::new(),
             namespace: None,
         };

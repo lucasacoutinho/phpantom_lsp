@@ -980,7 +980,7 @@ impl Backend {
             };
 
             // ── Step 4: resolve PHPStan binary ──────────────────────
-            let config = self.config();
+            let config = self.config_for(&uri);
             if config.phpstan.is_disabled() {
                 continue;
             }
@@ -990,8 +990,12 @@ impl Backend {
                 None => continue,
             };
 
+            // In multi-workspace mode, use the subproject root for tool
+            // resolution; otherwise fall back to workspace root.
+            let project_root = self.project_root_for(&uri);
             let workspace_root = self.workspace_root.read().clone();
-            let workspace_root = match workspace_root {
+            let effective_root = project_root.or(workspace_root);
+            let workspace_root = match effective_root {
                 Some(root) => root,
                 None => continue,
             };
@@ -1160,7 +1164,7 @@ impl Backend {
             };
 
             // ── Step 4: resolve PHPCS binary ────────────────────────
-            let config = self.config();
+            let config = self.config_for(&uri);
             if config.phpcs.is_disabled() {
                 continue;
             }
@@ -1170,8 +1174,12 @@ impl Backend {
                 None => continue,
             };
 
+            // In multi-workspace mode, use the subproject root for tool
+            // resolution; otherwise fall back to workspace root.
+            let project_root = self.project_root_for(&uri);
             let workspace_root = self.workspace_root.read().clone();
-            let workspace_root = match workspace_root {
+            let effective_root = project_root.or(workspace_root);
+            let workspace_root = match effective_root {
                 Some(root) => root,
                 None => continue,
             };

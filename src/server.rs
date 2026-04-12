@@ -249,7 +249,6 @@ impl LanguageServer for Backend {
                         .and_then(composer::detect_php_version_from_package)
                         .unwrap_or_default()
                 });
-            self.set_php_version(php_version);
 
             let has_composer_json = composer_package.is_some();
 
@@ -262,6 +261,12 @@ impl LanguageServer for Backend {
 
             if has_composer_json {
                 // ── Single-project path (root composer.json exists) ──────
+                // Filter stubs for the single PHP version (fast path).
+                self.set_php_version(php_version);
+
+                let ws_map = crate::workspace::WorkspaceMap::single(self.config(), php_version);
+                *self.workspace_map.write() = ws_map;
+
                 self.init_single_project(
                     &root,
                     php_version,
@@ -271,13 +276,87 @@ impl LanguageServer for Backend {
                 .await;
             } else {
                 // ── Monorepo / non-Composer path ────────────────────────
-                let subprojects = composer::discover_subproject_roots(&root);
+                let root_config = self.config();
+
+                // Discover subprojects: prefer [workspace].members from
+                // the root config, fall back to auto-discovery.
+                let subprojects = if let Some(ref ws) = root_config.workspace {
+                    if !ws.members.is_empty() {
+                        // Expand globs and pair with vendor dir from each
+                        // subproject's composer.json.
+                        crate::config::expand_workspace_members(&root, &ws.members)
+                            .into_iter()
+                            .map(|sub_root| {
+                                let vendor_dir = composer::read_composer_package(&sub_root)
+                                    .map(|pkg| composer::get_vendor_dir(&pkg))
+                                    .unwrap_or_else(|| "vendor".to_string());
+                                (sub_root, vendor_dir)
+                            })
+                            .collect()
+                    } else {
+                        composer::discover_subproject_roots(&root)
+                    }
+                } else {
+                    composer::discover_subproject_roots(&root)
+                };
 
                 if !subprojects.is_empty() {
+                    // ── Build per-subproject workspace map ──────────────
+                    // Set the root PHP version without filtering stubs.
+                    // In multi-workspace mode, stubs remain unfiltered so
+                    // that each subproject can resolve stubs for its own
+                    // PHP version at lookup time.
+                    *self.php_version.lock() = php_version;
+
+                    let mut ws_subprojects = Vec::new();
+                    for (sub_root, vendor_dir) in &subprojects {
+                        let sub_config =
+                            crate::config::load_subproject_config(&root, sub_root, &root_config);
+
+                        // Detect PHP version for this subproject:
+                        // config override → composer.json → root fallback.
+                        let sub_php_version = sub_config
+                            .php
+                            .version
+                            .as_deref()
+                            .and_then(crate::types::PhpVersion::from_composer_constraint)
+                            .unwrap_or_else(|| {
+                                composer::detect_php_version(sub_root).unwrap_or(php_version)
+                            });
+
+                        let uri_prefix = crate::util::path_to_uri(sub_root);
+                        // Ensure trailing slash for prefix matching.
+                        let uri_prefix = if uri_prefix.ends_with('/') {
+                            uri_prefix
+                        } else {
+                            format!("{}/", uri_prefix)
+                        };
+
+                        ws_subprojects.push(crate::workspace::SubProject {
+                            root: sub_root.clone(),
+                            uri_prefix,
+                            config: sub_config,
+                            php_version: sub_php_version,
+                            vendor_dir: vendor_dir.clone(),
+                        });
+                    }
+
+                    let ws_map = crate::workspace::WorkspaceMap::multi(
+                        ws_subprojects,
+                        root_config,
+                        php_version,
+                    );
+                    *self.workspace_map.write() = ws_map;
+
                     self.init_monorepo(&root, &subprojects, php_version, progress_token.as_ref())
                         .await;
                 } else {
                     // No subprojects found — pure non-Composer workspace.
+                    self.set_php_version(php_version);
+
+                    let ws_map = crate::workspace::WorkspaceMap::single(root_config, php_version);
+                    *self.workspace_map.write() = ws_map;
+
                     self.init_no_composer(&root, php_version, progress_token.as_ref())
                         .await;
                 }
@@ -791,18 +870,22 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = params.text_document.uri.to_string();
-        let config = self.config();
+        let config = self.config_for(&uri);
+
+        // In multi-workspace mode, use the subproject root for tool
+        // resolution; otherwise fall back to workspace root.
+        let project_root = self.project_root_for(&uri);
+        let workspace_root = self.workspace_root.read().clone();
+        let effective_root = project_root.as_deref().or(workspace_root.as_deref());
 
         // Read Composer metadata for require-dev detection and bin-dir.
-        let workspace_root = self.workspace_root.read().clone();
-        let composer_json: Option<composer::ComposerPackage> = workspace_root
-            .as_deref()
-            .and_then(composer::read_composer_package);
+        let composer_json: Option<composer::ComposerPackage> =
+            effective_root.and_then(composer::read_composer_package);
         let bin_dir: Option<String> = composer_json.as_ref().map(composer::get_bin_dir);
 
         // Resolve the formatting strategy: external tools, built-in, or disabled.
         let strategy = formatting::resolve_strategy(
-            workspace_root.as_deref(),
+            effective_root,
             &config.formatting,
             composer_json.as_ref(),
             bin_dir.as_deref(),
@@ -821,7 +904,7 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let php_version = self.php_version();
+        let php_version = self.php_version_for(&uri);
 
         // Execute the resolved formatting strategy on a blocking thread
         // to avoid stalling the async runtime while external tools run.

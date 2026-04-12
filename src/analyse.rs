@@ -39,6 +39,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+#[cfg(debug_assertions)]
 use std::time::{Duration, Instant};
 
 use tower_lsp::lsp_types::*;

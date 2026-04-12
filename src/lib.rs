@@ -137,6 +137,7 @@ mod type_hierarchy;
 pub mod types;
 mod util;
 pub(crate) mod virtual_members;
+pub mod workspace;
 mod workspace_symbols;
 
 #[cfg(test)]
@@ -356,6 +357,14 @@ pub struct Backend {
     /// `ast_map` and PSR-4 resolution.  Stub files are parsed lazily on
     /// first access and cached in `ast_map` under `phpantom-stub://` URIs.
     pub(crate) stub_index: RwLock<HashMap<&'static str, &'static str>>,
+    /// Unfiltered embedded PHP stubs for built-in classes/interfaces.
+    ///
+    /// Contains every stub entry regardless of PHP version.  Built once
+    /// during construction and never mutated.  Used as the source of
+    /// truth when rebuilding the version-filtered `stub_index` via
+    /// [`set_php_version`](Self::set_php_version), and for per-file
+    /// version-aware lookups in multi-workspace mode.
+    pub(crate) stub_index_full: HashMap<&'static str, &'static str>,
     /// Cache of fully-resolved classes (inheritance + virtual members).
     ///
     /// Keyed by fully-qualified class name.  Populated lazily by
@@ -372,6 +381,12 @@ pub struct Backend {
     /// remove stubs that do not exist in the target PHP version.
     /// Can be consulted to resolve return types of built-in function calls.
     pub(crate) stub_function_index: RwLock<HashMap<&'static str, &'static str>>,
+    /// Unfiltered embedded PHP stubs for built-in functions.
+    ///
+    /// Contains every stub entry regardless of PHP version.  Built once
+    /// during construction and never mutated.  Used as the source of
+    /// truth when rebuilding the version-filtered `stub_function_index`.
+    pub(crate) stub_function_index_full: HashMap<&'static str, &'static str>,
     /// Embedded PHP stubs for built-in constants (e.g. `PHP_EOL`,
     /// `SORT_ASC`, …).  Maps constant name → raw PHP source code.
     ///
@@ -380,6 +395,11 @@ pub struct Backend {
     /// remove stubs that do not exist in the target PHP version.
     /// Can be consulted when resolving standalone constant references.
     pub(crate) stub_constant_index: RwLock<HashMap<&'static str, &'static str>>,
+    /// Unfiltered embedded PHP stubs for built-in constants.
+    ///
+    /// Contains every stub entry regardless of PHP version.  Built once
+    /// during construction and never mutated.
+    pub(crate) stub_constant_index_full: HashMap<&'static str, &'static str>,
     /// The target PHP version used for version-aware stub filtering.
     ///
     /// Detected from `composer.json` (`require.php`) during server
@@ -573,6 +593,13 @@ pub struct Backend {
     /// (which receives `&self`) can set it after loading the file.
     /// The diagnostic worker snapshots the value at spawn time.
     pub(crate) config: Mutex<config::Config>,
+    /// Multi-workspace map for per-subproject config and PHP version.
+    ///
+    /// In single-project mode this contains no subprojects and all
+    /// queries fall through to the root config / PHP version.  In
+    /// monorepo mode, file URIs are matched to their owning subproject
+    /// via longest-prefix matching on the URI string.
+    pub(crate) workspace_map: Arc<RwLock<workspace::WorkspaceMap>>,
 }
 
 impl Backend {
@@ -615,8 +642,11 @@ impl Backend {
             classmap: Arc::new(RwLock::new(HashMap::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
             stub_index: RwLock::new(stubs::build_stub_class_index()),
+            stub_index_full: stubs::build_stub_class_index(),
             stub_function_index: RwLock::new(stubs::build_stub_function_index()),
+            stub_function_index_full: stubs::build_stub_function_index(),
             stub_constant_index: RwLock::new(stubs::build_stub_constant_index()),
+            stub_constant_index_full: stubs::build_stub_constant_index(),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
             php_version: Mutex::new(types::PhpVersion::default()),
             diag_version: Arc::new(AtomicU64::new(0)),
@@ -638,6 +668,7 @@ impl Backend {
             shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             config: Mutex::new(config::Config::default()),
+            workspace_map: Arc::new(RwLock::new(workspace::WorkspaceMap::default())),
         }
     }
 
@@ -677,8 +708,11 @@ impl Backend {
             classmap: Arc::new(RwLock::new(HashMap::new())),
             phar_archives: Arc::new(RwLock::new(HashMap::new())),
             stub_index: RwLock::new(HashMap::new()),
+            stub_index_full: HashMap::new(),
             stub_function_index: RwLock::new(HashMap::new()),
+            stub_function_index_full: HashMap::new(),
             stub_constant_index: RwLock::new(HashMap::new()),
+            stub_constant_index_full: HashMap::new(),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
             php_version: Mutex::new(types::PhpVersion::default()),
             diag_version: Arc::new(AtomicU64::new(0)),
@@ -700,6 +734,7 @@ impl Backend {
             shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             config: Mutex::new(config::Config::default()),
+            workspace_map: Arc::new(RwLock::new(workspace::WorkspaceMap::default())),
         }
     }
 
@@ -753,7 +788,8 @@ impl Backend {
     pub fn new_test_with_stubs(stub_index: HashMap<&'static str, &'static str>) -> Self {
         virtual_members::phpdoc::clear_mixin_cache();
         let backend = Self {
-            stub_index: RwLock::new(stub_index),
+            stub_index: RwLock::new(stub_index.clone()),
+            stub_index_full: stub_index,
             ..Self::test_defaults()
         };
         backend.set_php_version(backend.php_version());
@@ -772,9 +808,12 @@ impl Backend {
     ) -> Self {
         virtual_members::phpdoc::clear_mixin_cache();
         let backend = Self {
-            stub_index: RwLock::new(stub_index),
-            stub_function_index: RwLock::new(stub_function_index),
-            stub_constant_index: RwLock::new(stub_constant_index),
+            stub_index: RwLock::new(stub_index.clone()),
+            stub_index_full: stub_index,
+            stub_function_index: RwLock::new(stub_function_index.clone()),
+            stub_function_index_full: stub_function_index,
+            stub_constant_index: RwLock::new(stub_constant_index.clone()),
+            stub_constant_index_full: stub_constant_index,
             ..Self::test_defaults()
         };
         backend.set_php_version(backend.php_version());
@@ -931,9 +970,12 @@ impl Backend {
             phar_archives: Arc::clone(&self.phar_archives),
             class_not_found_cache: Arc::clone(&self.class_not_found_cache),
             stub_index: RwLock::new(self.stub_index.read().clone()),
+            stub_index_full: self.stub_index_full.clone(),
             resolved_class_cache: Arc::clone(&self.resolved_class_cache),
             stub_function_index: RwLock::new(self.stub_function_index.read().clone()),
+            stub_function_index_full: self.stub_function_index_full.clone(),
             stub_constant_index: RwLock::new(self.stub_constant_index.read().clone()),
+            stub_constant_index_full: self.stub_constant_index_full.clone(),
             php_version: Mutex::new(self.php_version()),
             vendor_uri_prefixes: Mutex::new(self.vendor_uri_prefixes.lock().clone()),
             vendor_dir_paths: Mutex::new(self.vendor_dir_paths.lock().clone()),
@@ -956,6 +998,7 @@ impl Backend {
             shutdown_flag: Arc::clone(&self.shutdown_flag),
             workspace_scan_state: Arc::clone(&self.workspace_scan_state),
             config: Mutex::new(self.config.lock().clone()),
+            workspace_map: Arc::clone(&self.workspace_map),
         }
     }
 
@@ -987,15 +1030,71 @@ impl Backend {
     /// Set the PHP version (used by integration tests and during
     /// server initialization after reading `composer.json`).
     ///
-    /// Also filters `stub_function_index` and `stub_index` to remove
-    /// entries that do not exist in the given PHP version.
+    /// Rebuilds `stub_function_index` and `stub_index` from the
+    /// unfiltered `_full` copies, keeping only entries that exist in the
+    /// given PHP version.  This is safe to call multiple times (e.g.
+    /// when switching versions in multi-workspace mode).
     pub fn set_php_version(&self, version: types::PhpVersion) {
         *self.php_version.lock() = version;
-        self.stub_function_index
-            .write()
-            .retain(|name, source| !stubs::is_stub_function_removed(source, name, version));
-        self.stub_index
-            .write()
-            .retain(|name, source| !stubs::is_stub_class_removed(source, name, version));
+
+        let mut filtered_fn = self.stub_function_index_full.clone();
+        filtered_fn.retain(|name, source| !stubs::is_stub_function_removed(source, name, version));
+        *self.stub_function_index.write() = filtered_fn;
+
+        let mut filtered_cls = self.stub_index_full.clone();
+        filtered_cls.retain(|name, source| !stubs::is_stub_class_removed(source, name, version));
+        *self.stub_index.write() = filtered_cls;
+    }
+
+    /// Get the PHP version for a specific file URI.
+    ///
+    /// In single-project mode, returns the global `php_version` (same
+    /// as [`php_version`](Self::php_version)).  In multi-workspace
+    /// mode, looks up the subproject for this URI and returns its PHP
+    /// version (falling back to the root version for files outside any
+    /// subproject).
+    pub fn php_version_for(&self, uri: &str) -> types::PhpVersion {
+        let ws = self.workspace_map.read();
+        if ws.is_multi() {
+            ws.php_version_for(uri)
+        } else {
+            // In single-project / test mode, use the canonical field
+            // which is kept in sync by set_php_version().
+            self.php_version()
+        }
+    }
+
+    /// Get the configuration for a specific file URI.
+    ///
+    /// In single-project mode, returns the root config (same as
+    /// [`config`](Self::config)).  In multi-workspace mode, returns the
+    /// subproject's config (falling back to the root config for files
+    /// outside any subproject).
+    pub fn config_for(&self, uri: &str) -> config::Config {
+        let ws = self.workspace_map.read();
+        if ws.is_multi() {
+            ws.config_for(uri).clone()
+        } else {
+            // In single-project / test mode, use the canonical field
+            // which is kept in sync by set_config().
+            self.config()
+        }
+    }
+
+    /// Get the subproject root for a specific file URI.
+    ///
+    /// Returns `None` in single-project mode or for files outside any
+    /// subproject.  Used as the working directory for external tools
+    /// (PHPStan, PHPCS, formatters).
+    pub fn project_root_for(&self, uri: &str) -> Option<std::path::PathBuf> {
+        self.workspace_map
+            .read()
+            .project_root_for(uri)
+            .map(|p| p.to_path_buf())
+    }
+
+    /// Returns `true` if this backend is in multi-workspace (monorepo) mode.
+    pub fn is_multi_workspace(&self) -> bool {
+        self.workspace_map.read().is_multi()
     }
 }

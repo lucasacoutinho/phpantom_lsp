@@ -168,25 +168,33 @@ impl Backend {
         //      avoid `Demo\PDO` matching the global `PDO` stub.
         //
         // Strategy (a) is tried first because it is more specific.
+        //
+        // In multi-workspace mode, stub_index is unfiltered (all PHP
+        // versions present), so we check `@removed` before parsing.
+        // In single-project mode, stub_index is already filtered by
+        // `set_php_version` and the check is a no-op for ~92% of stubs.
+        let ver = self.php_version();
         let stub_idx = self.stub_index.read();
         if expected_ns.is_some() {
             // Namespaced lookup — try the full FQN as a stub key.
-            if let Some(&stub_content) = stub_idx.get(class_name) {
+            if let Some(&stub_content) = stub_idx.get(class_name)
+                && !crate::stubs::is_stub_class_removed(stub_content, class_name, ver)
+            {
                 let stub_uri = format!("phpantom-stub://{}", class_name);
-                let ver = Some(self.php_version());
                 if let Some(classes) =
-                    self.parse_and_cache_content_versioned(stub_content, &stub_uri, ver)
+                    self.parse_and_cache_content_versioned(stub_content, &stub_uri, Some(ver))
                     && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
                 {
                     return Some(Arc::clone(cls));
                 }
             }
-        } else if let Some(&stub_content) = stub_idx.get(last_segment) {
+        } else if let Some(&stub_content) = stub_idx.get(last_segment)
+            && !crate::stubs::is_stub_class_removed(stub_content, last_segment, ver)
+        {
             // Global-namespace lookup — match by short name only.
             let stub_uri = format!("phpantom-stub://{}", last_segment);
-            let ver = Some(self.php_version());
             if let Some(classes) =
-                self.parse_and_cache_content_versioned(stub_content, &stub_uri, ver)
+                self.parse_and_cache_content_versioned(stub_content, &stub_uri, Some(ver))
                 && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
             {
                 return Some(Arc::clone(cls));
@@ -221,19 +229,24 @@ impl Backend {
         }
 
         // Look up in the in-memory stub index.
+        let ver = self.php_version();
         let stub_idx = self.stub_index.read();
-        let stub_content = if class_name.contains('\\') {
-            // Namespaced lookup (e.g. "BcMath\\Number").
-            stub_idx.get(class_name).copied()
+        let lookup_key = if class_name.contains('\\') {
+            class_name
         } else {
-            // Global-namespace lookup (e.g. "PDO").
-            stub_idx.get(last_segment).copied()
+            last_segment
         };
+        let stub_content = stub_idx.get(lookup_key).copied();
 
         if let Some(content) = stub_content {
+            // In multi-workspace mode the index is unfiltered — check
+            // @removed before parsing.
+            if crate::stubs::is_stub_class_removed(content, lookup_key, ver) {
+                return None;
+            }
             let stub_uri = format!("phpantom-stub://{}", class_name);
-            let ver = Some(self.php_version());
-            if let Some(classes) = self.parse_and_cache_content_versioned(content, &stub_uri, ver)
+            if let Some(classes) =
+                self.parse_and_cache_content_versioned(content, &stub_uri, Some(ver))
                 && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
             {
                 return Some(Arc::clone(cls));
@@ -552,10 +565,16 @@ impl Backend {
         // ones like "Brotli\\compress") to the raw PHP source of the file
         // that defines them.  We parse the entire file, cache all discovered
         // functions in global_functions, and return the one we need.
+        let ver = self.php_version();
         let stub_fn_idx = self.stub_function_index.read();
         for &name in candidates {
             if let Some(&stub_content) = stub_fn_idx.get(name) {
-                let ver = Some(self.php_version());
+                // In multi-workspace mode the index is unfiltered —
+                // check @removed before parsing.
+                if crate::stubs::is_stub_function_removed(stub_content, name, ver) {
+                    continue;
+                }
+                let ver = Some(ver);
                 let functions = self.parse_functions_versioned(stub_content, ver);
 
                 if functions.is_empty() {

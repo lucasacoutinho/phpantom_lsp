@@ -61,7 +61,7 @@ impl Backend {
         let file_id = mago_database::file::FileId::new("input.php");
         let program = mago_syntax::parser::parse_file_content(&arena, file_id, content);
 
-        let php_version = self.php_version();
+        let php_version = self.php_version_for(uri);
 
         // Walk the entire AST looking for ternary expressions that
         // contain the cursor. We collect the innermost match.

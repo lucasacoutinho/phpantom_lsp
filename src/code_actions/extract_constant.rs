@@ -760,7 +760,7 @@ impl Backend {
 
         let visibility = class_info.context_visibility;
         let indent = detect_member_indent(content, class_info.body_start);
-        let php_version = self.php_version();
+        let php_version = self.php_version_for(&data.uri);
 
         // Determine insertion point.
         let insert_offset = if let Some(after_const) = class_info.after_last_constant {
