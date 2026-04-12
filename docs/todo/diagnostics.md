@@ -230,31 +230,102 @@ with `command`, `timeout`, and tool-specific options mirroring the
 
 ---
 
-## D12. Mago linter integration (optional diagnostics)
+## D12. Mago diagnostic proxy
 
 **Impact: Medium · Effort: Medium**
 
-PHPantom already depends on several mago crates (`mago-syntax`,
-`mago-docblock`, `mago-names`, `mago-formatter`, `mago-span`). The
-`mago-linter` crate provides ~159 lint rules covering redundancy,
-best practices, clarity, consistency, correctness, and deprecation.
-Integrating it as an optional diagnostics provider would give users
-"PHPStan-lite" diagnostics without requiring PHPStan to be installed.
+Proxy Mago the same way PHPantom proxies PHPStan and PHPCS:
+auto-detect the binary, spawn it on file changes, parse JSON
+output, and surface diagnostics in the editor.
 
-**Integration approach:** call `Linter::lint()` on the parsed AST
-(already available), convert `IssueCollection` to LSP `Diagnostic`s,
-convert `TextEdit` fixes to LSP `CodeAction`s. The linter is AST-only
-(no type inference), so it is fast.
+**Why proxy, not in-process:** PHPantom already vendors several
+mago crates for parsing, but the `mago-linter` crate contains
+~159 lint rules with their own configuration surface. Building it
+in-process would mean PHPantom owns every false positive those
+rules produce, must duplicate or re-expose mago's `mago.toml`
+config format, and must document and support someone else's rule
+options. An opt-in toggle that 99% of users never discover is
+wasted effort. The proxy approach lets users who already use Mago
+get diagnostics automatically: they already have a `mago.toml`
+with rules tuned for their codebase, baselines for known issues,
+and framework integrations configured. PHPantom just shows what
+Mago reports.
 
-Offer as opt-in via `.phpantom.toml` configuration. Default to
-disabled so it does not conflict with users who already run PHPStan
-or Psalm. Mark with `source: "mago"` to distinguish from PHPantom's
-own diagnostics.
+### Auto-detection
 
-**Notable rules:** `no-redundant-method-override`,
-`str-contains`/`str-starts-with` modernization,
-`prefer-arrow-function`, `constant-condition`, `no-self-assignment`,
-`explicit-nullable-param`, `valid-docblock`.
+Enable automatically when the project has `mago.toml` at the
+workspace root and `vendor/bin/mago` (or `mago` on `$PATH`)
+exists. Same resolution chain as PHPStan/PHPCS: explicit
+`.phpantom.toml` command > Composer bin-dir > `$PATH`. Setting
+the command to `""` disables the proxy.
+
+### Execution
+
+Mago has two separate commands, both accepting `--stdin-input`
+and `--reporting-format json`:
+
+- **`mago lint`** — AST-level rules: style, naming, code smells,
+  best practices (e.g. `strict-types`, `file-name`,
+  `prefer-arrow-function`). Comparable to PHPCS. Fast.
+- **`mago analyze`** — Static analysis with type inference: type
+  mismatches, unreachable code, unused definitions. Comparable
+  to PHPStan. Slower.
+
+A project's `mago.toml` can configure either or both via
+`[linter]` and `[analyzer]` sections. PHPantom should run
+whichever the project has configured. When both are present,
+run `mago lint` on the fast path (same debounce as PHPCS) and
+`mago analyze` on the slow path (same debounce/worker pattern
+as PHPStan: single pending URI, configurable timeout,
+cancellation on new edits). Use `source: "mago-lint"` and
+`source: "mago-analyze"` to distinguish the two.
+
+### JSON output mapping
+
+Mago's JSON output provides everything needed:
+
+- `level` (Error, Warning, Note, Help) maps to LSP severity.
+- `code` (rule name, e.g. `strict-types`, `no-empty`) becomes
+  the diagnostic code.
+- `annotations[].span` provides file, offset, and line for the
+  diagnostic range.
+- `edits` provides auto-fix `TextEdit`s with a `safety`
+  classification (safe, potentially-unsafe, unsafe).
+
+Mark diagnostics with `source: "mago-lint"` or
+`source: "mago-analyze"` depending on the originating command.
+
+### Quick-fix code actions from edits
+
+Mago's JSON includes fix edits with safety levels. Convert these
+to LSP `CodeAction`s:
+
+- `safe` fixes: offer as preferred quick-fix.
+- `potentially-unsafe` / `unsafe` fixes: offer as non-preferred
+  quick-fix with the safety level noted in the action title.
+
+### Configuration
+
+Add a `[mago]` section to `.phpantom.toml`:
+
+- `command` — explicit path to the mago binary (default:
+  auto-detect).
+- `timeout` — per-invocation timeout in seconds (default: 30).
+
+No rule-level configuration in `.phpantom.toml`. The user
+configures rules in `mago.toml` where they belong.
+
+### Files
+
+- `src/mago.rs` — `resolve_mago`, `run_mago_lint`,
+  `run_mago_analyze`, `parse_mago_json`, JSON structs.
+  Shared binary resolution (one binary, two commands).
+- `src/server.rs` — two workers: `mago_lint_worker` (fast,
+  PHPCS-like debounce) and `mago_analyze_worker` (slow,
+  PHPStan-like debounce). Both follow the existing
+  single-pending-URI pattern.
+- `src/config.rs` — `MagoConfig` struct.
+- `src/code_actions/mago/` — quick-fix code actions from edits.
 
 ## D13. Unify diagnostic subject resolution with completion/hover
 

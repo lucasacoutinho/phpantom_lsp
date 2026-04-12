@@ -29,7 +29,7 @@ within the same impact tier.
 | P9  | [`resolved_class_cache` generic-arg specialisation](todo/performance.md#p9-resolved_class_cache-generic-arg-specialisation)                                  | Medium | Medium    |
 | P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                           | Medium | Low       |
 | D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variable-diagnostic)                                                                              | Medium | Medium    |
-| D12 | [Mago linter integration](todo/diagnostics.md#d12-mago-linter-integration-optional-diagnostics)                                                              | Medium | Medium    |
+| D12 | [Mago diagnostic proxy](todo/diagnostics.md#d12-mago-diagnostic-proxy)                                                                                       | Medium | Medium    |
 | F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints)                             | Medium | Medium    |
 | F9  | [Namespace renaming](todo/lsp-features.md#f9-namespace-renaming)                                                                                             | Medium | Medium    |
 | A40 | [Convert to instance variable](todo/actions.md#a40-convert-to-instance-variable)                                                                             | Medium | Medium    |
