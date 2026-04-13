@@ -341,6 +341,16 @@ impl LanguageServer for Backend {
                         });
                     }
 
+                    // Log per-subproject PHP versions for diagnostics.
+                    for sp in &ws_subprojects {
+                        let rel = sp.root.strip_prefix(&root).unwrap_or(&sp.root).display();
+                        self.log(
+                            MessageType::INFO,
+                            format!("PHPantom: {} → PHP {}", rel, sp.php_version),
+                        )
+                        .await;
+                    }
+
                     let ws_map = crate::workspace::WorkspaceMap::multi(
                         ws_subprojects,
                         root_config,
