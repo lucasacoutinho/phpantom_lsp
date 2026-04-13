@@ -4367,6 +4367,99 @@ async fn test_goto_definition_chain_with_trait_and_promoted_props() {
 }
 
 #[tokio::test]
+async fn test_goto_definition_constructor_typed_property_method_outside_composer_autoload_dirs() {
+    let (backend, dir) = create_psr4_workspace(
+        r#"{ "autoload": { "psr-4": { "Sexlog\\Libraries\\": "src/" } } }"#,
+        &[
+            (
+                "src/Redirect.php",
+                concat!(
+                    "<?php\n",
+                    "namespace Sexlog\\Libraries\\LandingPage\\Redirect;\n",
+                    "\n",
+                    "use Sexlog\\Repositories\\LandingPages\\NewLPCityRepository;\n",
+                    "\n",
+                    "class Redirect {\n",
+                    "    private NewLPCityRepository $repository;\n",
+                    "\n",
+                    "    public function __construct(NewLPCityRepository $repository) {\n",
+                    "        $this->repository = $repository;\n",
+                    "    }\n",
+                    "\n",
+                    "    public function getWhereKey(string $city): string {\n",
+                    "        return $this->repository->getByWhereKey($city);\n",
+                    "    }\n",
+                    "}\n",
+                ),
+            ),
+            (
+                "legacy/Repositories/LandingPages/NewLPCityRepository.php",
+                concat!(
+                    "<?php\n",
+                    "namespace Sexlog\\Repositories\\LandingPages;\n",
+                    "\n",
+                    "class NewLPCityRepository {\n",
+                    "    public function getByWhereKey(string $city): string { return $city; }\n",
+                    "}\n",
+                ),
+            ),
+        ],
+    );
+
+    let redirect_path = dir.path().join("src/Redirect.php");
+    let redirect_uri = Url::from_file_path(&redirect_path).unwrap();
+    let redirect_content = std::fs::read_to_string(&redirect_path).unwrap();
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: redirect_uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: redirect_content,
+            },
+        })
+        .await;
+
+    let params = GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: redirect_uri.clone(),
+            },
+            position: Position {
+                line: 13,
+                character: 34,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend.goto_definition(params).await.unwrap();
+    assert!(
+        result.is_some(),
+        "Should resolve constructor-typed property method outside Composer autoload dirs"
+    );
+
+    match result.unwrap() {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert!(
+                location
+                    .uri
+                    .path()
+                    .ends_with("legacy/Repositories/LandingPages/NewLPCityRepository.php"),
+                "Should jump to NewLPCityRepository.php, got: {}",
+                location.uri
+            );
+            assert_eq!(
+                location.range.start.line, 4,
+                "getByWhereKey is declared on line 4 in NewLPCityRepository.php"
+            );
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn test_goto_definition_chain_untyped_property_constructor_assigned() {
     let backend = create_test_backend();
 

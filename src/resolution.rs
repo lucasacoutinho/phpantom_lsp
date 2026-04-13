@@ -32,18 +32,19 @@
 ///   - Fully-qualified names (`\PDO`, `\Couchbase\Cluster`)
 ///   - Unqualified names resolved via the import table or current namespace
 ///   - Qualified names with alias expansion and namespace prefixing
-use std::collections::HashMap;
-use std::sync::Arc;
-
 use std::path::Path;
+use std::sync::Arc;
+use std::{collections::HashMap, path::PathBuf};
 
 use tower_lsp::lsp_types::Url;
 
 use crate::Backend;
+use crate::classmap_scanner;
 use crate::composer;
+use crate::config::IndexingStrategy;
 use crate::php_type::PhpType;
 use crate::types::{ClassInfo, FileContext, FunctionInfo, PhpVersion};
-use crate::util::short_name;
+use crate::util::{collect_php_files_gitignore, short_name};
 
 impl Backend {
     /// Try to find a class by name across all cached files in the ast_map,
@@ -147,6 +148,19 @@ impl Backend {
             {
                 return Some(Arc::clone(cls));
             }
+        }
+
+        // ── Phase 2.5: lazy workspace fallback ─────────────────────
+        // When a user class is not open and is missing from Composer's
+        // classmap / PSR-4 mappings, it can still exist somewhere in the
+        // workspace (legacy directories, loose files, partially-managed
+        // monorepo slices). Search the workspace on demand so go-to-
+        // definition does not depend on the target file being open.
+        if expected_ns.is_some()
+            && self.config().indexing.strategy() != IndexingStrategy::None
+            && let Some(cls) = self.find_or_discover_workspace_class(class_name)
+        {
+            return Some(cls);
         }
 
         // ── Phase 3: Try embedded PHP stubs ──
@@ -254,6 +268,60 @@ impl Backend {
         }
 
         None
+    }
+
+    /// Search the workspace for a namespaced class that is not yet in any
+    /// resolution index, then parse and register the file on demand.
+    fn find_or_discover_workspace_class(&self, class_name: &str) -> Option<Arc<ClassInfo>> {
+        let workspace_root = self.workspace_root.read().clone()?;
+        let file_path = self.discover_workspace_class_path(&workspace_root, class_name)?;
+        let uri = crate::util::path_to_uri(&file_path);
+
+        let classes = self.parse_and_cache_file(&file_path)?;
+        {
+            let mut idx = self.class_index.write();
+            let mut classmap = self.classmap.write();
+            for cls in &classes {
+                if cls.name.starts_with("__anonymous@") {
+                    continue;
+                }
+                let fqn = cls.fqn();
+                idx.entry(fqn.clone()).or_insert_with(|| uri.clone());
+                classmap.entry(fqn).or_insert_with(|| file_path.clone());
+            }
+        }
+
+        classes.into_iter().find(|cls| cls.fqn() == class_name)
+    }
+
+    /// Find the first workspace PHP file that declares `class_name`.
+    ///
+    /// Prefer files whose basename matches the class short name to keep the
+    /// common case fast, then fall back to scanning the rest of the workspace.
+    fn discover_workspace_class_path(
+        &self,
+        workspace_root: &Path,
+        class_name: &str,
+    ) -> Option<PathBuf> {
+        let vendor_dir_paths = self.vendor_dir_paths.lock().clone();
+        let short = short_name(class_name);
+        let php_files = collect_php_files_gitignore(workspace_root, &vendor_dir_paths);
+
+        let mut preferred = Vec::new();
+        let mut fallback = Vec::new();
+        for path in php_files {
+            let stem = path.file_stem().and_then(|stem| stem.to_str());
+            if stem == Some(short) {
+                preferred.push(path);
+            } else {
+                fallback.push(path);
+            }
+        }
+
+        preferred
+            .into_iter()
+            .chain(fallback)
+            .find(|path| file_declares_class(path, class_name))
     }
 
     /// Parse a PHP file from disk (or from a phar archive), cache the
@@ -813,4 +881,15 @@ impl Backend {
     pub(crate) fn constant_loader(&self) -> impl Fn(&str) -> Option<Option<String>> + '_ {
         move |name: &str| self.lookup_global_constant(name)
     }
+}
+
+fn file_declares_class(path: &Path, class_name: &str) -> bool {
+    std::fs::read(path)
+        .ok()
+        .map(|content| {
+            classmap_scanner::find_classes(&content)
+                .into_iter()
+                .any(|fqn| fqn == class_name)
+        })
+        .unwrap_or(false)
 }
