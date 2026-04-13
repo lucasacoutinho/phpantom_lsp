@@ -198,12 +198,19 @@ pub struct Backend {
     /// variables, function calls, etc.).  Consulted by `resolve_definition`
     /// to replace character-level backward-walking with a binary search.
     pub(crate) symbol_maps: Arc<RwLock<HashMap<String, Arc<symbol_map::SymbolMap>>>>,
-    /// Inverted index: symbol short name → set of file URIs containing it.
+    /// Inverted index: `(member name, is_static)` → set of file URIs
+    /// containing that member access/declaration.
     ///
-    /// Enables O(1) lookup of which files reference a given symbol name,
-    /// avoiding the O(N) full-workspace scan in find-references.
-    /// Updated in `update_ast_inner` and cleaned in `clear_file_maps`.
-    pub(crate) symbol_name_index: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    /// This keeps common member names from polluting class/function/
+    /// constant candidate sets and lets member find-references skip a
+    /// large number of irrelevant files up front.
+    pub(crate) member_name_index: Arc<RwLock<HashMap<(String, bool), HashSet<String>>>>,
+    /// Inverted index: class short name → set of file URIs containing it.
+    pub(crate) class_name_index: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    /// Inverted index: function short name → set of file URIs containing it.
+    pub(crate) function_name_index: Arc<RwLock<HashMap<String, HashSet<String>>>>,
+    /// Inverted index: constant name → set of file URIs containing it.
+    pub(crate) constant_name_index: Arc<RwLock<HashMap<String, HashSet<String>>>>,
     /// Per-file parse errors from the Mago parser.
     ///
     /// Each entry is `(message, start_byte_offset, end_byte_offset)`.
@@ -582,6 +589,13 @@ pub struct Backend {
     /// background scan is in progress, Phase 2 is skipped (the
     /// background thread will finish and set COMPLETE).
     pub(crate) workspace_scan_state: Arc<std::sync::atomic::AtomicU8>,
+    /// Per-scope tri-state flags for on-demand reference indexing.
+    ///
+    /// In monorepo mode, find-references indexes one subproject at a
+    /// time (or the loose-files root scope for files outside any
+    /// subproject).  The key is a stable scope identifier such as a
+    /// subproject URI prefix or the workspace-root loose-files scope.
+    pub(crate) reference_scope_scan_states: Arc<Mutex<HashMap<String, u8>>>,
     // NOTE: resolved_class_cache uses parking_lot::Mutex because it is
     // frequently written (cache stores) and RwLock read→write upgrades
     // are error-prone.
@@ -620,7 +634,10 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
-            symbol_name_index: Arc::new(RwLock::new(HashMap::new())),
+            member_name_index: Arc::new(RwLock::new(HashMap::new())),
+            class_name_index: Arc::new(RwLock::new(HashMap::new())),
+            function_name_index: Arc::new(RwLock::new(HashMap::new())),
+            constant_name_index: Arc::new(RwLock::new(HashMap::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
@@ -667,6 +684,7 @@ impl Backend {
             supports_work_done_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            reference_scope_scan_states: Arc::new(Mutex::new(HashMap::new())),
             config: Mutex::new(config::Config::default()),
             workspace_map: Arc::new(RwLock::new(workspace::WorkspaceMap::default())),
         }
@@ -686,7 +704,10 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
-            symbol_name_index: Arc::new(RwLock::new(HashMap::new())),
+            member_name_index: Arc::new(RwLock::new(HashMap::new())),
+            class_name_index: Arc::new(RwLock::new(HashMap::new())),
+            function_name_index: Arc::new(RwLock::new(HashMap::new())),
+            constant_name_index: Arc::new(RwLock::new(HashMap::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
@@ -733,6 +754,7 @@ impl Backend {
             supports_work_done_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             shutdown_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_scan_state: Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            reference_scope_scan_states: Arc::new(Mutex::new(HashMap::new())),
             config: Mutex::new(config::Config::default()),
             workspace_map: Arc::new(RwLock::new(workspace::WorkspaceMap::default())),
         }
@@ -948,7 +970,10 @@ impl Backend {
             open_files: Arc::clone(&self.open_files),
             ast_map: Arc::clone(&self.ast_map),
             symbol_maps: Arc::clone(&self.symbol_maps),
-            symbol_name_index: Arc::clone(&self.symbol_name_index),
+            member_name_index: Arc::clone(&self.member_name_index),
+            class_name_index: Arc::clone(&self.class_name_index),
+            function_name_index: Arc::clone(&self.function_name_index),
+            constant_name_index: Arc::clone(&self.constant_name_index),
             parse_errors: Arc::clone(&self.parse_errors),
             // RwLock fields are shared by Arc::clone — the diagnostic
             // worker reads them concurrently with the main Backend.
@@ -997,6 +1022,7 @@ impl Backend {
             supports_work_done_progress: Arc::clone(&self.supports_work_done_progress),
             shutdown_flag: Arc::clone(&self.shutdown_flag),
             workspace_scan_state: Arc::clone(&self.workspace_scan_state),
+            reference_scope_scan_states: Arc::clone(&self.reference_scope_scan_states),
             config: Mutex::new(self.config.lock().clone()),
             workspace_map: Arc::clone(&self.workspace_map),
         }

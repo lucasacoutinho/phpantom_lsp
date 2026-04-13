@@ -291,8 +291,9 @@ pub struct IndexingConfig {
     /// - `"self"` — scan every PHP file under the workspace root,
     ///   ignoring Composer's generated classmap and PSR-4 mappings.
     ///   Vendor packages are still scanned via `installed.json`.
-    /// - `"full"` — background-parse every PHP file for rich intelligence
-    ///   (not yet implemented, treated as `"self"` for now).
+    /// - `"full"` — use the `"self"` discovery pipeline, then start a
+    ///   background second pass that parses user workspace files into
+    ///   AST/symbol caches for faster cross-file features.
     /// - `"none"` — no proactive scanning. Still uses Composer's classmap
     ///   if present, still resolves on demand, but never falls back to
     ///   self-scan.

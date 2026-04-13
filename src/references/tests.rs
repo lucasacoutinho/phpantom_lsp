@@ -1,4 +1,6 @@
 use crate::Backend;
+use crate::workspace::{SubProject, WorkspaceMap};
+use std::path::PathBuf;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -1409,5 +1411,92 @@ fn workspace_scan_state_shared_across_clones() {
     assert_eq!(
         state, 2,
         "workspace_scan_state must be shared via Arc::clone, not Arc::new"
+    );
+}
+
+#[test]
+fn ensure_workspace_indexed_waits_for_inflight_scan() {
+    let backend = Backend::defaults();
+    *backend.workspace_root.write() = Some(PathBuf::from("/workspace"));
+    backend
+        .workspace_scan_state
+        .store(1, std::sync::atomic::Ordering::Release);
+
+    let clone = backend.clone_for_blocking();
+    let setter = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        clone
+            .workspace_scan_state
+            .store(2, std::sync::atomic::Ordering::Release);
+    });
+
+    backend.ensure_workspace_indexed("file:///workspace/test.php");
+
+    setter.join().expect("setter thread should finish");
+
+    let state = backend
+        .workspace_scan_state
+        .load(std::sync::atomic::Ordering::Acquire);
+    assert_eq!(
+        state, 2,
+        "ensure_workspace_indexed should wait for the in-flight scan to finish"
+    );
+}
+
+#[tokio::test]
+async fn function_references_stay_within_current_subproject() {
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let root = dir.path().to_path_buf();
+    let app_a = root.join("packages/app-a");
+    let app_b = root.join("packages/app-b");
+
+    std::fs::create_dir_all(&app_a).expect("failed to create app-a dir");
+    std::fs::create_dir_all(&app_b).expect("failed to create app-b dir");
+
+    let backend = Backend::new_test();
+    *backend.workspace_root.write() = Some(root.clone());
+
+    let app_a_prefix = format!("{}/", crate::util::path_to_uri(&app_a));
+    let app_b_prefix = format!("{}/", crate::util::path_to_uri(&app_b));
+    *backend.workspace_map.write() = WorkspaceMap::multi(
+        vec![
+            SubProject {
+                root: app_a.clone(),
+                uri_prefix: app_a_prefix,
+                config: crate::config::Config::default(),
+                php_version: crate::types::PhpVersion::default(),
+                vendor_dir: "vendor".to_string(),
+            },
+            SubProject {
+                root: app_b.clone(),
+                uri_prefix: app_b_prefix,
+                config: crate::config::Config::default(),
+                php_version: crate::types::PhpVersion::default(),
+                vendor_dir: "vendor".to_string(),
+            },
+        ],
+        crate::config::Config::default(),
+        crate::types::PhpVersion::default(),
+    );
+
+    let uri_a = Url::from_file_path(app_a.join("a.php")).expect("valid app-a uri");
+    let uri_b = Url::from_file_path(app_b.join("b.php")).expect("valid app-b uri");
+
+    let php_a = concat!("<?php\n", "function helper(): void {}\n", "helper();\n",);
+    let php_b = concat!("<?php\n", "function helper(): void {}\n", "helper();\n",);
+
+    open_file(&backend, &uri_a, php_a).await;
+    open_file(&backend, &uri_b, php_b).await;
+
+    let refs = find_references(&backend, &uri_a, 1, 10, true).await;
+
+    assert_eq!(
+        refs.len(),
+        2,
+        "expected declaration + call inside app-a only"
+    );
+    assert!(
+        refs.iter().all(|loc| loc.uri == uri_a),
+        "references leaked across subprojects: {refs:#?}"
     );
 }

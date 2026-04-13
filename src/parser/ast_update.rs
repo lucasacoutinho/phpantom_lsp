@@ -539,45 +539,15 @@ impl Backend {
             uri_string.clone(),
             classes.into_iter().map(Arc::new).collect(),
         );
-        self.symbol_maps
+        let old_symbol_map = self
+            .symbol_maps
             .write()
             .insert(uri_string.clone(), Arc::clone(&symbol_map));
 
-        // Update the inverted symbol name index.
-        {
-            let mut idx = self.symbol_name_index.write();
-            // Remove old entries for this URI.
-            for file_set in idx.values_mut() {
-                file_set.remove(&uri_string);
-            }
-            // Insert new entries from the fresh symbol map.
-            for span in &symbol_map.spans {
-                let name = match &span.kind {
-                    crate::symbol_map::SymbolKind::MemberAccess { member_name, .. } => {
-                        Some(member_name.as_str())
-                    }
-                    crate::symbol_map::SymbolKind::MemberDeclaration { name, .. } => {
-                        Some(name.as_str())
-                    }
-                    crate::symbol_map::SymbolKind::ClassReference { name, .. } => {
-                        Some(crate::util::short_name(name))
-                    }
-                    crate::symbol_map::SymbolKind::ClassDeclaration { name } => Some(name.as_str()),
-                    crate::symbol_map::SymbolKind::FunctionCall { name, .. } => {
-                        Some(crate::util::short_name(name))
-                    }
-                    crate::symbol_map::SymbolKind::ConstantReference { name } => {
-                        Some(name.as_str())
-                    }
-                    _ => None,
-                };
-                if let Some(n) = name {
-                    idx.entry(n.to_string())
-                        .or_default()
-                        .insert(uri_string.clone());
-                }
-            }
+        if let Some(old_map) = old_symbol_map {
+            self.remove_uri_from_symbol_indices(&uri_string, old_map.as_ref());
         }
+        self.add_uri_to_symbol_indices(&uri_string, symbol_map.as_ref());
 
         self.use_map.write().insert(uri_string.clone(), use_map);
         self.resolved_names

@@ -26,6 +26,7 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
@@ -34,11 +35,69 @@ use crate::completion::resolver::Loaders;
 use crate::symbol_map::{SelfStaticParentKind, SymbolKind, SymbolMap};
 use crate::types::{ClassInfo, MAX_INHERITANCE_DEPTH, ResolvedType};
 use crate::util::{
-    build_fqn, collect_php_files_gitignore, find_class_at_offset, offset_to_position,
-    position_to_offset, strip_fqn_prefix,
+    build_fqn, collect_php_files_gitignore, collect_php_files_gitignore_with_skip_dirs,
+    find_class_at_offset, offset_to_position, position_to_offset, strip_fqn_prefix,
 };
 
+#[derive(Clone)]
+struct ReferenceScope {
+    key: String,
+    root: PathBuf,
+    allowed_uri_prefix: Option<String>,
+    excluded_uri_prefixes: Vec<String>,
+    skip_dirs: Vec<PathBuf>,
+}
+
 impl Backend {
+    const WORKSPACE_SCAN_NOT_STARTED: u8 = 0;
+    const WORKSPACE_SCAN_IN_PROGRESS: u8 = 1;
+    const WORKSPACE_SCAN_COMPLETE: u8 = 2;
+
+    fn reference_scope_for_uri(&self, uri: &str) -> Option<ReferenceScope> {
+        let workspace_root = self.workspace_root.read().clone()?;
+        let ws = self.workspace_map.read();
+
+        if ws.is_multi() {
+            if let Some(sp) = ws.subproject_for_uri(uri) {
+                return Some(ReferenceScope {
+                    key: format!("subproject:{}", sp.uri_prefix),
+                    root: sp.root.clone(),
+                    allowed_uri_prefix: Some(sp.uri_prefix.clone()),
+                    excluded_uri_prefixes: Vec::new(),
+                    skip_dirs: Vec::new(),
+                });
+            }
+
+            let subprojects = ws.subprojects();
+            return Some(ReferenceScope {
+                key: format!("loose:{}", crate::util::path_to_uri(&workspace_root)),
+                root: workspace_root,
+                allowed_uri_prefix: None,
+                excluded_uri_prefixes: subprojects.iter().map(|sp| sp.uri_prefix.clone()).collect(),
+                skip_dirs: subprojects.iter().map(|sp| sp.root.clone()).collect(),
+            });
+        }
+
+        Some(ReferenceScope {
+            key: format!("workspace:{}", crate::util::path_to_uri(&workspace_root)),
+            root: workspace_root,
+            allowed_uri_prefix: None,
+            excluded_uri_prefixes: Vec::new(),
+            skip_dirs: Vec::new(),
+        })
+    }
+
+    fn uri_is_in_reference_scope(scope: &ReferenceScope, uri: &str) -> bool {
+        if let Some(prefix) = &scope.allowed_uri_prefix {
+            return uri.starts_with(prefix);
+        }
+
+        !scope
+            .excluded_uri_prefixes
+            .iter()
+            .any(|prefix| uri.starts_with(prefix))
+    }
+
     /// Entry point for `textDocument/references`.
     ///
     /// Returns all locations where the symbol under the cursor is
@@ -110,6 +169,7 @@ impl Backend {
                     // Resolve the enclosing class to scope the search.
                     let hierarchy = self.resolve_member_declaration_hierarchy(uri, span_start);
                     return self.find_member_references(
+                        uri,
                         name,
                         is_static,
                         include_declaration,
@@ -125,12 +185,12 @@ impl Backend {
                 } else {
                     ctx.resolve_name_at(name, span_start)
                 };
-                self.find_class_references(&fqn, include_declaration)
+                self.find_class_references(uri, &fqn, include_declaration)
             }
             SymbolKind::ClassDeclaration { name } => {
                 let ctx = self.file_context(uri);
                 let fqn = build_fqn(name, &ctx.namespace);
-                self.find_class_references(&fqn, include_declaration)
+                self.find_class_references(uri, &fqn, include_declaration)
             }
             SymbolKind::MemberAccess {
                 subject_text,
@@ -143,6 +203,7 @@ impl Backend {
                 let hierarchy =
                     self.resolve_member_access_hierarchy(uri, subject_text, *is_static, span_start);
                 self.find_member_references(
+                    uri,
                     member_name,
                     *is_static,
                     include_declaration,
@@ -152,15 +213,16 @@ impl Backend {
             SymbolKind::FunctionCall { name, .. } => {
                 let ctx = self.file_context(uri);
                 let fqn = ctx.resolve_name_at(name, span_start);
-                self.find_function_references(&fqn, name, include_declaration)
+                self.find_function_references(uri, &fqn, name, include_declaration)
             }
             SymbolKind::ConstantReference { name } => {
-                self.find_constant_references(name, include_declaration)
+                self.find_constant_references(uri, name, include_declaration)
             }
             SymbolKind::MemberDeclaration { name, is_static } => {
                 // Resolve the enclosing class to scope the search.
                 let hierarchy = self.resolve_member_declaration_hierarchy(uri, span_start);
                 self.find_member_references(
+                    uri,
                     name,
                     *is_static,
                     include_declaration,
@@ -188,7 +250,7 @@ impl Backend {
                     _ => current_class.map(|cc| build_fqn(&cc.name, &ctx.namespace)),
                 };
                 if let Some(fqn) = fqn {
-                    self.find_class_references(&fqn, include_declaration)
+                    self.find_class_references(uri, &fqn, include_declaration)
                 } else {
                     Vec::new()
                 }
@@ -364,25 +426,20 @@ impl Backend {
         locations
     }
 
-    /// Snapshot symbol maps for user files that contain the given symbol
-    /// name(s).  Uses the `symbol_name_index` for O(1) lookup instead
-    /// of scanning all files.
-    fn user_file_symbol_maps_for(&self, names: &[&str]) -> Vec<(String, Arc<SymbolMap>)> {
-        self.ensure_workspace_indexed();
-
-        // Collect candidate URIs from the inverted index.
-        let candidate_uris: HashSet<String> = {
-            let idx = self.symbol_name_index.read();
-            names
-                .iter()
-                .filter_map(|name| idx.get(*name))
-                .flat_map(|set| set.iter().cloned())
-                .collect()
-        };
+    /// Snapshot symbol maps for user files matching a precomputed
+    /// candidate URI set.
+    fn user_file_symbol_maps_from_candidates(
+        &self,
+        source_uri: &str,
+        candidate_uris: HashSet<String>,
+    ) -> Vec<(String, Arc<SymbolMap>)> {
+        self.ensure_workspace_indexed(source_uri);
 
         if candidate_uris.is_empty() {
             return Vec::new();
         }
+
+        let scope = self.reference_scope_for_uri(source_uri);
 
         let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
         let maps = self.symbol_maps.read();
@@ -393,16 +450,87 @@ impl Backend {
                 !uri.starts_with("phpantom-stub://")
                     && !uri.starts_with("phpantom-stub-fn://")
                     && !vendor_prefixes.iter().any(|p| uri.starts_with(p.as_str()))
+                    && scope
+                        .as_ref()
+                        .is_none_or(|scope| Self::uri_is_in_reference_scope(scope, uri))
             })
             .filter_map(|uri| maps.get(uri).map(|map| (uri.clone(), Arc::clone(map))))
             .collect()
+    }
+
+    fn user_file_symbol_maps_for_classes(
+        &self,
+        source_uri: &str,
+        names: &[&str],
+    ) -> Vec<(String, Arc<SymbolMap>)> {
+        let candidate_uris: HashSet<String> = {
+            let idx = self.class_name_index.read();
+            names
+                .iter()
+                .filter_map(|name| idx.get(*name))
+                .flat_map(|set| set.iter().cloned())
+                .collect()
+        };
+        self.user_file_symbol_maps_from_candidates(source_uri, candidate_uris)
+    }
+
+    fn user_file_symbol_maps_for_member(
+        &self,
+        source_uri: &str,
+        name: &str,
+        is_static: bool,
+    ) -> Vec<(String, Arc<SymbolMap>)> {
+        let candidate_uris = self
+            .member_name_index
+            .read()
+            .get(&(name.to_string(), is_static))
+            .cloned()
+            .unwrap_or_default();
+        self.user_file_symbol_maps_from_candidates(source_uri, candidate_uris)
+    }
+
+    fn user_file_symbol_maps_for_functions(
+        &self,
+        source_uri: &str,
+        names: &[&str],
+    ) -> Vec<(String, Arc<SymbolMap>)> {
+        let candidate_uris: HashSet<String> = {
+            let idx = self.function_name_index.read();
+            names
+                .iter()
+                .filter_map(|name| idx.get(*name))
+                .flat_map(|set| set.iter().cloned())
+                .collect()
+        };
+        self.user_file_symbol_maps_from_candidates(source_uri, candidate_uris)
+    }
+
+    fn user_file_symbol_maps_for_constants(
+        &self,
+        source_uri: &str,
+        names: &[&str],
+    ) -> Vec<(String, Arc<SymbolMap>)> {
+        let candidate_uris: HashSet<String> = {
+            let idx = self.constant_name_index.read();
+            names
+                .iter()
+                .filter_map(|name| idx.get(*name))
+                .flat_map(|set| set.iter().cloned())
+                .collect()
+        };
+        self.user_file_symbol_maps_from_candidates(source_uri, candidate_uris)
     }
 
     /// Find all references to a class/interface/trait/enum across all files.
     ///
     /// Matches `ClassReference` spans whose resolved FQN equals `target_fqn`,
     /// and optionally `ClassDeclaration` spans at the declaration site.
-    fn find_class_references(&self, target_fqn: &str, include_declaration: bool) -> Vec<Location> {
+    fn find_class_references(
+        &self,
+        source_uri: &str,
+        target_fqn: &str,
+        include_declaration: bool,
+    ) -> Vec<Location> {
         let mut locations = Vec::new();
 
         // Normalise: strip leading backslash if present.
@@ -411,7 +539,7 @@ impl Backend {
 
         // Use the inverted index to only examine files containing
         // the target class name.
-        let snapshot = self.user_file_symbol_maps_for(&[target_short]);
+        let snapshot = self.user_file_symbol_maps_for_classes(source_uri, &[target_short]);
 
         for (file_uri, symbol_map) in &snapshot {
             // Prefer mago-names resolved_names for FQN resolution (byte-offset
@@ -531,6 +659,7 @@ impl Backend {
     /// fallback when the target class cannot be determined).
     fn find_member_references(
         &self,
+        source_uri: &str,
         target_member: &str,
         target_is_static: bool,
         include_declaration: bool,
@@ -538,7 +667,8 @@ impl Backend {
     ) -> Vec<Location> {
         let mut locations = Vec::new();
 
-        let snapshot = self.user_file_symbol_maps_for(&[target_member]);
+        let snapshot =
+            self.user_file_symbol_maps_for_member(source_uri, target_member, target_is_static);
 
         for (file_uri, symbol_map) in &snapshot {
             // Quick pre-check: skip files with no MemberAccess or
@@ -683,6 +813,7 @@ impl Backend {
     /// Find all references to a function across all files.
     fn find_function_references(
         &self,
+        source_uri: &str,
         target_fqn: &str,
         target_short: &str,
         include_declaration: bool,
@@ -692,7 +823,7 @@ impl Backend {
         // Input boundary: callers may pass FQNs with a leading `\`.
         let target = strip_fqn_prefix(target_fqn);
 
-        let snapshot = self.user_file_symbol_maps_for(&[target_short]);
+        let snapshot = self.user_file_symbol_maps_for_functions(source_uri, &[target_short]);
 
         for (file_uri, symbol_map) in &snapshot {
             // Quick pre-check: skip files with no FunctionCall spans
@@ -781,12 +912,13 @@ impl Backend {
     /// Find all references to a constant across all files.
     fn find_constant_references(
         &self,
+        source_uri: &str,
         target_name: &str,
         include_declaration: bool,
     ) -> Vec<Location> {
         let mut locations = Vec::new();
 
-        let snapshot = self.user_file_symbol_maps_for(&[target_name]);
+        let snapshot = self.user_file_symbol_maps_for_constants(source_uri, &[target_name]);
 
         for (file_uri, symbol_map) in &snapshot {
             // Quick pre-check: skip files with no matching constant or
@@ -1101,18 +1233,119 @@ impl Backend {
     /// via the classmap and class_index.  The vendor directory (read from
     /// `composer.json` `config.vendor-dir`, defaulting to `vendor`) is
     /// skipped during the filesystem walk.
-    pub(crate) fn ensure_workspace_indexed(&self) {
-        // Fast path: if the workspace scan already completed (Phase 2
-        // finished), all user files have symbol maps.  Phase 1 is a
-        // subset of Phase 2, so there is nothing left to do.
-        if self
-            .workspace_scan_state
-            .load(std::sync::atomic::Ordering::Acquire)
-            == 2
-        {
-            return;
-        }
+    pub(crate) fn ensure_workspace_indexed(&self, source_uri: &str) {
+        loop {
+            match self
+                .workspace_scan_state
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                Self::WORKSPACE_SCAN_COMPLETE => return,
+                Self::WORKSPACE_SCAN_IN_PROGRESS => {
+                    self.wait_for_workspace_indexing();
+                    continue;
+                }
+                _ => {}
+            }
 
+            let Some(scope) = self.reference_scope_for_uri(source_uri) else {
+                return;
+            };
+
+            match self.reference_scope_state(&scope.key) {
+                Self::WORKSPACE_SCAN_COMPLETE => return,
+                Self::WORKSPACE_SCAN_NOT_STARTED => {
+                    if self.try_claim_reference_scope_indexing(&scope.key) {
+                        self.finish_reference_scope_indexing(&scope);
+                        return;
+                    }
+                }
+                Self::WORKSPACE_SCAN_IN_PROGRESS => self.wait_for_reference_scope_indexing(&scope),
+                _ => return,
+            }
+        }
+    }
+
+    /// Claim the workspace indexing pass for the current thread.
+    ///
+    /// Returns `true` when this caller won the race and is now
+    /// responsible for finishing the scan.
+    pub(crate) fn try_claim_workspace_indexing(&self) -> bool {
+        self.workspace_scan_state
+            .compare_exchange(
+                Self::WORKSPACE_SCAN_NOT_STARTED,
+                Self::WORKSPACE_SCAN_IN_PROGRESS,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    /// Finish a previously-claimed workspace indexing pass.
+    ///
+    /// Callers must first transition `workspace_scan_state` from
+    /// `NOT_STARTED` to `IN_PROGRESS` via
+    /// [`try_claim_workspace_indexing`](Self::try_claim_workspace_indexing).
+    pub(crate) fn finish_workspace_indexing(&self) -> usize {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_workspace_indexing()
+        })) {
+            Ok(parsed_files) => {
+                self.workspace_scan_state.store(
+                    Self::WORKSPACE_SCAN_COMPLETE,
+                    std::sync::atomic::Ordering::Release,
+                );
+                parsed_files
+            }
+            Err(payload) => {
+                self.workspace_scan_state.store(
+                    Self::WORKSPACE_SCAN_NOT_STARTED,
+                    std::sync::atomic::Ordering::Release,
+                );
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
+
+    fn reference_scope_state(&self, scope_key: &str) -> u8 {
+        self.reference_scope_scan_states
+            .lock()
+            .get(scope_key)
+            .copied()
+            .unwrap_or(Self::WORKSPACE_SCAN_NOT_STARTED)
+    }
+
+    fn try_claim_reference_scope_indexing(&self, scope_key: &str) -> bool {
+        let mut states = self.reference_scope_scan_states.lock();
+        match states.get(scope_key).copied() {
+            Some(Self::WORKSPACE_SCAN_COMPLETE | Self::WORKSPACE_SCAN_IN_PROGRESS) => false,
+            _ => {
+                states.insert(scope_key.to_string(), Self::WORKSPACE_SCAN_IN_PROGRESS);
+                true
+            }
+        }
+    }
+
+    fn finish_reference_scope_indexing(&self, scope: &ReferenceScope) -> usize {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.run_reference_scope_indexing(scope)
+        })) {
+            Ok(parsed_files) => {
+                self.reference_scope_scan_states
+                    .lock()
+                    .insert(scope.key.clone(), Self::WORKSPACE_SCAN_COMPLETE);
+                parsed_files
+            }
+            Err(payload) => {
+                self.reference_scope_scan_states
+                    .lock()
+                    .insert(scope.key.clone(), Self::WORKSPACE_SCAN_NOT_STARTED);
+                std::panic::resume_unwind(payload);
+            }
+        }
+    }
+
+    /// Run the two-phase user-workspace indexing pass.
+    fn run_workspace_indexing(&self) -> usize {
         // Collect URIs that already have symbol maps.
         let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
 
@@ -1152,62 +1385,119 @@ impl Backend {
 
         // ── Phase 2: workspace directory scan ───────────────────────────
         // Recursively discover PHP files in the workspace root that are
-        // not yet indexed.  Guarded by a tri-state CAS so only one
-        // thread (background indexer or first find-references call) runs
-        // the expensive filesystem walk.
-        //
-        // States: 0 = NOT_STARTED, 1 = IN_PROGRESS, 2 = COMPLETE.
-        const NOT_STARTED: u8 = 0;
-        const IN_PROGRESS: u8 = 1;
-        const COMPLETE: u8 = 2;
+        // not yet indexed.
+        let phase2_count = if let Some(root) = self.workspace_root.read().clone() {
+            let vendor_dir_paths = self.vendor_dir_paths.lock().clone();
 
-        let prev = self.workspace_scan_state.compare_exchange(
-            NOT_STARTED,
-            IN_PROGRESS,
-            std::sync::atomic::Ordering::AcqRel,
-            std::sync::atomic::Ordering::Acquire,
+            // Re-read existing URIs after phase 1 may have added more.
+            let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
+
+            let php_files = collect_php_files_gitignore(&root, &vendor_dir_paths);
+
+            let phase2_work: Vec<(String, PathBuf)> = php_files
+                .into_iter()
+                .filter_map(|path| {
+                    let uri = crate::util::path_to_uri(&path);
+                    if existing_uris.contains(&uri) {
+                        None
+                    } else {
+                        Some((uri, path))
+                    }
+                })
+                .collect();
+
+            let count = phase2_work.len();
+            self.parse_paths_parallel(&phase2_work);
+            count
+        } else {
+            0
+        };
+
+        phase1_uris.len() + phase2_count
+    }
+
+    /// Run the two-phase indexing pass for a single reference scope.
+    ///
+    /// In monorepo mode this is either one subproject or the workspace
+    /// root loose-files scope. In single-project mode it degenerates to
+    /// the whole workspace.
+    fn run_reference_scope_indexing(&self, scope: &ReferenceScope) -> usize {
+        let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
+        let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
+
+        let index_uris: Vec<String> = self.class_index.read().values().cloned().collect();
+
+        let phase1_uris: Vec<&String> = index_uris
+            .iter()
+            .filter(|uri| {
+                !existing_uris.contains(*uri)
+                    && !vendor_prefixes.iter().any(|p| uri.starts_with(p.as_str()))
+                    && !uri.starts_with("phpantom-stub://")
+                    && !uri.starts_with("phpantom-stub-fn://")
+                    && Self::uri_is_in_reference_scope(scope, uri)
+            })
+            .collect();
+
+        self.parse_files_parallel(
+            phase1_uris
+                .iter()
+                .map(|uri| (uri.as_str(), None::<&str>))
+                .collect(),
         );
 
-        match prev {
-            Ok(_) => {
-                // We won the race -- run the walk + parse.
-                let workspace_root = self.workspace_root.read().clone();
+        let vendor_dir_paths = self.vendor_dir_paths.lock().clone();
+        let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
 
-                if let Some(root) = workspace_root {
-                    let vendor_dir_paths = self.vendor_dir_paths.lock().clone();
+        let php_files = if scope.skip_dirs.is_empty() {
+            collect_php_files_gitignore(&scope.root, &vendor_dir_paths)
+        } else {
+            collect_php_files_gitignore_with_skip_dirs(
+                &scope.root,
+                &vendor_dir_paths,
+                &scope.skip_dirs,
+            )
+        };
 
-                    // Re-read existing URIs after phase 1 may have added more.
-                    let existing_uris: HashSet<String> =
-                        self.symbol_maps.read().keys().cloned().collect();
-
-                    let php_files = collect_php_files_gitignore(&root, &vendor_dir_paths);
-
-                    let phase2_work: Vec<(String, PathBuf)> = php_files
-                        .into_iter()
-                        .filter_map(|path| {
-                            let uri = crate::util::path_to_uri(&path);
-                            if existing_uris.contains(&uri) {
-                                None
-                            } else {
-                                Some((uri, path))
-                            }
-                        })
-                        .collect();
-
-                    self.parse_paths_parallel(&phase2_work);
-
-                    self.workspace_scan_state
-                        .store(COMPLETE, std::sync::atomic::Ordering::Release);
+        let phase2_work: Vec<(String, PathBuf)> = php_files
+            .into_iter()
+            .filter_map(|path| {
+                let uri = crate::util::path_to_uri(&path);
+                if existing_uris.contains(&uri) || !Self::uri_is_in_reference_scope(scope, &uri) {
+                    None
                 } else {
-                    self.workspace_scan_state
-                        .store(COMPLETE, std::sync::atomic::Ordering::Release);
+                    Some((uri, path))
                 }
+            })
+            .collect();
+
+        let count = phase2_work.len();
+        self.parse_paths_parallel(&phase2_work);
+
+        phase1_uris.len() + count
+    }
+
+    /// Wait for an in-flight workspace indexing pass to complete.
+    fn wait_for_workspace_indexing(&self) {
+        loop {
+            match self
+                .workspace_scan_state
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                Self::WORKSPACE_SCAN_COMPLETE => return,
+                Self::WORKSPACE_SCAN_NOT_STARTED => return,
+                Self::WORKSPACE_SCAN_IN_PROGRESS => std::thread::sleep(Duration::from_millis(10)),
+                _ => return,
             }
-            Err(IN_PROGRESS) => {
-                // Background thread is running the walk -- skip Phase 2.
-            }
-            Err(_) => {
-                // COMPLETE -- skip Phase 2.
+        }
+    }
+
+    fn wait_for_reference_scope_indexing(&self, scope: &ReferenceScope) {
+        loop {
+            match self.reference_scope_state(&scope.key) {
+                Self::WORKSPACE_SCAN_COMPLETE => return,
+                Self::WORKSPACE_SCAN_NOT_STARTED => return,
+                Self::WORKSPACE_SCAN_IN_PROGRESS => std::thread::sleep(Duration::from_millis(10)),
+                _ => return,
             }
         }
     }

@@ -642,7 +642,7 @@ The indexing strategy is configurable via `[indexing] strategy` in `.phpantom.to
 
 - **`"composer"`** (default) — merged classmap + self-scan. Load Composer's classmap (if it exists) as a skip set, then self-scan all PSR-4 and vendor directories for anything the classmap missed. Whatever the classmap already covers is a free performance win; whatever it's missing, we find ourselves. No completeness heuristic needed.
 - **`"self"`** — always self-scan, ignoring Composer's classmap entirely. Equivalent to the merged approach with an empty skip set.
-- **`"full"`** — same as `"self"` for now; reserved for future background indexing.
+- **`"full"`** — same discovery as `"self"`, plus a background second pass that parses user workspace files into AST/symbol caches for faster cross-file features.
 - **`"none"`** — no proactive scanning; uses Composer's classmap if present but never self-scans to fill gaps.
 
 The merged pipeline works in three steps: (1) load `autoload_classmap.php` into a `HashMap<String, PathBuf>`, (2) collect the classmap's file paths into a `HashSet<PathBuf>` skip set, (3) self-scan all PSR-4 and vendor directories, skipping files already in the skip set. The result is a merged index: classmap entries for everything Composer already knew about, plus self-scanned entries for everything it missed. When the classmap is complete (the common case), the self-scanner walks directories but skips every file, finishing almost instantly. When the classmap is empty or absent, it falls back to a full self-scan. When the classmap is partial (e.g. vendor classes only), vendor files are skipped and only user code is scanned. Every state of the classmap helps.

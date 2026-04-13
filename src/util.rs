@@ -10,7 +10,7 @@
 /// Subject-extraction helpers (walking backwards through characters to
 /// find variables, call expressions, balanced parentheses, `new`
 /// expressions, etc.) live in [`crate::subject_extraction`].
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +18,49 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::php_type::PhpType;
+use crate::symbol_map::{SymbolKind, SymbolMap};
+
+#[derive(Default)]
+struct IndexedSymbolNames {
+    members: HashSet<(String, bool)>,
+    classes: HashSet<String>,
+    functions: HashSet<String>,
+    constants: HashSet<String>,
+}
+
+fn collect_indexed_symbol_names(symbol_map: &SymbolMap) -> IndexedSymbolNames {
+    let mut names = IndexedSymbolNames::default();
+
+    for span in &symbol_map.spans {
+        match &span.kind {
+            SymbolKind::MemberAccess {
+                member_name,
+                is_static,
+                ..
+            } => {
+                names.members.insert((member_name.clone(), *is_static));
+            }
+            SymbolKind::MemberDeclaration { name, is_static } => {
+                names.members.insert((name.clone(), *is_static));
+            }
+            SymbolKind::ClassReference { name, .. } => {
+                names.classes.insert(short_name(name).to_string());
+            }
+            SymbolKind::ClassDeclaration { name } => {
+                names.classes.insert(name.clone());
+            }
+            SymbolKind::FunctionCall { name, .. } => {
+                names.functions.insert(short_name(name).to_string());
+            }
+            SymbolKind::ConstantReference { name } => {
+                names.constants.insert(name.clone());
+            }
+            _ => {}
+        }
+    }
+
+    names
+}
 
 /// Resolve an unqualified or partially-qualified PHP class/function name
 /// to a fully-qualified name using the file's `use` map and namespace.
@@ -251,10 +294,22 @@ pub(crate) fn collect_php_files_gitignore(
     root: &Path,
     vendor_dir_paths: &[PathBuf],
 ) -> Vec<PathBuf> {
+    collect_php_files_gitignore_with_skip_dirs(root, vendor_dir_paths, &[])
+}
+
+/// Recursively collect all `.php` files under a workspace root,
+/// respecting `.gitignore` rules, while also skipping an explicit set
+/// of directories.
+pub(crate) fn collect_php_files_gitignore_with_skip_dirs(
+    root: &Path,
+    vendor_dir_paths: &[PathBuf],
+    skip_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
     use ignore::WalkBuilder;
 
     let mut result = Vec::new();
     let vendor_paths_owned: Vec<PathBuf> = vendor_dir_paths.to_vec();
+    let skip_dirs_owned: Vec<PathBuf> = skip_dirs.to_vec();
 
     let walker = WalkBuilder::new(root)
         // Respect .gitignore, .git/info/exclude, global gitignore
@@ -272,6 +327,9 @@ pub(crate) fn collect_php_files_gitignore(
             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 let path = entry.path();
                 if vendor_paths_owned.iter().any(|vp| vp == path) {
+                    return false;
+                }
+                if skip_dirs_owned.iter().any(|skip| skip == path) {
                     return false;
                 }
             }
@@ -1328,6 +1386,82 @@ pub(crate) fn find_brace_match_line(
 }
 
 impl Backend {
+    /// Remove a file URI from all symbol-kind inverted indices using a
+    /// previously-built symbol map snapshot.
+    pub(crate) fn remove_uri_from_symbol_indices(&self, uri: &str, symbol_map: &SymbolMap) {
+        let names = collect_indexed_symbol_names(symbol_map);
+
+        {
+            let mut idx = self.member_name_index.write();
+            for key in &names.members {
+                if let Some(file_set) = idx.get_mut(key) {
+                    file_set.remove(uri);
+                }
+            }
+        }
+
+        {
+            let mut idx = self.class_name_index.write();
+            for name in &names.classes {
+                if let Some(file_set) = idx.get_mut(name) {
+                    file_set.remove(uri);
+                }
+            }
+        }
+
+        {
+            let mut idx = self.function_name_index.write();
+            for name in &names.functions {
+                if let Some(file_set) = idx.get_mut(name) {
+                    file_set.remove(uri);
+                }
+            }
+        }
+
+        {
+            let mut idx = self.constant_name_index.write();
+            for name in &names.constants {
+                if let Some(file_set) = idx.get_mut(name) {
+                    file_set.remove(uri);
+                }
+            }
+        }
+    }
+
+    /// Insert a file URI into all symbol-kind inverted indices using a
+    /// freshly-built symbol map snapshot.
+    pub(crate) fn add_uri_to_symbol_indices(&self, uri: &str, symbol_map: &SymbolMap) {
+        let names = collect_indexed_symbol_names(symbol_map);
+
+        {
+            let mut idx = self.member_name_index.write();
+            for key in names.members {
+                idx.entry(key).or_default().insert(uri.to_string());
+            }
+        }
+
+        {
+            let mut idx = self.class_name_index.write();
+            for name in names.classes {
+                idx.entry(name).or_default().insert(uri.to_string());
+            }
+        }
+
+        {
+            let mut idx = self.function_name_index.write();
+            for name in names.functions {
+                idx.entry(name).or_default().insert(uri.to_string());
+            }
+        }
+
+        {
+            let mut idx = self.constant_name_index.write();
+            for name in names.constants {
+                idx.entry(name).or_default().insert(uri.to_string());
+            }
+        }
+    }
+
     /// Look up a class by its (possibly namespace-qualified) name in the
     /// in-memory `ast_map`, without triggering any disk I/O.
     ///
@@ -1541,15 +1675,11 @@ impl Backend {
         let old_classes: Vec<std::sync::Arc<crate::types::ClassInfo>> =
             self.ast_map.read().get(uri).cloned().unwrap_or_default();
 
+        if let Some(old_symbol_map) = self.symbol_maps.read().get(uri).cloned() {
+            self.remove_uri_from_symbol_indices(uri, old_symbol_map.as_ref());
+        }
         self.ast_map.write().remove(uri);
         self.symbol_maps.write().remove(uri);
-        // Remove this URI from the inverted symbol name index.
-        {
-            let mut idx = self.symbol_name_index.write();
-            for file_set in idx.values_mut() {
-                file_set.remove(uri);
-            }
-        }
         self.use_map.write().remove(uri);
         self.resolved_names.write().remove(uri);
         self.namespace_map.write().remove(uri);

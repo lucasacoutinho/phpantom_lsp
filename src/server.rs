@@ -394,6 +394,15 @@ impl LanguageServer for Backend {
             worker_backend.diagnostic_worker().await;
         });
 
+        if self.config().indexing.strategy() == IndexingStrategy::Full
+            && self.try_claim_workspace_indexing()
+        {
+            let indexer_backend = self.clone_for_diagnostic_worker();
+            tokio::spawn(async move {
+                indexer_backend.background_workspace_indexer().await;
+            });
+        }
+
         // Spawn the PHPStan worker as a separate background task.
         // PHPStan is extremely slow and resource-intensive, so it runs
         // in its own task with its own debounce timer and pending-URI
@@ -1145,6 +1154,57 @@ impl Backend {
         f: impl FnOnce(&str) -> Option<T>,
     ) -> Result<Option<T>> {
         Ok(self.with_file_content(handler_name, uri, None, f).flatten())
+    }
+
+    /// Start the background second-pass workspace index used by
+    /// `strategy = "full"`.
+    ///
+    /// The scan state is claimed before this async task is spawned so
+    /// an early `find references` request waits for the background
+    /// worker instead of launching a duplicate cold parse on demand.
+    async fn background_workspace_indexer(&self) {
+        let progress_token = self.progress_create("phpantom/full-index").await;
+        if let Some(ref tok) = progress_token {
+            self.progress_begin(
+                tok,
+                "PHPantom: Background Indexing",
+                Some("Parsing workspace user files".to_string()),
+            )
+            .await;
+        }
+
+        self.log(
+            MessageType::INFO,
+            "PHPantom: starting background workspace indexing".to_string(),
+        )
+        .await;
+
+        let backend = self.clone_for_blocking();
+        let parsed_files =
+            match tokio::task::spawn_blocking(move || backend.finish_workspace_indexing()).await {
+                Ok(count) => count,
+                Err(err) => {
+                    tracing::error!("background workspace indexing task failed: {err}");
+                    0
+                }
+            };
+
+        if let Some(ref tok) = progress_token {
+            self.progress_end(
+                tok,
+                Some(format!("Background indexed {} user files", parsed_files)),
+            )
+            .await;
+        }
+
+        self.log(
+            MessageType::INFO,
+            format!(
+                "PHPantom: background workspace indexing complete ({} user files)",
+                parsed_files
+            ),
+        )
+        .await;
     }
 
     // ── Initialization helpers ───────────────────────────────────────────
