@@ -52,7 +52,7 @@ pub(super) fn is_attribute_scope(method: &MethodInfo) -> bool {
 /// unchanged (it is already the public-facing name).
 pub(super) fn scope_name_for(method: &MethodInfo) -> String {
     if is_attribute_scope(method) {
-        method.name.clone()
+        method.name.to_string()
     } else {
         scope_name(&method.name)
     }

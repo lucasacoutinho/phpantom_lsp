@@ -452,7 +452,7 @@ pub(crate) fn infer_return_type(
                 // so that `new Foo(…)` produces a fully-qualified type.
                 let resolved = t.resolve_names(&|name: &str| {
                     if let Some(cls) = class_loader(name) {
-                        cls.fqn()
+                        cls.fqn().to_string()
                     } else {
                         name.to_string()
                     }

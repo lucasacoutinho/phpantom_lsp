@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::atom;
 use crate::php_type::PhpType;
 use crate::test_fixtures::{make_class, make_method, no_loader};
 use std::sync::Arc;
@@ -265,7 +266,7 @@ fn cast_custom_class_with_get_method() {
             let mut cast_class = make_class("MoneyCast");
             cast_class
                 .methods
-                .push(make_method("get", Some("\\App\\Money")));
+                .push(Arc::new(make_method("get", Some("\\App\\Money"))));
             Some(Arc::new(cast_class))
         } else {
             None
@@ -284,7 +285,7 @@ fn cast_custom_class_canonical_fqn() {
             let mut cast_class = make_class("MoneyCast");
             cast_class
                 .methods
-                .push(make_method("get", Some("App\\Money")));
+                .push(Arc::new(make_method("get", Some("App\\Money"))));
             Some(Arc::new(cast_class))
         } else {
             None
@@ -358,7 +359,7 @@ fn cast_castable_resolves_to_class_itself() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Casts\\Address" {
             let mut c = make_class("Address");
-            c.interfaces = vec![CASTABLE_FQN.to_string()];
+            c.interfaces = vec![atom(CASTABLE_FQN)];
             Some(Arc::new(c))
         } else {
             None
@@ -375,7 +376,7 @@ fn cast_castable_with_fqn_interface() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Casts\\Address" {
             let mut c = make_class("Address");
-            c.interfaces = vec![CASTABLE_FQN.to_string()];
+            c.interfaces = vec![atom(CASTABLE_FQN)];
             Some(Arc::new(c))
         } else {
             None
@@ -392,7 +393,7 @@ fn cast_castable_short_interface_name() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Casts\\Address" {
             let mut c = make_class("Address");
-            c.interfaces = vec!["Castable".to_string()];
+            c.interfaces = vec![atom("Castable")];
             Some(Arc::new(c))
         } else {
             None
@@ -411,7 +412,7 @@ fn cast_class_with_colon_argument_suffix() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Casts\\Address" {
             let mut c = make_class("Address");
-            c.interfaces = vec![CASTABLE_FQN.to_string()];
+            c.interfaces = vec![atom(CASTABLE_FQN)];
             Some(Arc::new(c))
         } else {
             None
@@ -447,7 +448,7 @@ fn cast_custom_class_with_colon_argument_and_get() {
             let mut cast_class = make_class("MoneyCast");
             cast_class
                 .methods
-                .push(make_method("get", Some("\\App\\Money")));
+                .push(Arc::new(make_method("get", Some("\\App\\Money"))));
             Some(Arc::new(cast_class))
         } else {
             None
@@ -464,7 +465,7 @@ fn cast_custom_class_with_colon_argument_and_get() {
 #[test]
 fn is_castable_with_fqn() {
     let mut c = make_class("Address");
-    c.interfaces = vec![CASTABLE_FQN.to_string()];
+    c.interfaces = vec![atom(CASTABLE_FQN)];
     assert!(is_castable(&c));
 }
 
@@ -472,14 +473,14 @@ fn is_castable_with_fqn() {
 fn is_castable_with_fqn_interface() {
     // Interfaces are canonical (no leading backslash) after resolution.
     let mut c = make_class("Address");
-    c.interfaces = vec![CASTABLE_FQN.to_string()];
+    c.interfaces = vec![atom(CASTABLE_FQN)];
     assert!(is_castable(&c));
 }
 
 #[test]
 fn is_castable_with_short_name() {
     let mut c = make_class("Address");
-    c.interfaces = vec!["Castable".to_string()];
+    c.interfaces = vec![atom("Castable")];
     assert!(is_castable(&c));
 }
 
@@ -495,7 +496,7 @@ fn is_not_castable() {
 fn tget_from_casts_attributes_short_name() {
     let mut c = make_class("App\\Casts\\HtmlCast");
     c.implements_generics = vec![(
-        "CastsAttributes".to_string(),
+        atom("CastsAttributes"),
         vec![PhpType::parse("HtmlString"), PhpType::parse("HtmlString")],
     )];
     assert_eq!(
@@ -508,7 +509,7 @@ fn tget_from_casts_attributes_short_name() {
 fn tget_from_casts_attributes_fqn() {
     let mut c = make_class("App\\Casts\\HtmlCast");
     c.implements_generics = vec![(
-        CASTS_ATTRIBUTES_FQN.to_string(),
+        atom(CASTS_ATTRIBUTES_FQN),
         vec![
             PhpType::parse("\\Illuminate\\Support\\HtmlString"),
             PhpType::parse("string"),
@@ -528,7 +529,7 @@ fn tget_from_casts_attributes_fqn_canonical() {
     // after resolution.
     let mut c = make_class("App\\Casts\\HtmlCast");
     c.implements_generics = vec![(
-        CASTS_ATTRIBUTES_FQN.to_string(),
+        atom(CASTS_ATTRIBUTES_FQN),
         vec![PhpType::parse("HtmlString"), PhpType::parse("HtmlString")],
     )];
     assert_eq!(
@@ -546,17 +547,14 @@ fn tget_returns_none_when_no_implements_generics() {
 #[test]
 fn tget_returns_none_for_unrelated_interface() {
     let mut c = make_class("App\\Casts\\HtmlCast");
-    c.implements_generics = vec![(
-        "SomeOtherInterface".to_string(),
-        vec![PhpType::parse("Foo")],
-    )];
+    c.implements_generics = vec![(atom("SomeOtherInterface"), vec![PhpType::parse("Foo")])];
     assert_eq!(extract_tget_from_implements_generics(&c), None);
 }
 
 #[test]
 fn tget_returns_none_for_empty_args() {
     let mut c = make_class("App\\Casts\\HtmlCast");
-    c.implements_generics = vec![("CastsAttributes".to_string(), vec![])];
+    c.implements_generics = vec![(atom("CastsAttributes"), vec![])];
     assert_eq!(extract_tget_from_implements_generics(&c), None);
 }
 
@@ -564,7 +562,7 @@ fn tget_returns_none_for_empty_args() {
 fn tget_skips_empty_string_arg() {
     let mut c = make_class("App\\Casts\\HtmlCast");
     c.implements_generics = vec![(
-        "CastsAttributes".to_string(),
+        atom("CastsAttributes"),
         vec![PhpType::parse(""), PhpType::parse("HtmlString")],
     )];
     assert_eq!(extract_tget_from_implements_generics(&c), None);
@@ -578,9 +576,9 @@ fn cast_custom_class_falls_back_to_implements_generics() {
         if name == "App\\Casts\\HtmlCast" {
             let mut cast_class = make_class("HtmlCast");
             // get() has no return type — mimics the real scenario.
-            cast_class.methods.push(make_method("get", None));
+            cast_class.methods.push(Arc::new(make_method("get", None)));
             cast_class.implements_generics = vec![(
-                "CastsAttributes".to_string(),
+                atom("CastsAttributes"),
                 vec![PhpType::parse("HtmlString"), PhpType::parse("HtmlString")],
             )];
             Some(Arc::new(cast_class))
@@ -601,9 +599,9 @@ fn cast_implements_generics_take_priority_over_get_return_type() {
             let mut cast_class = make_class("HtmlCast");
             cast_class
                 .methods
-                .push(make_method("get", Some("?HtmlString")));
+                .push(Arc::new(make_method("get", Some("?HtmlString"))));
             cast_class.implements_generics = vec![(
-                "CastsAttributes".to_string(),
+                atom("CastsAttributes"),
                 vec![
                     PhpType::parse("DifferentType"),
                     PhpType::parse("DifferentType"),
@@ -629,7 +627,7 @@ fn cast_get_return_type_used_when_no_implements_generics() {
             let mut cast_class = make_class("HtmlCast");
             cast_class
                 .methods
-                .push(make_method("get", Some("?HtmlString")));
+                .push(Arc::new(make_method("get", Some("?HtmlString"))));
             // No @implements generics — get() is the only signal.
             Some(Arc::new(cast_class))
         } else {

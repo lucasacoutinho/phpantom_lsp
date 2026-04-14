@@ -699,7 +699,7 @@ impl Backend {
             let file_namespace = self.namespace_map.read().get(uri).cloned().flatten();
             let class_fqn = match &file_namespace {
                 Some(ns) => format!("{}\\{}", ns, c.name),
-                None => c.name.clone(),
+                None => c.name.to_string(),
             };
             class_fqn == fqn
         })?;

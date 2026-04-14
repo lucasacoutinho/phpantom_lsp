@@ -192,7 +192,7 @@ fn format_param_label(param: &ParameterInfo) -> String {
     } else if param.is_reference {
         parts.push(format!("&{}", param.name));
     } else {
-        parts.push(param.name.clone());
+        parts.push(param.name.to_string());
     }
     let base = parts.join(" ");
     if !param.is_required

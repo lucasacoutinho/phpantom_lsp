@@ -1,3 +1,6 @@
+use crate::atom::atom;
+use std::sync::Arc;
+
 use crate::php_type::PhpType;
 use crate::test_fixtures::make_class;
 use crate::types::MethodInfo;
@@ -22,8 +25,8 @@ fn make_method_typed(name: &str, return_type: Option<PhpType>) -> MethodInfo {
 fn builder_call_mixed_becomes_static() {
     let mut class = make_class(ELOQUENT_BUILDER_FQN);
     class.methods = vec![
-        make_method_typed("__call", Some(PhpType::mixed())),
-        make_method_typed("__callStatic", Some(PhpType::mixed())),
+        Arc::new(make_method_typed("__call", Some(PhpType::mixed()))),
+        Arc::new(make_method_typed("__callStatic", Some(PhpType::mixed()))),
     ]
     .into();
 
@@ -44,7 +47,7 @@ fn builder_call_mixed_becomes_static() {
 #[test]
 fn builder_call_non_mixed_is_not_patched() {
     let mut class = make_class(ELOQUENT_BUILDER_FQN);
-    class.methods = vec![make_method_typed("__call", Some(PhpType::void()))].into();
+    class.methods = vec![Arc::new(make_method_typed("__call", Some(PhpType::void())))].into();
 
     apply_laravel_patches(&mut class, ELOQUENT_BUILDER_FQN);
 
@@ -66,7 +69,7 @@ fn builder_call_non_mixed_is_not_patched() {
 #[test]
 fn builder_call_no_return_type_is_not_patched() {
     let mut class = make_class(ELOQUENT_BUILDER_FQN);
-    class.methods = vec![make_method_typed("__call", None)].into();
+    class.methods = vec![Arc::new(make_method_typed("__call", None))].into();
 
     apply_laravel_patches(&mut class, ELOQUENT_BUILDER_FQN);
 
@@ -85,7 +88,7 @@ fn conditionable_when_union_with_template_becomes_this() {
         PhpType::Named("$this".to_string()),
         PhpType::Named("TWhenReturnType".to_string()),
     ]);
-    class.methods = vec![make_method_typed("when", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("when", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -110,7 +113,7 @@ fn conditionable_unless_union_with_template_becomes_this() {
         PhpType::Named("$this".to_string()),
         PhpType::Named("TUnlessReturnType".to_string()),
     ]);
-    class.methods = vec![make_method_typed("unless", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("unless", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -132,7 +135,7 @@ fn conditionable_unless_union_with_template_becomes_this() {
 fn conditionable_bare_template_return_becomes_this() {
     let mut class = make_class(CONDITIONABLE_FQN);
     let return_type = PhpType::Named("TWhenReturnType".to_string());
-    class.methods = vec![make_method_typed("when", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("when", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -157,7 +160,7 @@ fn conditionable_static_union_with_template_becomes_this() {
         PhpType::static_(),
         PhpType::Named("TWhenReturnType".to_string()),
     ]);
-    class.methods = vec![make_method_typed("when", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("when", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -179,7 +182,7 @@ fn conditionable_static_union_with_template_becomes_this() {
 fn conditionable_self_return_is_not_patched() {
     let mut class = make_class(CONDITIONABLE_FQN);
     let return_type = PhpType::Named("$this".to_string());
-    class.methods = vec![make_method_typed("when", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("when", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -202,7 +205,7 @@ fn conditionable_self_return_is_not_patched() {
 fn conditionable_static_return_is_not_patched() {
     let mut class = make_class(CONDITIONABLE_FQN);
     let return_type = PhpType::static_();
-    class.methods = vec![make_method_typed("when", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("when", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -224,7 +227,7 @@ fn conditionable_static_return_is_not_patched() {
 #[test]
 fn conditionable_no_return_type_is_not_patched() {
     let mut class = make_class(CONDITIONABLE_FQN);
-    class.methods = vec![make_method_typed("when", None)].into();
+    class.methods = vec![Arc::new(make_method_typed("when", None))].into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -241,7 +244,11 @@ fn conditionable_other_method_is_not_patched() {
         PhpType::Named("$this".to_string()),
         PhpType::Named("TWhenReturnType".to_string()),
     ]);
-    class.methods = vec![make_method_typed("doSomething", Some(return_type.clone()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "doSomething",
+        Some(return_type.clone()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -265,12 +272,12 @@ fn conditionable_other_method_is_not_patched() {
 #[test]
 fn class_using_conditionable_trait_gets_when_patched() {
     let mut class = make_class("App\\Services\\Pipeline");
-    class.used_traits = vec![CONDITIONABLE_FQN.to_string()];
+    class.used_traits = vec![atom(CONDITIONABLE_FQN)];
     let return_type = PhpType::Union(vec![
         PhpType::Named("$this".to_string()),
         PhpType::Named("TWhenReturnType".to_string()),
     ]);
-    class.methods = vec![make_method_typed("when", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("when", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, "App\\Services\\Pipeline");
 
@@ -291,12 +298,12 @@ fn class_using_conditionable_trait_gets_when_patched() {
 #[test]
 fn class_using_conditionable_short_name_gets_patched() {
     let mut class = make_class("App\\Services\\Pipeline");
-    class.used_traits = vec!["Conditionable".to_string()];
+    class.used_traits = vec![atom("Conditionable")];
     let return_type = PhpType::Union(vec![
         PhpType::Named("$this".to_string()),
         PhpType::Named("TWhenReturnType".to_string()),
     ]);
-    class.methods = vec![make_method_typed("when", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("when", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, "App\\Services\\Pipeline");
 
@@ -317,12 +324,16 @@ fn class_using_conditionable_short_name_gets_patched() {
 #[test]
 fn class_without_conditionable_is_not_patched() {
     let mut class = make_class("App\\Services\\Pipeline");
-    class.used_traits = vec!["SomeTrait".to_string()];
+    class.used_traits = vec![atom("SomeTrait")];
     let return_type = PhpType::Union(vec![
         PhpType::Named("$this".to_string()),
         PhpType::Named("TWhenReturnType".to_string()),
     ]);
-    class.methods = vec![make_method_typed("when", Some(return_type.clone()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "when",
+        Some(return_type.clone()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, "App\\Services\\Pipeline");
 
@@ -347,21 +358,21 @@ fn class_without_conditionable_is_not_patched() {
 fn builder_gets_both_call_and_when_patches() {
     let mut class = make_class(ELOQUENT_BUILDER_FQN);
     class.methods = vec![
-        make_method_typed("__call", Some(PhpType::mixed())),
-        make_method_typed(
+        Arc::new(make_method_typed("__call", Some(PhpType::mixed()))),
+        Arc::new(make_method_typed(
             "when",
             Some(PhpType::Union(vec![
                 PhpType::Named("$this".to_string()),
                 PhpType::Named("TWhenReturnType".to_string()),
             ])),
-        ),
-        make_method_typed(
+        )),
+        Arc::new(make_method_typed(
             "unless",
             Some(PhpType::Union(vec![
                 PhpType::Named("$this".to_string()),
                 PhpType::Named("TUnlessReturnType".to_string()),
             ])),
-        ),
+        )),
     ]
     .into();
 
@@ -392,7 +403,7 @@ fn union_with_null_and_template_is_patched() {
         PhpType::null(),
         PhpType::Named("TWhenReturnType".to_string()),
     ]);
-    class.methods = vec![make_method_typed("when", Some(return_type))].into();
+    class.methods = vec![Arc::new(make_method_typed("when", Some(return_type)))].into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -417,7 +428,11 @@ fn union_of_only_self_types_is_not_patched() {
         PhpType::Named("$this".to_string()),
         PhpType::static_(),
     ]);
-    class.methods = vec![make_method_typed("when", Some(return_type.clone()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "when",
+        Some(return_type.clone()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 
@@ -441,7 +456,11 @@ fn union_of_only_self_types_is_not_patched() {
 #[test]
 fn db_facade_select_bare_array_becomes_typed() {
     let mut class = make_class(DB_FACADE_FQN);
-    class.methods = vec![make_method_typed("select", Some(PhpType::array()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "select",
+        Some(PhpType::array()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, DB_FACADE_FQN);
 
@@ -463,10 +482,10 @@ fn db_facade_select_bare_array_becomes_typed() {
 #[test]
 fn db_facade_select_from_write_connection_becomes_typed() {
     let mut class = make_class(DB_FACADE_FQN);
-    class.methods = vec![make_method_typed(
+    class.methods = vec![Arc::new(make_method_typed(
         "selectFromWriteConnection",
         Some(PhpType::array()),
-    )]
+    ))]
     .into();
 
     apply_laravel_patches(&mut class, DB_FACADE_FQN);
@@ -488,10 +507,10 @@ fn db_facade_select_from_write_connection_becomes_typed() {
 #[test]
 fn db_facade_select_result_sets_becomes_typed() {
     let mut class = make_class(DB_FACADE_FQN);
-    class.methods = vec![make_method_typed(
+    class.methods = vec![Arc::new(make_method_typed(
         "selectResultSets",
         Some(PhpType::array()),
-    )]
+    ))]
     .into();
 
     apply_laravel_patches(&mut class, DB_FACADE_FQN);
@@ -513,7 +532,11 @@ fn db_facade_select_result_sets_becomes_typed() {
 #[test]
 fn db_facade_select_one_mixed_becomes_nullable_stdclass() {
     let mut class = make_class(DB_FACADE_FQN);
-    class.methods = vec![make_method_typed("selectOne", Some(PhpType::mixed()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "selectOne",
+        Some(PhpType::mixed()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, DB_FACADE_FQN);
 
@@ -535,7 +558,11 @@ fn db_facade_select_one_mixed_becomes_nullable_stdclass() {
 #[test]
 fn db_connection_select_bare_array_becomes_typed() {
     let mut class = make_class(DB_CONNECTION_FQN);
-    class.methods = vec![make_method_typed("select", Some(PhpType::array()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "select",
+        Some(PhpType::array()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, DB_CONNECTION_FQN);
 
@@ -561,7 +588,11 @@ fn db_select_non_array_return_is_not_patched() {
         "array".to_string(),
         vec![PhpType::string(), PhpType::mixed()],
     );
-    class.methods = vec![make_method_typed("select", Some(original.clone()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "select",
+        Some(original.clone()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, DB_FACADE_FQN);
 
@@ -584,7 +615,11 @@ fn db_select_non_array_return_is_not_patched() {
 fn db_select_one_non_mixed_is_not_patched() {
     let mut class = make_class(DB_FACADE_FQN);
     let original = PhpType::object();
-    class.methods = vec![make_method_typed("selectOne", Some(original.clone()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "selectOne",
+        Some(original.clone()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, DB_FACADE_FQN);
 
@@ -607,7 +642,11 @@ fn db_select_one_non_mixed_is_not_patched() {
 fn db_other_method_is_not_patched() {
     let mut class = make_class(DB_FACADE_FQN);
     let original = PhpType::array();
-    class.methods = vec![make_method_typed("insert", Some(original.clone()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "insert",
+        Some(original.clone()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, DB_FACADE_FQN);
 
@@ -633,7 +672,11 @@ fn fqn_in_return_type_is_not_treated_as_template() {
         PhpType::Named("$this".to_string()),
         PhpType::Named("App\\Models\\User".to_string()),
     ]);
-    class.methods = vec![make_method_typed("when", Some(return_type.clone()))].into();
+    class.methods = vec![Arc::new(make_method_typed(
+        "when",
+        Some(return_type.clone()),
+    ))]
+    .into();
 
     apply_laravel_patches(&mut class, CONDITIONABLE_FQN);
 

@@ -121,7 +121,7 @@ pub(crate) fn build_attribute_snippet(name: &str, params: &[ParameterInfo]) -> S
             .iter()
             .enumerate()
             .map(|(i, p)| {
-                let arg_name = p.name.strip_prefix('$').unwrap_or(&p.name);
+                let arg_name = p.name.strip_prefix('$').unwrap_or(&*p.name);
                 let (prefix, placeholder, suffix) = attribute_placeholder(p);
                 format!("{arg_name}: {prefix}${{{}:{}}}{suffix}", i + 1, placeholder)
             })
@@ -158,7 +158,7 @@ fn attribute_placeholder(param: &ParameterInfo) -> (String, String, String) {
         },
         None => {
             // No type hint — use the bare parameter name.
-            let name = param.name.strip_prefix('$').unwrap_or(&param.name);
+            let name = param.name.strip_prefix('$').unwrap_or(&*param.name);
             return (String::new(), name.to_string(), String::new());
         }
     };
@@ -167,7 +167,7 @@ fn attribute_placeholder(param: &ParameterInfo) -> (String, String, String) {
         // Use the parameter name (without $) as a descriptive
         // placeholder.  Quotes sit outside the tab stop so typing
         // replaces only the inner text: `'${1:methodName}'`.
-        let name = param.name.strip_prefix('$').unwrap_or(&param.name);
+        let name = param.name.strip_prefix('$').unwrap_or(&*param.name);
         return ("'".to_string(), name.to_string(), "'".to_string());
     }
     if base_type.is_bool() {
@@ -183,7 +183,7 @@ fn attribute_placeholder(param: &ParameterInfo) -> (String, String, String) {
         return (String::new(), "[]".to_string(), String::new());
     }
     // Unknown or complex type — use the bare parameter name.
-    let name = param.name.strip_prefix('$').unwrap_or(&param.name);
+    let name = param.name.strip_prefix('$').unwrap_or(&*param.name);
     (String::new(), name.to_string(), String::new())
 }
 
@@ -235,7 +235,7 @@ pub(crate) fn format_param_list(params: &[ParameterInfo]) -> String {
             } else if p.is_variadic {
                 format!("...{}", p.name)
             } else {
-                p.name.clone()
+                p.name.to_string()
             };
             if !p.is_required && !p.is_variadic {
                 format!("{} = ...", name)
@@ -356,8 +356,8 @@ pub(crate) fn build_completion_items(
             .map(shorten_php_type);
 
         let data = serde_json::to_value(CompletionItemData {
-            class_name: target_class.name.clone(),
-            member_name: method.name.clone(),
+            class_name: target_class.name.to_string(),
+            member_name: method.name.to_string(),
             kind: "method".to_string(),
             uri: uri.to_string(),
             extra_class_names: vec![],
@@ -374,7 +374,7 @@ pub(crate) fn build_completion_items(
             detail: return_type,
             insert_text: Some(build_callable_snippet(&method.name, &method.parameters)),
             insert_text_format: Some(InsertTextFormat::SNIPPET),
-            filter_text: Some(method.name.clone()),
+            filter_text: Some(method.name.to_string()),
             tags: deprecation_tag(method.deprecation_message.is_some()),
             commit_characters: Some(METHOD_COMMIT_CHARS.iter().map(|s| s.to_string()).collect()),
             data,
@@ -408,14 +408,14 @@ pub(crate) fn build_completion_items(
         {
             format!("${}", property.name)
         } else {
-            property.name.clone()
+            property.name.to_string()
         };
 
         let detail = property.type_hint.as_ref().map(shorten_php_type);
 
         let data = serde_json::to_value(CompletionItemData {
-            class_name: target_class.name.clone(),
-            member_name: property.name.clone(),
+            class_name: target_class.name.to_string(),
+            member_name: property.name.to_string(),
             kind: "property".to_string(),
             uri: uri.to_string(),
             extra_class_names: vec![],
@@ -457,8 +457,8 @@ pub(crate) fn build_completion_items(
                 .or_else(|| constant.type_hint.as_ref().map(shorten_php_type));
 
             let data = serde_json::to_value(CompletionItemData {
-                class_name: target_class.name.clone(),
-                member_name: constant.name.clone(),
+                class_name: target_class.name.to_string(),
+                member_name: constant.name.to_string(),
                 kind: "constant".to_string(),
                 uri: uri.to_string(),
                 extra_class_names: vec![],
@@ -466,15 +466,15 @@ pub(crate) fn build_completion_items(
             .ok();
             let class_description = Some(display_class_name(&target_class.name).to_string());
             items.push(CompletionItem {
-                label: constant.name.clone(),
+                label: constant.name.to_string(),
                 label_details: Some(CompletionItemLabelDetails {
                     detail: None,
                     description: class_description,
                 }),
                 kind: Some(CompletionItemKind::CONSTANT),
                 detail,
-                insert_text: Some(constant.name.clone()),
-                filter_text: Some(constant.name.clone()),
+                insert_text: Some(constant.name.to_string()),
+                filter_text: Some(constant.name.to_string()),
                 tags: deprecation_tag(constant.deprecation_message.is_some()),
                 data,
                 ..CompletionItem::default()
@@ -572,7 +572,7 @@ pub(crate) fn is_ancestor_of(
     }
     // Walk the parent chain of the current class to see if the target
     // is an ancestor.
-    let mut ancestor_name = cc.parent_class.clone();
+    let mut ancestor_name = cc.parent_class;
     let mut depth = 0u32;
     while let Some(ref name) = ancestor_name {
         depth += 1;
@@ -584,10 +584,10 @@ pub(crate) fn is_ancestor_of(
         // Compare against both the full name and the short (last segment)
         // so that cross-file inheritance is detected correctly.
         let short = name.rsplit('\\').next().unwrap_or(name);
-        if name == &target_class.name || short == target_class.name {
+        if target_class.name == *name || target_class.name == short {
             return true;
         }
-        ancestor_name = class_loader(name).and_then(|ci| ci.parent_class.clone());
+        ancestor_name = class_loader(name).and_then(|ci| ci.parent_class);
     }
     false
 }
@@ -813,6 +813,7 @@ pub(crate) fn merge_union_completion_items(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atom::atom;
     use crate::types::ClassInfo;
 
     /// Helper to build a minimal `CompletionItem` with a label and
@@ -954,7 +955,7 @@ mod tests {
     #[test]
     fn same_class_is_ancestor() {
         let cls = ClassInfo {
-            name: "Foo".to_string(),
+            name: atom("Foo"),
             ..ClassInfo::default()
         };
         let loader = |_: &str| -> Option<Arc<ClassInfo>> { None };
@@ -964,7 +965,7 @@ mod tests {
     #[test]
     fn no_current_class_is_not_ancestor() {
         let target = ClassInfo {
-            name: "Foo".to_string(),
+            name: atom("Foo"),
             ..ClassInfo::default()
         };
         let loader = |_: &str| -> Option<Arc<ClassInfo>> { None };
@@ -974,12 +975,12 @@ mod tests {
     #[test]
     fn direct_parent_is_ancestor() {
         let parent = ClassInfo {
-            name: "Parent".to_string(),
+            name: atom("Parent"),
             ..ClassInfo::default()
         };
         let child = ClassInfo {
-            name: "Child".to_string(),
-            parent_class: Some("Parent".to_string()),
+            name: atom("Child"),
+            parent_class: Some(atom("Parent")),
             ..ClassInfo::default()
         };
         let loader = |_: &str| -> Option<Arc<ClassInfo>> { None };
@@ -989,19 +990,19 @@ mod tests {
     #[test]
     fn grandparent_is_ancestor_via_loader() {
         let grandparent = ClassInfo {
-            name: "GrandParent".to_string(),
+            name: atom("GrandParent"),
             ..ClassInfo::default()
         };
         let child = ClassInfo {
-            name: "Child".to_string(),
-            parent_class: Some("Parent".to_string()),
+            name: atom("Child"),
+            parent_class: Some(atom("Parent")),
             ..ClassInfo::default()
         };
         let loader = |name: &str| -> Option<Arc<ClassInfo>> {
             if name == "Parent" {
                 Some(Arc::new(ClassInfo {
-                    name: "Parent".to_string(),
-                    parent_class: Some("GrandParent".to_string()),
+                    name: atom("Parent"),
+                    parent_class: Some(atom("GrandParent")),
                     ..ClassInfo::default()
                 }))
             } else {
@@ -1014,12 +1015,12 @@ mod tests {
     #[test]
     fn unrelated_class_is_not_ancestor() {
         let current = ClassInfo {
-            name: "Foo".to_string(),
-            parent_class: Some("Bar".to_string()),
+            name: atom("Foo"),
+            parent_class: Some(atom("Bar")),
             ..ClassInfo::default()
         };
         let target = ClassInfo {
-            name: "Baz".to_string(),
+            name: atom("Baz"),
             ..ClassInfo::default()
         };
         let loader = |_: &str| -> Option<Arc<ClassInfo>> { None };
@@ -1029,12 +1030,12 @@ mod tests {
     #[test]
     fn fqn_parent_matches_short_name_target() {
         let parent_target = ClassInfo {
-            name: "BaseService".to_string(),
+            name: atom("BaseService"),
             ..ClassInfo::default()
         };
         let child = ClassInfo {
-            name: "MyService".to_string(),
-            parent_class: Some("App\\BaseService".to_string()),
+            name: atom("MyService"),
+            parent_class: Some(atom("App\\BaseService")),
             ..ClassInfo::default()
         };
         let loader = |_: &str| -> Option<Arc<ClassInfo>> { None };

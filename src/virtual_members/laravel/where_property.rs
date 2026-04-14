@@ -23,6 +23,7 @@
 
 use std::collections::HashSet;
 
+use crate::atom::atom;
 use crate::docblock;
 use crate::php_type::PhpType;
 use crate::types::{ClassInfo, MethodInfo, ParameterInfo};
@@ -131,11 +132,11 @@ pub fn build_where_property_methods_for_class(
     // Build the return type: Builder<ConcreteModel>.
     let return_type = PhpType::Generic(
         ELOQUENT_BUILDER_FQN.to_string(),
-        vec![PhpType::Named(class.name.clone())],
+        vec![PhpType::Named(class.name.to_string())],
     );
 
     let value_param = ParameterInfo {
-        name: "$value".to_string(),
+        name: atom("$value"),
         is_required: true,
         type_hint: Some(PhpType::mixed()),
         native_type_hint: None,
@@ -177,10 +178,12 @@ pub fn build_where_property_methods_for_class(
 }
 
 /// Collect lowercase method names from a slice for dedup lookups.
-pub fn lowercase_method_names(methods: &[MethodInfo]) -> HashSet<String> {
+pub fn lowercase_method_names<M: std::borrow::Borrow<MethodInfo>>(
+    methods: &[M],
+) -> HashSet<String> {
     methods
         .iter()
-        .map(|m| m.name.to_ascii_lowercase())
+        .map(|m| m.borrow().name.to_ascii_lowercase())
         .collect()
 }
 

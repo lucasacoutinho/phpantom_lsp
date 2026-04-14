@@ -6,7 +6,6 @@
 //! module that previously copy-pasted its own `make_class()` /
 //! `make_method()` / etc. should import from here instead.
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::Backend;
@@ -32,8 +31,10 @@ pub fn make_backend() -> Backend {
 pub fn make_class(name: &str) -> ClassInfo {
     ClassInfo {
         kind: ClassLikeKind::Class,
-        name: name.to_string(),
+        name: crate::atom::atom(name),
         methods: Default::default(),
+        method_index: Default::default(),
+        indexed_method_count: 0,
         properties: Default::default(),
         constants: Default::default(),
         start_offset: 0,
@@ -51,12 +52,12 @@ pub fn make_class(name: &str) -> ClassInfo {
         links: Vec::new(),
         see_refs: Vec::new(),
         template_params: Vec::new(),
-        template_param_bounds: HashMap::new(),
-        template_param_defaults: HashMap::new(),
+        template_param_bounds: Default::default(),
+        template_param_defaults: Default::default(),
         extends_generics: Vec::new(),
         implements_generics: Vec::new(),
         use_generics: Vec::new(),
-        type_aliases: HashMap::new(),
+        type_aliases: Default::default(),
         trait_precedences: Vec::new(),
         trait_aliases: Vec::new(),
         class_docblock: None,
@@ -101,7 +102,7 @@ pub fn make_property(name: &str, type_hint: Option<&str>) -> PropertyInfo {
 /// The constant is public, non-deprecated, and has no type hint.
 pub fn make_constant(name: &str) -> ConstantInfo {
     ConstantInfo {
-        name: name.to_string(),
+        name: crate::atom::atom(name),
         name_offset: 0,
         type_hint: None,
         visibility: Visibility::Public,
@@ -122,7 +123,7 @@ pub fn make_constant(name: &str) -> ConstantInfo {
 /// The parameter is non-variadic and non-reference.
 pub fn make_param(name: &str, type_hint: Option<&str>, is_required: bool) -> ParameterInfo {
     ParameterInfo {
-        name: name.to_string(),
+        name: crate::atom::atom(name),
         is_required,
         type_hint: type_hint.map(PhpType::parse),
         native_type_hint: type_hint.map(PhpType::parse),

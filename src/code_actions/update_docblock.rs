@@ -112,13 +112,13 @@ fn resolve_type_name_to_fqn(
     let resolved = crate::util::resolve_to_fqn(name, use_map, file_namespace);
     // If the class loader recognises the resolved name, use its canonical FQN.
     if let Some(cls) = class_loader(&resolved) {
-        return cls.fqn();
+        return cls.fqn().to_string();
     }
     // The resolved name wasn't found — try the original name directly.
     // This handles root-namespace classes (e.g. `RuntimeException`) when
     // the file has a namespace but no explicit `use` import.
     if let Some(cls) = class_loader(name) {
-        return cls.fqn();
+        return cls.fqn().to_string();
     }
     // Neither worked — return the best guess.
     resolved

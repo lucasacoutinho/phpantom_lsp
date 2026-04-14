@@ -43,36 +43,53 @@ use crate::completion::resolver::{Loaders, VarResolutionCtx};
 use crate::completion::type_resolution;
 use crate::util::strip_fqn_prefix;
 
-/// Dispatch to [`resolve_variable_types`] or
-/// [`resolve_variable_types_branch_aware`] depending on
-/// `ctx.branch_aware`.  This keeps callers from duplicating the
-/// if/else dispatch at every call site.
+/// Resolve a variable's type for use in RHS expression evaluation.
+///
+/// When `ctx.scope_var_resolver` is set (forward-walker RHS
+/// resolution), the scope resolver is consulted first.  This reads
+/// directly from the forward walker's in-progress `ScopeState`,
+/// avoiding re-entry into the forward walk.  Otherwise falls back to
+/// [`resolve_variable_types`] (which itself checks the diagnostic
+/// scope cache and then delegates to the forward walker).
 fn resolve_var_types(
     var_name: &str,
     ctx: &VarResolutionCtx<'_>,
     cursor_offset: u32,
 ) -> Vec<ResolvedType> {
-    if ctx.branch_aware {
-        super::resolution::resolve_variable_types_branch_aware(
-            var_name,
-            ctx.current_class,
-            ctx.all_classes,
-            ctx.content,
-            cursor_offset,
-            ctx.class_loader,
-            Loaders::with_function(ctx.function_loader()),
-        )
-    } else {
-        super::resolution::resolve_variable_types(
-            var_name,
-            ctx.current_class,
-            ctx.all_classes,
-            ctx.content,
-            cursor_offset,
-            ctx.class_loader,
-            Loaders::with_function(ctx.function_loader()),
-        )
+    // ── Forward-walker fast path ────────────────────────────────
+    // When a scope_var_resolver is available, read variable types
+    // directly from the forward walker's ScopeState.  This avoids
+    // the feedback loop where the backward scanner hits the
+    // (incomplete) diagnostic scope cache during the forward walk.
+    if let Some(resolver) = ctx.scope_var_resolver {
+        let prefixed = if var_name.starts_with('$') {
+            var_name.to_string()
+        } else {
+            format!("${}", var_name)
+        };
+        let from_scope = resolver(&prefixed);
+        if !from_scope.is_empty() {
+            return from_scope;
+        }
+        // The forward walker is the authority for variable types.
+        // If the variable isn't in its ScopeState, it hasn't been
+        // assigned yet at this point in the walk.  Falling through
+        // to `resolve_variable_types` would re-enter the forward
+        // walker, causing O(N²) blowup
+        // or stack overflow.  Return empty so the RHS resolver
+        // treats the variable as unresolved.
+        return vec![];
     }
+
+    super::resolution::resolve_variable_types(
+        var_name,
+        ctx.current_class,
+        ctx.all_classes,
+        ctx.content,
+        cursor_offset,
+        ctx.class_loader,
+        Loaders::with_function(ctx.function_loader()),
+    )
 }
 
 // ── Match-arm narrowing override ────────────────────────────────────
@@ -111,7 +128,7 @@ fn extract_match_arm_narrowings(
             if let PhpType::Named(ref name) = class_type
                 && let Some(cls) = (ctx.class_loader)(name)
             {
-                class_type = PhpType::Named(cls.fqn());
+                class_type = PhpType::Named(cls.fqn().to_string());
             }
             let resolved = type_resolution::type_hint_to_classes_typed(
                 &class_type,
@@ -201,6 +218,27 @@ fn resolved_type_with_lookup(
 /// `check_expression_for_raw_type` (for hover/diagnostics type strings),
 /// and recursively by multi-branch constructs (match, ternary, `??`).
 pub(in crate::completion) fn resolve_rhs_expression<'b>(
+    expr: &'b Expression<'b>,
+    ctx: &VarResolutionCtx<'_>,
+) -> Vec<ResolvedType> {
+    thread_local! {
+        static RHS_EXPR_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+    let depth = RHS_EXPR_DEPTH.with(|d| {
+        let v = d.get() + 1;
+        d.set(v);
+        v
+    });
+    if depth > 100 {
+        RHS_EXPR_DEPTH.with(|d| d.set(depth - 1));
+        return vec![];
+    }
+    let result = resolve_rhs_expression_inner(expr, ctx);
+    RHS_EXPR_DEPTH.with(|d| d.set(depth - 1));
+    result
+}
+
+fn resolve_rhs_expression_inner<'b>(
     expr: &'b Expression<'b>,
     ctx: &VarResolutionCtx<'_>,
 ) -> Vec<ResolvedType> {
@@ -618,7 +656,7 @@ fn resolve_rhs_instantiation(
         // the class so that methods returning `T` resolve correctly.
         if classes.len() == 1 && !classes[0].template_params.is_empty() {
             let cls = &classes[0];
-            if let Some(ctor) = cls.methods.iter().find(|m| m.name == "__construct")
+            if let Some(ctor) = cls.get_method("__construct")
                 && !ctor.template_bindings.is_empty()
                 && let Some(ref arg_list) = inst.argument_list
             {
@@ -632,7 +670,8 @@ fn resolve_rhs_instantiation(
                             .template_params
                             .iter()
                             .map(|p| {
-                                subs.get(p).cloned().unwrap_or_else(|| {
+                                let p_str: &str = p.as_ref();
+                                subs.get(p_str).cloned().unwrap_or_else(|| {
                                     // Use the declared upper bound or `mixed`
                                     // instead of the raw template name so that
                                     // downstream consumers never see
@@ -644,8 +683,11 @@ fn resolve_rhs_instantiation(
                                 })
                             })
                             .collect();
-                        let resolved =
-                            crate::virtual_members::resolve_class_fully(cls, ctx.class_loader);
+                        let resolved = crate::virtual_members::resolve_class_fully_maybe_cached(
+                            cls,
+                            ctx.class_loader,
+                            ctx.resolved_class_cache,
+                        );
                         let mut substituted =
                             crate::inheritance::apply_generic_args(&resolved, &type_args);
 
@@ -655,7 +697,11 @@ fn resolve_rhs_instantiation(
                         // during `resolve_class_fully` because the concrete type
                         // is not yet known.  Now that generic args are concrete,
                         // resolve those mixins and merge their members.
-                        if cls.mixins.iter().any(|m| cls.template_params.contains(m)) {
+                        if cls
+                            .mixins
+                            .iter()
+                            .any(|m| cls.template_params.iter().any(|t| t == m.as_str()))
+                        {
                             let generic_subs =
                                 crate::inheritance::build_generic_subs(cls, &type_args);
                             if !generic_subs.is_empty() {
@@ -675,7 +721,7 @@ fn resolve_rhs_instantiation(
                         }
 
                         let generic_type =
-                            PhpType::Generic(substituted.name.clone(), type_args.clone());
+                            PhpType::Generic(substituted.name.to_string(), type_args.clone());
                         return vec![ResolvedType::from_both(generic_type, substituted)];
                     }
                 }
@@ -690,9 +736,13 @@ fn resolve_rhs_instantiation(
             // semantics and prevents raw template names from leaking
             // into method parameter/return types.
             let type_args = crate::inheritance::default_type_args(cls);
-            let resolved = crate::virtual_members::resolve_class_fully(cls, ctx.class_loader);
+            let resolved = crate::virtual_members::resolve_class_fully_maybe_cached(
+                cls,
+                ctx.class_loader,
+                ctx.resolved_class_cache,
+            );
             let substituted = crate::inheritance::apply_generic_args(&resolved, &type_args);
-            let generic_type = PhpType::Generic(substituted.name.clone(), type_args.clone());
+            let generic_type = PhpType::Generic(substituted.name.to_string(), type_args.clone());
             return vec![ResolvedType::from_both(generic_type, substituted)];
         }
 
@@ -743,7 +793,11 @@ fn build_constructor_template_subs(
 
     for (tpl_name, param_name) in &ctor.template_bindings {
         // Find the parameter index for this binding.
-        let param_idx = match ctor.parameters.iter().position(|p| p.name == *param_name) {
+        let param_idx = match ctor
+            .parameters
+            .iter()
+            .position(|p| p.name == param_name.as_str())
+        {
             Some(idx) => idx,
             None => continue,
         };
@@ -767,7 +821,7 @@ fn build_constructor_template_subs(
             TemplateBindingMode::Direct => {
                 // `@param T $bar` — the argument resolves directly to T.
                 if let Some(resolved_type) = Backend::resolve_arg_text_to_type(arg_text, rctx) {
-                    subs.insert(tpl_name.clone(), resolved_type);
+                    subs.insert(tpl_name.to_string(), resolved_type);
                 }
             }
             TemplateBindingMode::CallableReturnType => {
@@ -778,7 +832,7 @@ fn build_constructor_template_subs(
                         arg_text,
                     )
                 {
-                    subs.insert(tpl_name.clone(), ret_type);
+                    subs.insert(tpl_name.to_string(), ret_type);
                 }
             }
             TemplateBindingMode::CallableParamType(position) => {
@@ -789,7 +843,7 @@ fn build_constructor_template_subs(
                         arg_text, position,
                     )
                 {
-                    subs.insert(tpl_name.clone(), param_type);
+                    subs.insert(tpl_name.to_string(), param_type);
                 }
             }
             TemplateBindingMode::ArrayElement => {
@@ -803,14 +857,14 @@ fn build_constructor_template_subs(
                             && let Some(resolved_type) =
                                 Backend::resolve_arg_text_to_type(elem.trim(), rctx)
                         {
-                            subs.insert(tpl_name.clone(), resolved_type);
+                            subs.insert(tpl_name.to_string(), resolved_type);
                         }
                     }
                 } else if let Some(resolved_type) =
                     Backend::resolve_arg_text_to_type(arg_text, rctx)
                 {
                     // Fallback: treat as direct if not an array literal.
-                    subs.insert(tpl_name.clone(), resolved_type);
+                    subs.insert(tpl_name.to_string(), resolved_type);
                 }
             }
             TemplateBindingMode::ClassStringInner => {
@@ -821,7 +875,7 @@ fn build_constructor_template_subs(
                         PhpType::ClassString(Some(inner)) => *inner,
                         _ => resolved_type,
                     };
-                    subs.insert(tpl_name.clone(), unwrapped);
+                    subs.insert(tpl_name.to_string(), unwrapped);
                 }
             }
             TemplateBindingMode::GenericWrapper(wrapper_name, tpl_position) => {
@@ -834,7 +888,7 @@ fn build_constructor_template_subs(
                     rctx,
                     ctx,
                 ) {
-                    subs.insert(tpl_name.clone(), concrete);
+                    subs.insert(tpl_name.to_string(), concrete);
                 }
             }
         }
@@ -1006,10 +1060,7 @@ fn resolve_generic_wrapper_template(
         })?;
 
     // Find the wrapper's constructor and its template bindings.
-    let wrapper_ctor = wrapper_cls
-        .methods
-        .iter()
-        .find(|m| m.name == "__construct")?;
+    let wrapper_ctor = wrapper_cls.get_method("__construct")?;
     if wrapper_ctor.template_bindings.is_empty() {
         return None;
     }
@@ -1030,7 +1081,7 @@ fn resolve_generic_wrapper_template(
     // Find the wrapper's template param at the given position and
     // look it up in the substitution map.
     let wrapper_tpl = wrapper_cls.template_params.get(tpl_position)?;
-    wrapper_subs.get(wrapper_tpl).cloned()
+    wrapper_subs.get(wrapper_tpl.as_str()).cloned()
 }
 
 /// Resolve `$arr[0]` / `$arr[$key]` by extracting the generic element
@@ -1130,7 +1181,11 @@ fn resolve_rhs_array_access<'b>(
             )
             .into_iter()
             .find_map(|cls| {
-                let merged = crate::virtual_members::resolve_class_fully(&cls, ctx.class_loader);
+                let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
+                    &cls,
+                    ctx.class_loader,
+                    ctx.resolved_class_cache,
+                );
                 super::foreach_resolution::extract_iterable_element_type_from_class(
                     &merged,
                     ctx.class_loader,
@@ -1209,7 +1264,7 @@ pub(crate) fn build_function_template_subs(
         let param_idx = match func_info
             .parameters
             .iter()
-            .position(|p| p.name == *param_name)
+            .position(|p| p.name == param_name.as_str())
         {
             Some(idx) => idx,
             None => continue,
@@ -1232,7 +1287,7 @@ pub(crate) fn build_function_template_subs(
         match binding_mode {
             TemplateBindingMode::Direct => {
                 if let Some(resolved_type) = Backend::resolve_arg_text_to_type(arg_text, rctx) {
-                    subs.insert(tpl_name.clone(), resolved_type);
+                    subs.insert(tpl_name.to_string(), resolved_type);
                 }
             }
             TemplateBindingMode::CallableReturnType => {
@@ -1243,7 +1298,7 @@ pub(crate) fn build_function_template_subs(
                         arg_text,
                     )
                 {
-                    subs.insert(tpl_name.clone(), ret_type);
+                    subs.insert(tpl_name.to_string(), ret_type);
                 }
             }
             TemplateBindingMode::CallableParamType(position) => {
@@ -1254,7 +1309,7 @@ pub(crate) fn build_function_template_subs(
                         arg_text, position,
                     )
                 {
-                    subs.insert(tpl_name.clone(), param_type);
+                    subs.insert(tpl_name.to_string(), param_type);
                 }
             }
             TemplateBindingMode::ArrayElement => {
@@ -1268,14 +1323,14 @@ pub(crate) fn build_function_template_subs(
                             && let Some(resolved_type) =
                                 Backend::resolve_arg_text_to_type(elem.trim(), rctx)
                         {
-                            subs.insert(tpl_name.clone(), resolved_type);
+                            subs.insert(tpl_name.to_string(), resolved_type);
                         }
                     }
                 } else if let Some(resolved_type) =
                     Backend::resolve_arg_text_to_type(arg_text, rctx)
                 {
                     // Fallback: treat as direct if not an array literal.
-                    subs.insert(tpl_name.clone(), resolved_type);
+                    subs.insert(tpl_name.to_string(), resolved_type);
                 }
             }
             TemplateBindingMode::ClassStringInner => {
@@ -1286,7 +1341,7 @@ pub(crate) fn build_function_template_subs(
                         PhpType::ClassString(Some(inner)) => *inner,
                         _ => resolved_type,
                     };
-                    subs.insert(tpl_name.clone(), unwrapped);
+                    subs.insert(tpl_name.to_string(), unwrapped);
                 }
             }
             TemplateBindingMode::GenericWrapper(ref wrapper_name, tpl_position) => {
@@ -1299,7 +1354,7 @@ pub(crate) fn build_function_template_subs(
                     && let Some(resolved) = resolve_arg_variable_raw_type(arg_text, rctx)
                     && let Some(concrete) = extract_array_type_at_position(&resolved, tpl_position)
                 {
-                    subs.insert(tpl_name.clone(), concrete);
+                    subs.insert(tpl_name.to_string(), concrete);
                     continue;
                 }
                 // Special case: unwrap class-string<class-string<T>> to class-string<T>
@@ -1308,9 +1363,9 @@ pub(crate) fn build_function_template_subs(
                     && let Some(resolved_type) = Backend::resolve_arg_text_to_type(arg_text, rctx)
                 {
                     if let Some(inner) = resolved_type.unwrap_class_string_inner() {
-                        subs.insert(tpl_name.clone(), inner.clone());
+                        subs.insert(tpl_name.to_string(), inner.clone());
                     } else {
-                        subs.insert(tpl_name.clone(), resolved_type);
+                        subs.insert(tpl_name.to_string(), resolved_type);
                     }
                 }
                 // When array-type extraction fails (e.g. bare `array`
@@ -1332,14 +1387,14 @@ pub(crate) fn build_function_template_subs(
     // template names like `TReduceReturnType` from leaking into
     // parameter and return types.
     for tpl_name in &func_info.template_params {
-        if !subs.contains_key(tpl_name) {
-            let fallback = func_info
+        let tpl_key = tpl_name.to_string();
+        subs.entry(tpl_key).or_insert_with(|| {
+            func_info
                 .template_param_bounds
                 .get(tpl_name)
                 .cloned()
-                .unwrap_or_else(PhpType::mixed);
-            subs.insert(tpl_name.clone(), fallback);
-        }
+                .unwrap_or_else(PhpType::mixed)
+        });
     }
 
     subs
@@ -1399,7 +1454,73 @@ fn resolve_arg_variable_raw_type(
         return Some(raw);
     }
 
-    // 2. Fall back to unified variable resolution pipeline.
+    // 2. When the diagnostic scope cache is active (and not still being
+    //    built), read the variable's type from the pre-computed forward-
+    //    walked scope snapshots.  This avoids hitting the backward
+    //    scanner during diagnostic collection.
+    if super::forward_walk::is_diagnostic_scope_active()
+        && !super::forward_walk::is_building_scopes()
+    {
+        let prefixed = if var_name.starts_with('$') {
+            var_name.to_string()
+        } else {
+            format!("${}", var_name)
+        };
+        if let Some(types) =
+            super::forward_walk::lookup_diagnostic_scope(&prefixed, rctx.cursor_offset)
+        {
+            return Some(ResolvedType::types_joined(&types));
+        }
+    }
+
+    // 3. When a scope_var_resolver is available (forward walker is
+    //    active on either diagnostic or completion path), read from
+    //    the in-progress ScopeState.  If the variable isn't there,
+    //    it hasn't been assigned yet — return None rather than
+    //    falling through to resolve_variable_types which would
+    //    re-enter the forward walker and cause stack overflow.
+    if let Some(resolver) = rctx.scope_var_resolver {
+        let prefixed = if var_name.starts_with('$') {
+            var_name.to_string()
+        } else {
+            format!("${}", var_name)
+        };
+        let from_scope = resolver(&prefixed);
+        if from_scope.is_empty() {
+            return None;
+        }
+        return Some(ResolvedType::types_joined(&from_scope));
+    }
+
+    // 4. During the build phase, the forward walker is the authority.
+    //    If the variable isn't in the scope cache, don't fall through
+    //    to the backward scanner — return None so the caller treats
+    //    it as unresolved.
+    if super::forward_walk::is_building_scopes() {
+        return None;
+    }
+
+    // 5. Fall back to unified variable resolution pipeline (backward
+    //    scanner).  This path is only reached for interactive features
+    //    (hover, completion, goto-def) where no scope cache is active
+    //    and no scope_var_resolver was provided.
+    //
+    // Guard: resolve_variable_types is designed for bare `$variable`
+    // names.  Complex expressions (array access like `$arr['key']`,
+    // comparisons like `$x === 'foo'`, boolean chains, null coalescing)
+    // are not variable names and will never match a scope entry.
+    // Skip them to avoid wasted backward scans and fallthrough noise.
+    if var_name.contains("->")
+        || var_name.contains("::")
+        || var_name.contains('[')
+        || var_name.contains("===")
+        || var_name.contains("&&")
+        || var_name.contains("??")
+        || var_name.contains("||")
+    {
+        return None;
+    }
+
     let default_class = crate::types::ClassInfo::default();
     let current_class = rctx.current_class.unwrap_or(&default_class);
     let resolved = super::resolution::resolve_variable_types(
@@ -1747,7 +1868,7 @@ fn resolve_rhs_function_call<'b>(
                 &rctx,
             ));
         for owner in &var_classes {
-            if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
+            if let Some(invoke) = owner.get_method("__invoke")
                 && let Some(ref ret) = invoke.return_type
             {
                 let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
@@ -1805,7 +1926,7 @@ fn resolve_rhs_function_call<'b>(
         let callee_results = resolve_rhs_expression(callee_expr, ctx);
         for rt in &callee_results {
             if let Some(ref owner_cls) = rt.class_info
-                && let Some(invoke) = owner_cls.methods.iter().find(|m| m.name == "__invoke")
+                && let Some(invoke) = owner_cls.get_method("__invoke")
                 && let Some(ref ret) = invoke.return_type
             {
                 let resolved = crate::completion::type_resolution::type_hint_to_classes_typed(
@@ -1929,32 +2050,38 @@ fn resolve_rhs_method_call_inner<'b>(
         // name (or the receiver's full generic type when available)
         // so that e.g. `static[]` becomes `Country[]` and a bare
         // `static` on `Builder<Article>` becomes `Builder<Article>`.
-        let merged = crate::virtual_members::resolve_class_fully(owner, ctx.class_loader);
-        let ret_type_string = merged
-            .methods
-            .iter()
-            .find(|m| m.name == method_name)
-            .and_then(|m| m.return_type.as_ref())
-            .map(|ret| {
-                let substituted = if !template_subs.is_empty() {
-                    ret.substitute(&template_subs)
-                } else {
-                    ret.clone()
-                };
-                // When the return type contains `static`/`self`/`$this`
-                // and the receiver was resolved with generic parameters,
-                // use the receiver's full type (e.g. `Builder<Article>`)
-                // for substitution so the generics are preserved.
-                let receiver_type = if substituted.contains_self_ref() {
-                    receiver_type_for_owner(&receiver_resolved, &owner.name)
-                } else {
-                    None
-                };
-                match receiver_type {
-                    Some(rt) => substituted.replace_self_with_type(&rt),
-                    None => substituted.replace_self(&owner.fqn()),
-                }
-            });
+        // Try the owner directly first — it may already be fully resolved
+        // with generic substitutions applied.  The cache is keyed by bare
+        // FQN and returns the un-substituted base class, so prefer the
+        // owner's own method to preserve template substitutions.
+        let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
+            owner,
+            ctx.class_loader,
+            ctx.resolved_class_cache,
+        );
+        let method_ref = owner
+            .get_method(&method_name)
+            .or_else(|| merged.get_method(&method_name));
+        let ret_type_string = method_ref.and_then(|m| m.return_type.as_ref()).map(|ret| {
+            let substituted = if !template_subs.is_empty() {
+                ret.substitute(&template_subs)
+            } else {
+                ret.clone()
+            };
+            // When the return type contains `static`/`self`/`$this`
+            // and the receiver was resolved with generic parameters,
+            // use the receiver's full type (e.g. `Builder<Article>`)
+            // for substitution so the generics are preserved.
+            let receiver_type = if substituted.contains_self_ref() {
+                receiver_type_for_owner(&receiver_resolved, &owner.name)
+            } else {
+                None
+            };
+            match receiver_type {
+                Some(rt) => substituted.replace_self_with_type(&rt),
+                None => substituted.replace_self(&owner.fqn()),
+            }
+        });
 
         let results = Backend::resolve_method_return_types_with_args(
             owner,
@@ -1972,9 +2099,8 @@ fn resolve_rhs_method_call_inner<'b>(
             // the type hint would be misleading.  Skip it so that
             // `from_classes` uses the resolved class names instead.
             let has_conditional = merged
-                .methods
-                .iter()
-                .any(|m| m.name == method_name && m.conditional_return.is_some());
+                .get_method(&method_name)
+                .is_some_and(|m| m.conditional_return.is_some());
             let effective_hint = if has_conditional {
                 None
             } else {
@@ -2059,7 +2185,7 @@ fn resolve_rhs_static_call(
     let class_name = match static_call.class {
         Expression::Self_(_) => Some(current_class_name.to_string()),
         Expression::Static(_) => Some(current_class_name.to_string()),
-        Expression::Parent(_) => ctx.current_class.parent_class.clone(),
+        Expression::Parent(_) => ctx.current_class.parent_class.map(|a| a.to_string()),
         Expression::Identifier(ident) => Some(ident.value().to_string()),
         // ── `$var::method()` where `$var` holds a class-string ──
         Expression::Variable(Variable::Direct(dv)) => {
@@ -2074,7 +2200,7 @@ fn resolve_rhs_static_call(
                     ctx.class_loader,
                 );
             if let Some(first) = targets.first() {
-                Some(first.name.clone())
+                Some(first.name.to_string())
             } else {
                 // Fallback: resolve the variable's type and extract the
                 // inner type from `class-string<T>`.  This handles
@@ -2143,20 +2269,26 @@ fn resolve_rhs_static_call(
             // `resolve_method_return_types_with_args` used internally,
             // then replace `static`/`self`/`$this` with the owner class
             // name so that e.g. `static[]` becomes `Country[]`.
-            let merged = crate::virtual_members::resolve_class_fully(owner, ctx.class_loader);
-            let ret_type_string = merged
-                .methods
-                .iter()
-                .find(|m| m.name == method_name)
-                .and_then(|m| m.return_type.as_ref())
-                .map(|ret| {
-                    let substituted = if !template_subs.is_empty() {
-                        ret.substitute(&template_subs)
-                    } else {
-                        ret.clone()
-                    };
-                    substituted.replace_self(&owner.fqn())
-                });
+            // Try the owner directly first — it may already be fully resolved
+            // with generic substitutions applied.  The cache is keyed by bare
+            // FQN and returns the un-substituted base class, so prefer the
+            // owner's own method to preserve template substitutions.
+            let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
+                owner,
+                ctx.class_loader,
+                ctx.resolved_class_cache,
+            );
+            let method_ref = owner
+                .get_method(&method_name)
+                .or_else(|| merged.get_method(&method_name));
+            let ret_type_string = method_ref.and_then(|m| m.return_type.as_ref()).map(|ret| {
+                let substituted = if !template_subs.is_empty() {
+                    ret.substitute(&template_subs)
+                } else {
+                    ret.clone()
+                };
+                substituted.replace_self(&owner.fqn())
+            });
 
             let results = Backend::resolve_method_return_types_with_args(
                 owner,
@@ -2172,9 +2304,8 @@ fn resolve_rhs_static_call(
                 // Using the method's declared return type (typically
                 // `mixed`) as the type hint would be misleading.
                 let has_conditional = merged
-                    .methods
-                    .iter()
-                    .any(|m| m.name == method_name && m.conditional_return.is_some());
+                    .get_method(&method_name)
+                    .is_some_and(|m| m.conditional_return.is_some());
                 let effective_hint = if has_conditional {
                     None
                 } else {
@@ -2343,7 +2474,7 @@ fn resolve_rhs_property_access(
                 all_classes
                     .iter()
                     .find(|c| c.name == current_class_name)
-                    .and_then(|c| c.parent_class.clone())
+                    .and_then(|c| c.parent_class.map(|a| a.to_string()))
             }
             _ => None,
         };
@@ -2499,11 +2630,32 @@ fn resolve_rhs_property_access(
                 if let Some(overridden) = ctx.match_arm_narrowing.get(&var).cloned() {
                     ResolvedType::into_classes(overridden)
                 } else {
-                    ResolvedType::into_classes(crate::completion::resolver::resolve_target_classes(
-                        &var,
-                        crate::types::AccessKind::Arrow,
-                        &ctx.as_resolution_ctx(),
-                    ))
+                    // When a scope_var_resolver is available (forward-walker
+                    // RHS resolution), try it first so we read from the
+                    // in-progress ScopeState instead of the diagnostic
+                    // scope cache or backward scanner.
+                    let from_scope = if let Some(resolver) = ctx.scope_var_resolver {
+                        let prefixed = if var.starts_with('$') {
+                            var.clone()
+                        } else {
+                            format!("${}", var)
+                        };
+                        resolver(&prefixed)
+                    } else {
+                        vec![]
+                    };
+                    let classes = ResolvedType::into_classes(from_scope);
+                    if !classes.is_empty() {
+                        classes
+                    } else {
+                        ResolvedType::into_classes(
+                            crate::completion::resolver::resolve_target_classes(
+                                &var,
+                                crate::types::AccessKind::Arrow,
+                                &ctx.as_resolution_ctx(),
+                            ),
+                        )
+                    }
                 }
             } else {
                 // Handle non-variable object expressions like

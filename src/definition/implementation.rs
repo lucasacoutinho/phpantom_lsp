@@ -85,7 +85,7 @@ impl Backend {
                     let current_class = find_class_at_offset(&ctx.classes, sym.start);
                     let target = match ssp_kind {
                         SelfStaticParentKind::Parent => current_class
-                            .and_then(|cc| cc.parent_class.as_ref())
+                            .and_then(|cc| cc.parent_class.as_deref())
                             .and_then(|p| class_loader(p).map(Arc::unwrap_or_clone)),
                         _ => current_class.cloned(),
                     };
@@ -154,12 +154,12 @@ impl Backend {
         // rather than looking for instantiable implementations.
         let target_is_concrete = target.kind != ClassLikeKind::Interface && !target.is_abstract;
 
-        let target_short = target.name.clone();
+        let target_short = target.name;
         // Compute target FQN from the class's own namespace (most
         // reliable), then fall back to class_index, then to the FQN we
         // resolved from the use-map, and finally to the short name.
         let target_fqn = {
-            let from_class = crate::util::build_fqn(&target.name, &target.file_namespace);
+            let from_class = crate::util::build_fqn(&target.name, target.file_namespace.as_deref());
             if from_class.contains('\\') {
                 from_class
             } else {
@@ -167,7 +167,7 @@ impl Backend {
                     if fqn.contains('\\') {
                         fqn.clone()
                     } else {
-                        target_short.clone()
+                        target_short.to_string()
                     }
                 })
             }
@@ -232,10 +232,10 @@ impl Backend {
         let all_ifaces = self.collect_all_interfaces(current_class, class_loader);
         for iface_name in &all_ifaces {
             if let Some(iface) = class_loader(iface_name) {
-                let has_member = iface.methods.iter().any(|m| m.name == member_name)
+                let has_member = iface.has_method(member_name)
                     || iface.properties.iter().any(|p| p.name == member_name);
                 if has_member {
-                    let member_kind = if iface.methods.iter().any(|m| m.name == member_name) {
+                    let member_kind = if iface.has_method(member_name) {
                         MemberKind::Method
                     } else {
                         MemberKind::Property
@@ -261,21 +261,21 @@ impl Backend {
 
         // Check parent abstract classes for an abstract method with the
         // same name.
-        let mut current = current_class.parent_class.clone();
+        let mut current = current_class.parent_class;
         let mut depth = 0u32;
-        while let Some(ref parent_name) = current {
+        while let Some(parent_name) = current {
             if depth >= MAX_INHERITANCE_DEPTH {
                 break;
             }
             depth += 1;
 
-            if let Some(parent_cls) = class_loader(parent_name) {
+            if let Some(parent_cls) = class_loader(&parent_name) {
                 // Only consider abstract methods on abstract parents.
                 if parent_cls.is_abstract || parent_cls.kind == ClassLikeKind::Interface {
-                    let has_method = parent_cls.methods.iter().any(|m| m.name == member_name);
+                    let has_method = parent_cls.has_method(member_name);
                     if has_method
                         && let Some((class_uri, class_content)) =
-                            self.find_class_file_content(parent_name, uri, content)
+                            self.find_class_file_content(&parent_name, uri, content)
                         && let Some(member_pos) = Self::find_member_position_in_class(
                             &class_content,
                             member_name,
@@ -290,7 +290,7 @@ impl Backend {
                         }
                     }
                 }
-                current = parent_cls.parent_class.clone();
+                current = parent_cls.parent_class;
             } else {
                 break;
             }
@@ -318,29 +318,31 @@ impl Backend {
 
         // Direct interfaces.
         for iface in &cls.interfaces {
-            if seen.insert(iface.clone()) {
-                result.push(iface.clone());
+            let s = iface.to_string();
+            if seen.insert(s.clone()) {
+                result.push(s.clone());
                 // Also collect interfaces that this interface extends.
-                self.collect_parent_interfaces(iface, class_loader, &mut result, &mut seen);
+                self.collect_parent_interfaces(&s, class_loader, &mut result, &mut seen);
             }
         }
 
         // Interfaces from parent classes.
-        let mut current = cls.parent_class.clone();
+        let mut current = cls.parent_class;
         let mut depth = 0u32;
-        while let Some(ref parent_name) = current {
+        while let Some(parent_name) = current {
             if depth >= MAX_INHERITANCE_DEPTH {
                 break;
             }
             depth += 1;
-            if let Some(parent_cls) = class_loader(parent_name) {
+            if let Some(parent_cls) = class_loader(&parent_name) {
                 for iface in &parent_cls.interfaces {
-                    if seen.insert(iface.clone()) {
-                        result.push(iface.clone());
-                        self.collect_parent_interfaces(iface, class_loader, &mut result, &mut seen);
+                    let s = iface.to_string();
+                    if seen.insert(s.clone()) {
+                        result.push(s.clone());
+                        self.collect_parent_interfaces(&s, class_loader, &mut result, &mut seen);
                     }
                 }
-                current = parent_cls.parent_class.clone();
+                current = parent_cls.parent_class;
             } else {
                 break;
             }
@@ -361,16 +363,17 @@ impl Backend {
             return;
         };
         // Check parent_class (first extended interface).
-        if let Some(ref parent) = iface.parent_class
-            && seen.insert(parent.clone())
+        if let Some(parent) = iface.parent_class
+            && seen.insert(parent.to_string())
         {
-            result.push(parent.clone());
-            self.collect_parent_interfaces(parent, class_loader, result, seen);
+            result.push(parent.to_string());
+            self.collect_parent_interfaces(&parent, class_loader, result, seen);
         }
         // Check interfaces list (multi-extends).
         for parent_iface in &iface.interfaces {
-            if seen.insert(parent_iface.clone()) {
-                result.push(parent_iface.clone());
+            let s = parent_iface.to_string();
+            if seen.insert(s.clone()) {
+                result.push(s.clone());
                 self.collect_parent_interfaces(parent_iface, class_loader, result, seen);
             }
         }
@@ -387,13 +390,13 @@ impl Backend {
         member_name: &str,
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     ) -> Option<Vec<Location>> {
-        let target_short = interface_class.name.clone();
+        let target_short = &interface_class.name;
         let target_fqn = self
-            .class_fqn_for_short(&target_short)
-            .unwrap_or(target_short.clone());
+            .class_fqn_for_short(target_short)
+            .unwrap_or(target_short.to_string());
 
         let implementors =
-            self.find_implementors(&target_short, &target_fqn, class_loader, false, false);
+            self.find_implementors(target_short, &target_fqn, class_loader, false, false);
 
         let member_kind = if interface_class
             .methods
@@ -415,7 +418,7 @@ impl Backend {
         for imp in &implementors {
             // Check that the implementor owns (not inherits) this member.
             let owns_member = match member_kind {
-                MemberKind::Method => imp.methods.iter().any(|m| m.name == member_name),
+                MemberKind::Method => imp.has_method(member_name),
                 MemberKind::Property => imp.properties.iter().any(|p| p.name == member_name),
                 MemberKind::Constant => imp.constants.iter().any(|c| c.name == member_name),
             };
@@ -474,6 +477,7 @@ impl Backend {
             class_loader: &class_loader,
             resolved_class_cache: Some(&self.resolved_class_cache),
             function_loader: Some(&function_loader),
+            scope_var_resolver: None,
         };
         let candidates = ResolvedType::into_arced_classes(
             crate::completion::resolver::resolve_target_classes(&subject, access_kind, &rctx),
@@ -499,7 +503,7 @@ impl Backend {
                 &class_loader,
                 &self.resolved_class_cache,
             );
-            let has_method = merged.methods.iter().any(|m| m.name == member_name);
+            let has_method = merged.has_method(member_name);
             let has_property = merged.properties.iter().any(|p| p.name == member_name);
 
             if !has_method && !has_property {
@@ -512,13 +516,13 @@ impl Backend {
                 MemberKind::Property
             };
 
-            let target_short = candidate.name.clone();
+            let target_short = &candidate.name;
             let target_fqn = self
-                .class_fqn_for_short(&target_short)
-                .unwrap_or(target_short.clone());
+                .class_fqn_for_short(target_short)
+                .unwrap_or(target_short.to_string());
 
             let implementors =
-                self.find_implementors(&target_short, &target_fqn, &class_loader, false, false);
+                self.find_implementors(target_short, &target_fqn, &class_loader, false, false);
 
             for imp in &implementors {
                 // Check that the implementor actually has this member.
@@ -528,7 +532,7 @@ impl Backend {
                     &self.resolved_class_cache,
                 );
                 let imp_has = match member_kind {
-                    MemberKind::Method => imp_merged.methods.iter().any(|m| m.name == member_name),
+                    MemberKind::Method => imp_merged.has_method(member_name),
                     MemberKind::Property => {
                         imp_merged.properties.iter().any(|p| p.name == member_name)
                     }
@@ -545,7 +549,7 @@ impl Backend {
                 // We want the member defined directly on this class (not
                 // inherited), so check the un-merged class first.
                 let owns_member = match member_kind {
-                    MemberKind::Method => imp.methods.iter().any(|m| m.name == member_name),
+                    MemberKind::Method => imp.has_method(member_name),
                     MemberKind::Property => imp.properties.iter().any(|p| p.name == member_name),
                     MemberKind::Constant => imp.constants.iter().any(|c| c.name == member_name),
                 };
@@ -632,7 +636,7 @@ impl Backend {
         };
 
         for cls in &ast_candidates {
-            let cls_fqn = crate::util::build_fqn(&cls.name, &cls.file_namespace);
+            let cls_fqn = crate::util::build_fqn(&cls.name, cls.file_namespace.as_deref());
             if self.class_implements_or_extends(
                 cls,
                 target_short,
@@ -668,7 +672,7 @@ impl Backend {
                     direct_only,
                 )
             {
-                let cls_fqn = crate::util::build_fqn(&cls.name, &cls.file_namespace);
+                let cls_fqn = crate::util::build_fqn(&cls.name, cls.file_namespace.as_deref());
                 if seen_fqns.insert(cls_fqn) {
                     result.push(Arc::unwrap_or_clone(cls));
                 }
@@ -703,7 +707,7 @@ impl Backend {
             // Parse the file, cache it, and check every class it defines.
             if let Some(classes) = self.parse_and_cache_file(path) {
                 for cls in &classes {
-                    let cls_fqn = crate::util::build_fqn(&cls.name, &cls.file_namespace);
+                    let cls_fqn = crate::util::build_fqn(&cls.name, cls.file_namespace.as_deref());
                     if seen_fqns.contains(&cls_fqn) {
                         continue;
                     }
@@ -747,7 +751,7 @@ impl Backend {
                     direct_only,
                 )
             {
-                let cls_fqn = crate::util::build_fqn(&cls.name, &cls.file_namespace);
+                let cls_fqn = crate::util::build_fqn(&cls.name, cls.file_namespace.as_deref());
                 if seen_fqns.insert(cls_fqn) {
                     result.push(Arc::unwrap_or_clone(cls));
                 }
@@ -802,7 +806,8 @@ impl Backend {
 
                     if let Some(classes) = self.parse_and_cache_file(&php_file) {
                         for cls in &classes {
-                            let cls_fqn = crate::util::build_fqn(&cls.name, &cls.file_namespace);
+                            let cls_fqn =
+                                crate::util::build_fqn(&cls.name, cls.file_namespace.as_deref());
                             if seen_fqns.contains(&cls_fqn) {
                                 continue;
                             }
@@ -845,7 +850,7 @@ impl Backend {
         direct_only: bool,
     ) -> bool {
         // Build the FQN of the candidate class for comparison.
-        let cls_fqn = crate::util::build_fqn(&cls.name, &cls.file_namespace);
+        let cls_fqn = crate::util::build_fqn(&cls.name, cls.file_namespace.as_deref());
 
         // Skip the target class itself.
         if cls_fqn == target_fqn || cls.name == target_short {
@@ -873,14 +878,14 @@ impl Backend {
 
         // Direct `implements` match (interfaces are FQN after resolution).
         for iface in &cls.interfaces {
-            if iface == target_fqn || (!has_fqn && short_name(iface) == target_short) {
+            if *iface == target_fqn || (!has_fqn && short_name(iface) == target_short) {
                 return true;
             }
         }
 
         // Direct `extends` match (for abstract class implementations).
-        if let Some(ref parent) = cls.parent_class
-            && (parent == target_fqn || (!has_fqn && short_name(parent) == target_short))
+        if let Some(parent) = cls.parent_class
+            && (&*parent == target_fqn || (!has_fqn && short_name(&parent) == target_short))
         {
             return true;
         }
@@ -912,19 +917,19 @@ impl Backend {
         // ── Transitive check: walk the parent class chain ───────────────
         // A class might extend another class that implements the target
         // interface.  Walk up to a bounded depth to find it.
-        let mut current = cls.parent_class.clone();
+        let mut current = cls.parent_class;
         let mut depth = 0u32;
 
-        while let Some(ref parent_name) = current {
+        while let Some(parent_name) = current {
             if depth >= MAX_INHERITANCE_DEPTH {
                 break;
             }
             depth += 1;
 
-            if let Some(parent_cls) = class_loader(parent_name) {
+            if let Some(parent_cls) = class_loader(&parent_name) {
                 // Check if the parent implements the target interface.
                 for iface in &parent_cls.interfaces {
-                    if iface == target_fqn || (!has_fqn && short_name(iface) == target_short) {
+                    if *iface == target_fqn || (!has_fqn && short_name(iface) == target_short) {
                         return true;
                     }
                     // Also walk the interface's own extends chain.
@@ -942,12 +947,12 @@ impl Backend {
 
                 // Check if the parent IS the target (for abstract class chains).
                 let parent_fqn =
-                    crate::util::build_fqn(&parent_cls.name, &parent_cls.file_namespace);
+                    crate::util::build_fqn(&parent_cls.name, parent_cls.file_namespace.as_deref());
                 if parent_fqn == target_fqn {
                     return true;
                 }
 
-                current = parent_cls.parent_class.clone();
+                current = parent_cls.parent_class;
             } else {
                 break;
             }
@@ -979,13 +984,13 @@ impl Backend {
 
         // Check `parent_class` (first extended interface stored here for
         // backward compatibility).
-        if let Some(ref parent) = iface_cls.parent_class {
-            let parent_short = short_name(parent);
-            if parent == target_fqn || (!has_fqn && parent_short == target_short) {
+        if let Some(parent) = iface_cls.parent_class {
+            let parent_short = short_name(&parent);
+            if &*parent == target_fqn || (!has_fqn && parent_short == target_short) {
                 return true;
             }
             if Self::interface_extends_target(
-                parent,
+                &parent,
                 target_short,
                 target_fqn,
                 has_fqn,
@@ -1000,7 +1005,7 @@ impl Backend {
         // interfaces that extend more than one parent).
         for parent_iface in &iface_cls.interfaces {
             let parent_short = short_name(parent_iface);
-            if parent_iface == target_fqn || (!has_fqn && parent_short == target_short) {
+            if *parent_iface == target_fqn || (!has_fqn && parent_short == target_short) {
                 return true;
             }
             if Self::interface_extends_target(

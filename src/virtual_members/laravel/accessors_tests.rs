@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 use crate::test_fixtures::{make_class, make_method};
 
@@ -173,19 +175,20 @@ fn accessor_type_union_generic_arg() {
 #[test]
 fn accessor_method_legacy() {
     let mut class = make_class("App\\Models\\User");
-    class
-        .methods
-        .push(make_method("getFullNameAttribute", Some("string")));
+    class.methods.push(Arc::new(make_method(
+        "getFullNameAttribute",
+        Some("string"),
+    )));
     assert!(is_accessor_method(&class, "getFullNameAttribute"));
 }
 
 #[test]
 fn accessor_method_modern() {
     let mut class = make_class("App\\Models\\User");
-    class.methods.push(make_method(
+    class.methods.push(Arc::new(make_method(
         "fullName",
         Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
-    ));
+    )));
     assert!(is_accessor_method(&class, "fullName"));
 }
 
@@ -200,6 +203,6 @@ fn accessor_method_non_accessor() {
     let mut class = make_class("App\\Models\\User");
     class
         .methods
-        .push(make_method("posts", Some("HasMany<Post>")));
+        .push(Arc::new(make_method("posts", Some("HasMany<Post>"))));
     assert!(!is_accessor_method(&class, "posts"));
 }

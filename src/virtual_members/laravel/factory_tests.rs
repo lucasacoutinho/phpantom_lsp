@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::atom;
 use crate::php_type::PhpType;
 use crate::test_fixtures::{make_class, no_loader};
 use std::sync::Arc;
@@ -92,17 +93,17 @@ fn is_eloquent_factory_rejects_unrelated() {
 #[test]
 fn extends_factory_direct() {
     let mut class = make_class("UserFactory");
-    class.parent_class = Some(FACTORY_FQN.to_string());
+    class.parent_class = Some(atom(FACTORY_FQN));
     assert!(extends_eloquent_factory(&class, &no_loader));
 }
 
 #[test]
 fn extends_factory_indirect() {
     let mut class = make_class("UserFactory");
-    class.parent_class = Some("BaseFactory".to_string());
+    class.parent_class = Some(atom("BaseFactory"));
 
     let mut base = make_class("BaseFactory");
-    base.parent_class = Some(FACTORY_FQN.to_string());
+    base.parent_class = Some(atom(FACTORY_FQN));
 
     let loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "BaseFactory" {
@@ -125,14 +126,14 @@ fn does_not_extend_factory() {
 #[test]
 fn has_factory_extends_generic_present() {
     let mut class = make_class("UserFactory");
-    class.extends_generics = vec![("Factory".to_string(), vec![PhpType::parse("User")])];
+    class.extends_generics = vec![(atom("Factory"), vec![PhpType::parse("User")])];
     assert!(has_factory_extends_generic(&class));
 }
 
 #[test]
 fn has_factory_extends_generic_fqn() {
     let mut class = make_class("UserFactory");
-    class.extends_generics = vec![(FACTORY_FQN.to_string(), vec![PhpType::parse("User")])];
+    class.extends_generics = vec![(atom(FACTORY_FQN), vec![PhpType::parse("User")])];
     assert!(has_factory_extends_generic(&class));
 }
 
@@ -145,7 +146,7 @@ fn has_factory_extends_generic_not_present() {
 #[test]
 fn has_factory_extends_generic_empty_args() {
     let mut class = make_class("UserFactory");
-    class.extends_generics = vec![("Factory".to_string(), vec![])];
+    class.extends_generics = vec![(atom("Factory"), vec![])];
     assert!(!has_factory_extends_generic(&class));
 }
 
@@ -154,7 +155,7 @@ fn has_factory_extends_generic_empty_args() {
 #[test]
 fn build_factory_model_methods_synthesizes_create_and_make() {
     let mut factory = make_class("Database\\Factories\\UserFactory");
-    factory.parent_class = Some(FACTORY_FQN.to_string());
+    factory.parent_class = Some(atom(FACTORY_FQN));
 
     let model = make_class("App\\Models\\User");
     let loader = move |name: &str| -> Option<Arc<ClassInfo>> {
@@ -183,7 +184,7 @@ fn build_factory_model_methods_synthesizes_create_and_make() {
 #[test]
 fn build_factory_model_methods_returns_empty_when_model_missing() {
     let mut factory = make_class("Database\\Factories\\UserFactory");
-    factory.parent_class = Some(FACTORY_FQN.to_string());
+    factory.parent_class = Some(atom(FACTORY_FQN));
 
     let methods = build_factory_model_methods(&factory, &no_loader);
     assert!(methods.is_empty());
@@ -192,7 +193,7 @@ fn build_factory_model_methods_returns_empty_when_model_missing() {
 #[test]
 fn build_factory_model_methods_returns_empty_for_non_factory_name() {
     let mut class = make_class("App\\Builders\\UserBuilder");
-    class.parent_class = Some(FACTORY_FQN.to_string());
+    class.parent_class = Some(atom(FACTORY_FQN));
 
     let methods = build_factory_model_methods(&class, &no_loader);
     assert!(methods.is_empty());
@@ -204,7 +205,7 @@ fn build_factory_model_methods_returns_empty_for_non_factory_name() {
 fn factory_provider_applies_to_factory_subclass() {
     let provider = LaravelFactoryProvider;
     let mut factory = make_class("Database\\Factories\\UserFactory");
-    factory.parent_class = Some(FACTORY_FQN.to_string());
+    factory.parent_class = Some(atom(FACTORY_FQN));
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == FACTORY_FQN {
@@ -227,8 +228,8 @@ fn factory_provider_does_not_apply_to_factory_base_class() {
 fn factory_provider_does_not_apply_when_extends_generic_present() {
     let provider = LaravelFactoryProvider;
     let mut factory = make_class("Database\\Factories\\UserFactory");
-    factory.parent_class = Some(FACTORY_FQN.to_string());
-    factory.extends_generics = vec![("Factory".to_string(), vec![PhpType::parse("User")])];
+    factory.parent_class = Some(atom(FACTORY_FQN));
+    factory.extends_generics = vec![(atom("Factory"), vec![PhpType::parse("User")])];
 
     assert!(!provider.applies_to(&factory, &no_loader));
 }
@@ -244,7 +245,7 @@ fn factory_provider_does_not_apply_to_non_factory() {
 fn factory_provider_synthesizes_create_and_make() {
     let provider = LaravelFactoryProvider;
     let mut factory = make_class("Database\\Factories\\UserFactory");
-    factory.parent_class = Some(FACTORY_FQN.to_string());
+    factory.parent_class = Some(atom(FACTORY_FQN));
 
     let model = make_class("App\\Models\\User");
     let loader = move |name: &str| -> Option<Arc<ClassInfo>> {
@@ -274,7 +275,7 @@ fn factory_provider_synthesizes_create_and_make() {
 fn factory_provider_empty_when_model_not_found() {
     let provider = LaravelFactoryProvider;
     let mut factory = make_class("Database\\Factories\\UserFactory");
-    factory.parent_class = Some(FACTORY_FQN.to_string());
+    factory.parent_class = Some(atom(FACTORY_FQN));
 
     let result = provider.provide(&factory, &no_loader, None);
     assert!(result.methods.is_empty());
@@ -284,7 +285,7 @@ fn factory_provider_empty_when_model_not_found() {
 fn factory_provider_subdirectory_convention() {
     let provider = LaravelFactoryProvider;
     let mut factory = make_class("Database\\Factories\\Admin\\SuperUserFactory");
-    factory.parent_class = Some(FACTORY_FQN.to_string());
+    factory.parent_class = Some(atom(FACTORY_FQN));
 
     let model = make_class("App\\Models\\Admin\\SuperUser");
     let loader = move |name: &str| -> Option<Arc<ClassInfo>> {

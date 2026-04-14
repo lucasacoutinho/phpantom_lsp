@@ -1488,6 +1488,7 @@ fn infer_callable_param_types_for_call(
                     cursor_offset: obj_span.end.offset,
                     class_loader: closure_ctx.class_loader,
                     function_loader: None,
+                    scope_var_resolver: None,
                     resolved_class_cache: None,
                 };
                 let receiver_classes = ResolvedType::into_arced_classes(
@@ -1525,6 +1526,7 @@ fn infer_callable_param_types_for_call(
                     cursor_offset: obj_span.end.offset,
                     class_loader: closure_ctx.class_loader,
                     function_loader: None,
+                    scope_var_resolver: None,
                     resolved_class_cache: None,
                 };
                 let receiver_classes = ResolvedType::into_arced_classes(
@@ -1549,12 +1551,12 @@ fn infer_callable_param_types_for_call(
                 let method_name = ident.value.to_string();
                 let class_name = match sc.class {
                     Expression::Self_(_) | Expression::Static(_) => {
-                        closure_ctx.current_class.map(|c| c.name.clone())
+                        closure_ctx.current_class.map(|c| c.name.to_string())
                     }
                     Expression::Identifier(id) => Some(id.value().to_string()),
                     Expression::Parent(_) => closure_ctx
                         .current_class
-                        .and_then(|c| c.parent_class.clone()),
+                        .and_then(|c| c.parent_class.map(|a| a.to_string())),
                     _ => None,
                 };
                 let cls = class_name.and_then(|name| {
@@ -1624,7 +1626,7 @@ fn find_callable_params_on_method(
     method_name: &str,
     arg_idx: usize,
 ) -> Option<Vec<PhpType>> {
-    let method = class.methods.iter().find(|m| m.name == method_name)?;
+    let method = class.get_method(method_name)?;
     let param = method.parameters.get(arg_idx)?;
     let hint = param.type_hint.as_ref()?;
     let callable_params = hint.callable_param_types()?;

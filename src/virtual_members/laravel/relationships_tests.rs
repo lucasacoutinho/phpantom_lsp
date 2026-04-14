@@ -581,7 +581,7 @@ fn extract_class_arg_class_in_second_arg_only() {
 fn count_to_relationship_simple() {
     let mut user = make_class("App\\Models\\User");
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
     assert_eq!(
         count_property_to_relationship_method(&user, "posts_count"),
         Some("posts".to_string())
@@ -591,9 +591,10 @@ fn count_to_relationship_simple() {
 #[test]
 fn count_to_relationship_camel_case() {
     let mut bakery = make_class("App\\Models\\Bakery");
-    bakery
-        .methods
-        .push(make_method("headBaker", Some("HasOne<Baker, $this>")));
+    bakery.methods.push(Arc::new(make_method(
+        "headBaker",
+        Some("HasOne<Baker, $this>"),
+    )));
     assert_eq!(
         count_property_to_relationship_method(&bakery, "head_baker_count"),
         Some("headBaker".to_string())
@@ -603,10 +604,10 @@ fn count_to_relationship_camel_case() {
 #[test]
 fn count_to_relationship_multi_word() {
     let mut model = make_class("App\\Models\\Order");
-    model.methods.push(make_method(
+    model.methods.push(Arc::new(make_method(
         "masterRecipe",
         Some("BelongsToMany<Recipe, $this>"),
-    ));
+    )));
     assert_eq!(
         count_property_to_relationship_method(&model, "master_recipe_count"),
         Some("masterRecipe".to_string())
@@ -618,7 +619,7 @@ fn count_to_relationship_morph_to() {
     let mut comment = make_class("App\\Models\\Comment");
     comment
         .methods
-        .push(make_method("commentable", Some("MorphTo")));
+        .push(Arc::new(make_method("commentable", Some("MorphTo"))));
     assert_eq!(
         count_property_to_relationship_method(&comment, "commentable_count"),
         Some("commentable".to_string())
@@ -628,7 +629,8 @@ fn count_to_relationship_morph_to() {
 #[test]
 fn count_to_relationship_returns_none_for_non_relationship() {
     let mut user = make_class("App\\Models\\User");
-    user.methods.push(make_method("getName", Some("string")));
+    user.methods
+        .push(Arc::new(make_method("getName", Some("string"))));
     assert_eq!(
         count_property_to_relationship_method(&user, "get_name_count"),
         None
@@ -639,7 +641,7 @@ fn count_to_relationship_returns_none_for_non_relationship() {
 fn count_to_relationship_returns_none_without_suffix() {
     let mut user = make_class("App\\Models\\User");
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
     assert_eq!(count_property_to_relationship_method(&user, "posts"), None);
 }
 

@@ -268,10 +268,7 @@ fn is_type_compatible(
                 let merged = crate::inheritance::resolve_class_with_inheritance(&cls, class_loader);
                 let implements_stringable =
                     crate::util::is_subtype_of(&cls, "Stringable", class_loader);
-                let has_to_string = merged
-                    .methods
-                    .iter()
-                    .any(|m| m.name.eq_ignore_ascii_case("__toString"));
+                let has_to_string = merged.get_method_ci("__toString").is_some();
                 if implements_stringable || has_to_string {
                     return true;
                 }
@@ -1404,6 +1401,7 @@ impl Backend {
                         enclosing_return_type: None,
                         branch_aware: true,
                         match_arm_narrowing: HashMap::new(),
+                        scope_var_resolver: None,
                     };
 
                     let mut resolved_args = Vec::with_capacity(exprs.len());
@@ -1436,7 +1434,7 @@ impl Backend {
                                 return name.to_string();
                             }
                             if let Some(cls) = class_loader(name) {
-                                cls.fqn()
+                                cls.fqn().to_string()
                             } else {
                                 name.to_string()
                             }

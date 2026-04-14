@@ -162,7 +162,7 @@ pub(super) fn cast_type_to_php_type(
         //     return type on `get()` is the next best signal.  Skip
         //     `mixed` — it carries no useful type information and is
         //     the default native hint on the interface method.
-        if let Some(get_method) = cast_class.methods.iter().find(|m| m.name == "get")
+        if let Some(get_method) = cast_class.get_method("get")
             && let Some(ref rt) = get_method.return_type
             && !rt.is_mixed()
         {

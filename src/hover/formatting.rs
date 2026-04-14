@@ -83,7 +83,7 @@ fn format_params_inner(params: &[ParameterInfo], use_native: bool) -> String {
             } else if p.is_reference {
                 parts.push(format!("&{}", p.name));
             } else {
-                parts.push(p.name.clone());
+                parts.push(p.name.to_string());
             }
             let param_str = parts.join(" ");
             if !p.is_required && !p.is_variadic {
@@ -102,7 +102,7 @@ fn format_params_inner(params: &[ParameterInfo], use_native: bool) -> String {
 
 /// Build a `namespace Foo;\n` line for use inside PHP code blocks.
 /// Returns an empty string when the namespace is global (None).
-pub(super) fn namespace_line(namespace: &Option<String>) -> String {
+pub(super) fn namespace_line(namespace: Option<&str>) -> String {
     if let Some(ns) = namespace
         && !ns.is_empty()
         && !ns.starts_with("___")
@@ -244,7 +244,7 @@ pub(super) fn build_param_return_section(
 ///   - `}`
 pub(super) fn build_class_member_block(
     owner_name: &str,
-    owner_namespace: &Option<String>,
+    owner_namespace: Option<&str>,
     kind_keyword: &str,
     name_suffix: &str,
     member_line: &str,
@@ -293,7 +293,7 @@ pub(super) fn owner_name_suffix(owner: &ClassInfo) -> String {
 /// the native PHP type hint.
 pub(super) fn build_class_member_block_with_var(
     owner_name: &str,
-    owner_namespace: &Option<String>,
+    owner_namespace: Option<&str>,
     kind_keyword: &str,
     name_suffix: &str,
     var_annotation: &Option<String>,
@@ -334,7 +334,7 @@ pub(crate) fn hover_for_function(
         .unwrap_or_default();
 
     let signature = format!("function {}({}){}", func.name, native_params, native_ret);
-    let ns_line = namespace_line(&func.namespace);
+    let ns_line = namespace_line(func.namespace.as_deref());
 
     let mut lines = Vec::new();
 

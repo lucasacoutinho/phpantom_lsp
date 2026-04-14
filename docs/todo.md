@@ -23,18 +23,18 @@ within the same impact tier.
 
 ## Sprint 5 — Polish for office adoption
 
-| #   | Item                                                                                                                                                         | Impact | Effort    |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------ | --------- |
-| T25 | [Forward-walking scope model](todo/type-inference.md#t25-forward-walking-scope-model-for-variable-type-resolution) (eliminate backward-scanning depth limit) | High   | Very High |
-| P9  | [`resolved_class_cache` generic-arg specialisation](todo/performance.md#p9-resolved_class_cache-generic-arg-specialisation)                                  | Medium | Medium    |
-| P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                           | Medium | Low       |
-| D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variable-diagnostic)                                                                              | Medium | Medium    |
-| D12 | [Mago diagnostic proxy](todo/diagnostics.md#d12-mago-diagnostic-proxy)                                                                                       | Medium | Medium    |
-| F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints)                             | Medium | Medium    |
-| F9  | [Namespace renaming](todo/lsp-features.md#f9-namespace-renaming)                                                                                             | Medium | Medium    |
-| A40 | [Convert to instance variable](todo/actions.md#a40-convert-to-instance-variable)                                                                             | Medium | Medium    |
-| D10 | [PHPMD diagnostic proxy](todo/diagnostics.md#d10-phpmd-diagnostic-proxy)                                                                                     | Low    | Medium    |
-|     | **Release 0.8.0**                                                                                                                                            |        |           |
+| #   | Item                                                                                                                                                                | Impact   | Effort      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------- |
+| ER5 | [Mago-style separated metadata](todo/eager-resolution.md#er5--mago-style-separated-metadata) (pre-populated immutable codebase, O(1) method resolution)             | High     | High        |
+| P9  | [`resolved_class_cache` generic-arg specialisation](todo/performance.md#p9-resolved_class_cache-generic-arg-specialisation)                                         | Medium   | Medium      |
+| P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                  | Medium | Low         |
+| D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variable-diagnostic)                                                                                     | Medium | Medium      |
+| D12 | [Mago diagnostic proxy](todo/diagnostics.md#d12-mago-diagnostic-proxy)                                                                                              | Medium | Medium      |
+| F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints)                                    | Medium | Medium      |
+| F9  | [Namespace renaming](todo/lsp-features.md#f9-namespace-renaming)                                                                                                    | Medium | Medium      |
+| A40 | [Convert to instance variable](todo/actions.md#a40-convert-to-instance-variable)                                                                                    | Medium | Medium      |
+| D10 | [PHPMD diagnostic proxy](todo/diagnostics.md#d10-phpmd-diagnostic-proxy)                                                                                            | Low    | Medium      |
+|     | **Release 0.8.0**                                                                                                                                                   |        |             |
 
 > **Note:** F1 (Workspace symbol search), F2 (Document symbols), A8
 > (Implement interface methods), A9 (Auto import), D1 (Unknown class
@@ -162,13 +162,13 @@ unlikely to move the needle for most users.
 |      | **[External Stubs](todo/external-stubs.md)**                                                                                                                                |             |             |
 | E6   | Stub install prompt for non-Composer projects                                                                                                                               | Low         | Low         |
 | E7   | [Stub-based framework patches](todo/external-stubs.md#e7-stub-based-framework-patches)                                                                                      | Medium      | Medium      |
-|      | **[Performance](todo/performance.md)**                                                                                                                                      |             |             |
-| P1.5 | [Layered class resolution (zero-copy inheritance)](todo/performance.md#p15-layered-class-resolution-zero-copy-inheritance)                                                  | High        | Very High   |
+|      | **[Performance](todo/performance.md) / [Eager Resolution](todo/eager-resolution.md)**                                                                                       |             |             |
 | P13  | [Tiered storage: drop per-file maps for non-open files](todo/performance.md#p13-tiered-storage-drop-per-file-maps-for-non-open-files)                                       | Medium-High | Medium-High |
 | P14  | [Eager docblock parsing into structured fields](todo/performance.md#p14-eager-docblock-parsing-into-structured-fields)                                                      | Medium      | Medium      |
 | P10  | [Redundant `parse_and_cache_file` from multiple threads](todo/performance.md#p10-redundant-parse_and_cache_file-from-multiple-threads)                                      | Medium      | Low         |
 | P11  | [Uncached base-resolution in `build_scope_methods_for_builder`](todo/performance.md#p11-uncached-base-resolution-in-build_scope_methods_for_builder)                        | Low-Medium  | Low         |
 | P3   | Parallel pre-filter in `find_implementors`                                                                                                                                  | Low-Medium  | Medium      |
+| P19  | [Analysis time dominated by per-expression class resolution](todo/performance.md#p19-analysis-time-dominated-by-per-expression-class-resolution) (root cause; fix is ER5) | High      | High        |
 | P1b  | Propagate `Arc<ClassInfo>` through variable-resolution pipeline                                                                                                             | Low         | Medium      |
 | P4   | `memmem` for block comment terminator search                                                                                                                                | Low         | Low         |
 | P5   | `memmap2` for file reads during scanning                                                                                                                                    | Low         | Low         |

@@ -387,28 +387,28 @@ fn test_type_hint_is_class_only() {
 fn test_type_hint_matches_class_info() {
     let cls = ClassInfo {
         kind: ClassLikeKind::Class,
-        name: "Foo".to_string(),
+        name: crate::atom::atom("Foo"),
         ..Default::default()
     };
     assert!(ClassNameContext::TypeHint.matches(&cls));
 
     let iface = ClassInfo {
         kind: ClassLikeKind::Interface,
-        name: "Bar".to_string(),
+        name: crate::atom::atom("Bar"),
         ..Default::default()
     };
     assert!(ClassNameContext::TypeHint.matches(&iface));
 
     let enm = ClassInfo {
         kind: ClassLikeKind::Enum,
-        name: "Baz".to_string(),
+        name: crate::atom::atom("Baz"),
         ..Default::default()
     };
     assert!(ClassNameContext::TypeHint.matches(&enm));
 
     let trait_info = ClassInfo {
         kind: ClassLikeKind::Trait,
-        name: "Qux".to_string(),
+        name: crate::atom::atom("Qux"),
         ..Default::default()
     };
     assert!(!ClassNameContext::TypeHint.matches(&trait_info));

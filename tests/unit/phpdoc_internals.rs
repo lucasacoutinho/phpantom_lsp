@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use phpantom_lsp::atom::atom;
 use phpantom_lsp::completion::phpdoc::*;
 use phpantom_lsp::php_type::PhpType;
 use phpantom_lsp::types::ClassInfo;
@@ -2260,8 +2261,8 @@ fn smart_var_property_with_templates_has_snippet_tab_stops() {
     };
 
     let collection_class = Arc::new(ClassInfo {
-        name: "Collection".to_string(),
-        template_params: vec!["TKey".to_string(), "TModel".to_string()],
+        name: atom("Collection"),
+        template_params: vec![atom("TKey"), atom("TModel")],
         ..ClassInfo::default()
     });
     let collection_ref = collection_class.clone();
@@ -2324,8 +2325,8 @@ fn smart_var_property_with_templates_and_prefix_has_snippet_tab_stops() {
     };
 
     let collection_class = Arc::new(ClassInfo {
-        name: "Collection".to_string(),
-        template_params: vec!["TKey".to_string(), "TModel".to_string()],
+        name: atom("Collection"),
+        template_params: vec![atom("TKey"), atom("TModel")],
         ..ClassInfo::default()
     });
     let collection_ref = collection_class.clone();
@@ -2429,7 +2430,7 @@ fn smart_var_property_class_without_templates_no_snippet_format() {
     };
 
     let datetime_class = Arc::new(ClassInfo {
-        name: "DateTime".to_string(),
+        name: atom("DateTime"),
         template_params: vec![],
         ..ClassInfo::default()
     });
@@ -2487,8 +2488,8 @@ fn smart_var_constant_with_templates_has_snippet_tab_stops() {
     };
 
     let collection_class = Arc::new(ClassInfo {
-        name: "Collection".to_string(),
-        template_params: vec!["TKey".to_string(), "TModel".to_string()],
+        name: atom("Collection"),
+        template_params: vec![atom("TKey"), atom("TModel")],
         ..ClassInfo::default()
     });
     let collection_ref = collection_class.clone();

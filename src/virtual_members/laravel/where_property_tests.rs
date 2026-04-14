@@ -1,3 +1,4 @@
+use crate::atom::atom;
 use std::collections::HashSet;
 
 use crate::php_type::PhpType;
@@ -8,14 +9,14 @@ use crate::virtual_members::laravel::where_property::{
 
 fn make_class(name: &str) -> ClassInfo {
     ClassInfo {
-        name: name.to_string(),
+        name: crate::atom::atom(name),
         ..Default::default()
     }
 }
 
 fn make_model(name: &str) -> ClassInfo {
     let mut c = make_class(name);
-    c.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    c.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     c
 }
 

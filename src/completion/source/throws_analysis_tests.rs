@@ -810,7 +810,7 @@ fn make_class_with_throws(name: &str, methods: Vec<(&str, Vec<&str>)>) -> Arc<Cl
     let method_infos: Vec<MethodInfo> = methods
         .into_iter()
         .map(|(method_name, throws)| MethodInfo {
-            name: method_name.to_string(),
+            name: crate::atom::atom(method_name),
             name_offset: 0,
             parameters: Vec::new(),
             return_type: None,
@@ -825,7 +825,7 @@ fn make_class_with_throws(name: &str, methods: Vec<(&str, Vec<&str>)>) -> Arc<Cl
             deprecation_message: None,
             deprecated_replacement: None,
             template_params: Vec::new(),
-            template_param_bounds: std::collections::HashMap::new(),
+            template_param_bounds: Default::default(),
             template_bindings: Vec::new(),
             has_scope_attribute: false,
             is_abstract: false,
@@ -837,8 +837,14 @@ fn make_class_with_throws(name: &str, methods: Vec<(&str, Vec<&str>)>) -> Arc<Cl
 
     Arc::new(ClassInfo {
         kind: ClassLikeKind::Class,
-        name: name.to_string(),
-        methods: method_infos.into(),
+        name: crate::atom::atom(name),
+        methods: method_infos
+            .into_iter()
+            .map(Arc::new)
+            .collect::<Vec<_>>()
+            .into(),
+        method_index: Default::default(),
+        indexed_method_count: 0,
         properties: Default::default(),
         constants: Default::default(),
         start_offset: 0,
@@ -856,12 +862,12 @@ fn make_class_with_throws(name: &str, methods: Vec<(&str, Vec<&str>)>) -> Arc<Cl
         links: Vec::new(),
         see_refs: Vec::new(),
         template_params: Vec::new(),
-        template_param_bounds: std::collections::HashMap::new(),
-        template_param_defaults: std::collections::HashMap::new(),
+        template_param_bounds: Default::default(),
+        template_param_defaults: Default::default(),
         extends_generics: Vec::new(),
         implements_generics: Vec::new(),
         use_generics: Vec::new(),
-        type_aliases: std::collections::HashMap::new(),
+        type_aliases: Default::default(),
         trait_precedences: Vec::new(),
         trait_aliases: Vec::new(),
         class_docblock: None,
@@ -1144,7 +1150,7 @@ fn test_find_cross_file_propagated_throws_function_call() {
     let file_content = "";
 
     let func_info = FunctionInfo {
-        name: "riskyFunction".to_string(),
+        name: crate::atom::atom("riskyFunction"),
         name_offset: 0,
         parameters: Vec::new(),
         return_type: None,
@@ -1159,7 +1165,7 @@ fn test_find_cross_file_propagated_throws_function_call() {
         deprecation_message: None,
         deprecated_replacement: None,
         template_params: Vec::new(),
-        template_param_bounds: HashMap::new(),
+        template_param_bounds: Default::default(),
         template_bindings: Vec::new(),
         throws: vec![PhpType::parse("DatabaseException")],
         is_polyfill: false,
@@ -1277,7 +1283,7 @@ fn test_find_cross_file_propagated_throws_mixed_patterns() {
     };
 
     let func_info = FunctionInfo {
-        name: "helperFunction".to_string(),
+        name: crate::atom::atom("helperFunction"),
         name_offset: 0,
         parameters: Vec::new(),
         return_type: None,
@@ -1292,7 +1298,7 @@ fn test_find_cross_file_propagated_throws_mixed_patterns() {
         deprecation_message: None,
         deprecated_replacement: None,
         template_params: Vec::new(),
-        template_param_bounds: HashMap::new(),
+        template_param_bounds: Default::default(),
         template_bindings: Vec::new(),
         throws: vec![PhpType::parse("HelperException")],
         is_polyfill: false,

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use super::enrich_builder_type_in_scope;
+use crate::atom::atom;
 use crate::php_type::PhpType;
 use crate::test_fixtures::make_class;
 
@@ -9,7 +10,7 @@ use crate::types::{ClassInfo, ResolvedType};
 
 fn make_model(name: &str) -> ClassInfo {
     let mut class = make_class(name);
-    class.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    class.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     class
 }
 
@@ -255,26 +256,26 @@ function test() {
     // Classes that exist in this file
     let processor = {
         let mut c = make_class("Processor");
-        c.methods.push(MethodInfo {
+        c.methods.push(Arc::new(MethodInfo {
             is_static: false,
             ..MethodInfo::virtual_method("getOutput", Some("string"))
-        });
+        }));
         c
     };
     let builder = {
         let mut c = make_class("Builder");
-        c.methods.push(MethodInfo {
+        c.methods.push(Arc::new(MethodInfo {
             is_static: false,
             ..MethodInfo::virtual_method("process", Some("Processor"))
-        });
+        }));
         c
     };
     let factory = {
         let mut c = make_class("Factory");
-        c.methods.push(MethodInfo {
+        c.methods.push(Arc::new(MethodInfo {
             is_static: true,
             ..MethodInfo::virtual_method("create", Some("Builder"))
-        });
+        }));
         c
     };
 
@@ -342,43 +343,45 @@ function test() {
     // `factory()` with return type `Database\Factories\UserFactory`.
     let has_factory_trait = {
         let mut c = make_class("HasFactory");
-        c.file_namespace = Some("Illuminate\\Database\\Eloquent\\Factories".to_string());
-        c.template_params = vec!["TFactory".to_string()];
-        c.methods.push(MethodInfo {
+        c.file_namespace = Some(atom("Illuminate\\Database\\Eloquent\\Factories"));
+        c.template_params = vec![atom("TFactory")];
+        c.methods.push(Arc::new(MethodInfo {
             is_static: true,
             ..MethodInfo::virtual_method("factory", Some("TFactory"))
-        });
+        }));
         c
     };
 
     // Factory base class: `public function create(): TModel`
     let factory_base = {
         let mut c = make_class("Factory");
-        c.file_namespace = Some("Illuminate\\Database\\Eloquent\\Factories".to_string());
-        c.template_params = vec!["TModel".to_string()];
+        c.file_namespace = Some(atom("Illuminate\\Database\\Eloquent\\Factories"));
+        c.template_params = vec![atom("TModel")];
+        c.methods.push(Arc::new(MethodInfo::virtual_method(
+            "create",
+            Some("TModel"),
+        )));
         c.methods
-            .push(MethodInfo::virtual_method("create", Some("TModel")));
-        c.methods
-            .push(MethodInfo::virtual_method("make", Some("TModel")));
+            .push(Arc::new(MethodInfo::virtual_method("make", Some("TModel"))));
         c
     };
 
     // UserFactory extends Factory — convention says TModel = User.
     let user_factory = {
         let mut c = make_class("UserFactory");
-        c.file_namespace = Some("Database\\Factories".to_string());
-        c.parent_class = Some("Illuminate\\Database\\Eloquent\\Factories\\Factory".to_string());
+        c.file_namespace = Some(atom("Database\\Factories"));
+        c.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Factories\\Factory"));
         // The virtual member provider would synthesize create()/make()
         // returning User, but for this unit test we add them directly
         // with the substituted return type.
-        c.methods.push(MethodInfo::virtual_method(
+        c.methods.push(Arc::new(MethodInfo::virtual_method(
             "create",
             Some("App\\Models\\User"),
-        ));
-        c.methods.push(MethodInfo::virtual_method(
+        )));
+        c.methods.push(Arc::new(MethodInfo::virtual_method(
             "make",
             Some("App\\Models\\User"),
-        ));
+        )));
         c
     };
 
@@ -389,17 +392,21 @@ function test() {
     // After trait merging, factory() returns UserFactory.
     let user = {
         let mut c = make_class("User");
-        c.file_namespace = Some("App\\Models".to_string());
-        c.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-        c.used_traits = vec!["Illuminate\\Database\\Eloquent\\Factories\\HasFactory".to_string()];
+        c.file_namespace = Some(atom("App\\Models"));
+        c.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+        c.used_traits = vec![atom(
+            "Illuminate\\Database\\Eloquent\\Factories\\HasFactory",
+        )];
         // Simulate the result of trait merging with convention-based
         // TFactory substitution: factory() returns UserFactory FQN.
-        c.methods.push(MethodInfo {
+        c.methods.push(Arc::new(MethodInfo {
             is_static: true,
             ..MethodInfo::virtual_method("factory", Some("Database\\Factories\\UserFactory"))
-        });
-        c.methods
-            .push(MethodInfo::virtual_method("greet", Some("string")));
+        }));
+        c.methods.push(Arc::new(MethodInfo::virtual_method(
+            "greet",
+            Some("string"),
+        )));
         c
     };
 
@@ -762,31 +769,31 @@ class LoggedConnection extends BaseConnector {
 
     let response = {
         let mut c = make_class("Response");
-        c.methods.push(MethodInfo {
+        c.methods.push(Arc::new(MethodInfo {
             is_static: false,
             ..MethodInfo::virtual_method("status", Some("int"))
-        });
-        c.methods.push(MethodInfo {
+        }));
+        c.methods.push(Arc::new(MethodInfo {
             is_static: false,
             ..MethodInfo::virtual_method("body", Some("string"))
-        });
+        }));
         c
     };
     let base = {
         let mut c = make_class("BaseConnector");
-        c.methods.push(MethodInfo {
+        c.methods.push(Arc::new(MethodInfo {
             is_static: false,
             ..MethodInfo::virtual_method("call", Some("Response"))
-        });
+        }));
         c
     };
     let logged = {
         let mut c = make_class("LoggedConnection");
-        c.parent_class = Some("BaseConnector".to_string());
-        c.methods.push(MethodInfo {
+        c.parent_class = Some(atom("BaseConnector"));
+        c.methods.push(Arc::new(MethodInfo {
             is_static: false,
             ..MethodInfo::virtual_method("call", Some("Response"))
-        });
+        }));
         c
     };
 

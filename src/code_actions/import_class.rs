@@ -374,7 +374,7 @@ impl Backend {
                     if cls.name.to_lowercase() == name_lower {
                         let fqn = match ns {
                             Some(ns) => format!("{}\\{}", ns, cls.name),
-                            None => cls.name.clone(),
+                            None => cls.name.to_string(),
                         };
                         if !candidates
                             .iter()

@@ -222,7 +222,7 @@ pub(crate) fn count_property_to_relationship_method(
         return None;
     }
     let method_name = snake_to_camel(base);
-    let method = class.methods.iter().find(|m| m.name == method_name)?;
+    let method = class.get_method(&method_name)?;
     let return_type = method.return_type.as_ref()?;
     if classify_relationship_typed(return_type).is_some() {
         Some(method_name)
@@ -345,13 +345,14 @@ pub(crate) fn resolve_relation_chain(
     model: &ClassInfo,
     chain: &str,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    cache: Option<&super::super::ResolvedClassCache>,
 ) -> Option<String> {
     let segments: Vec<&str> = chain.split('.').collect();
     if segments.is_empty() {
         return None;
     }
 
-    let mut current_class = resolve_class_with_inheritance(model, class_loader);
+    let mut current_class = resolve_class_with_inheritance(model, class_loader, cache);
     for segment in &segments {
         let segment = segment.trim();
         if segment.is_empty() {
@@ -359,7 +360,7 @@ pub(crate) fn resolve_relation_chain(
         }
 
         // Find the relationship method on the current model.
-        let method = current_class.methods.iter().find(|m| m.name == segment)?;
+        let method = current_class.get_method(segment)?;
 
         // Get the return type and extract the related model type.
         // Body-inferred relationship types are already stored in
@@ -370,10 +371,10 @@ pub(crate) fn resolve_relation_chain(
         // Resolve the related type to a full class, trying the model's
         // namespace first (e.g. short name "Article" → "App\Models\Article").
         let resolved = resolve_related_fqn(&related_type, &current_class, class_loader)?;
-        current_class = resolve_class_with_inheritance(&resolved, class_loader);
+        current_class = resolve_class_with_inheritance(&resolved, class_loader, cache);
     }
 
-    Some(current_class.fqn())
+    Some(current_class.fqn().to_string())
 }
 
 /// Resolve a class fully (with inheritance and virtual members) so that
@@ -381,8 +382,9 @@ pub(crate) fn resolve_relation_chain(
 fn resolve_class_with_inheritance(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    cache: Option<&super::super::ResolvedClassCache>,
 ) -> Arc<ClassInfo> {
-    crate::virtual_members::resolve_class_fully(class, class_loader)
+    crate::virtual_members::resolve_class_fully_maybe_cached(class, class_loader, cache)
 }
 
 /// Extract the related type from a relationship return type string,
@@ -399,7 +401,7 @@ fn extract_related_type_for_chain(
     if let PhpType::Generic(_, args) = return_type {
         let first = args.first()?;
         if first.is_self_ref() {
-            return Some(declaring_class.fqn());
+            return Some(declaring_class.fqn().to_string());
         }
     }
 

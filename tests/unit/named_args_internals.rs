@@ -4,6 +4,7 @@
 //! in `src/completion/named_args.rs` to keep the project's convention of
 //! placing tests in the `tests/` directory.
 
+use phpantom_lsp::atom::atom;
 use phpantom_lsp::completion::named_args::*;
 use phpantom_lsp::php_type::PhpType;
 use phpantom_lsp::types::ParameterInfo;
@@ -404,7 +405,7 @@ fn context_multiline() {
 
 fn make_param(name: &str, type_hint: Option<&str>, required: bool) -> ParameterInfo {
     ParameterInfo {
-        name: format!("${}", name),
+        name: atom(&format!("${}", name)),
         is_required: required,
         type_hint: type_hint.map(PhpType::parse),
         native_type_hint: type_hint.map(PhpType::parse),
@@ -534,7 +535,7 @@ fn completions_optional_detail() {
 #[test]
 fn completions_variadic_detail() {
     let params = vec![ParameterInfo {
-        name: "$items".to_string(),
+        name: atom("$items"),
         is_required: true,
         type_hint: Some(PhpType::parse("string")),
         native_type_hint: Some(PhpType::parse("string")),

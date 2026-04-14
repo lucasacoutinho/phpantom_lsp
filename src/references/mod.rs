@@ -129,7 +129,7 @@ impl Backend {
             }
             SymbolKind::ClassDeclaration { name } => {
                 let ctx = self.file_context(uri);
-                let fqn = build_fqn(name, &ctx.namespace);
+                let fqn = build_fqn(name, ctx.namespace.as_deref());
                 self.find_class_references(&fqn, include_declaration)
             }
             SymbolKind::MemberAccess {
@@ -182,10 +182,10 @@ impl Backend {
                 let ctx = self.file_context(uri);
                 let current_class = crate::util::find_class_at_offset(&ctx.classes, span_start);
                 let fqn = match ssp_kind {
-                    SelfStaticParentKind::Parent => current_class
-                        .and_then(|cc| cc.parent_class.as_ref())
-                        .cloned(),
-                    _ => current_class.map(|cc| build_fqn(&cc.name, &ctx.namespace)),
+                    SelfStaticParentKind::Parent => {
+                        current_class.and_then(|cc| cc.parent_class.map(|a| a.to_string()))
+                    }
+                    _ => current_class.map(|cc| build_fqn(&cc.name, ctx.namespace.as_deref())),
                 };
                 if let Some(fqn) = fqn {
                     self.find_class_references(&fqn, include_declaration)
@@ -453,7 +453,7 @@ impl Backend {
                         });
                     }
                     SymbolKind::ClassDeclaration { name } if include_declaration => {
-                        let fqn = build_fqn(name, &file_namespace);
+                        let fqn = build_fqn(name, file_namespace.as_deref());
                         if !class_names_match(&fqn, target, target_short) {
                             continue;
                         }
@@ -589,7 +589,7 @@ impl Backend {
                             let ctx = file_ctx_cell.get_or_init(|| self.file_context(file_uri));
                             if let Some(enclosing) = find_class_at_offset(&ctx.classes, span.start)
                             {
-                                let fqn = enclosing.fqn();
+                                let fqn = enclosing.fqn().to_string();
                                 if !hier.contains(&fqn) {
                                     continue;
                                 }
@@ -615,7 +615,7 @@ impl Backend {
                 for class in &classes {
                     // Filter by hierarchy when available.
                     if let Some(hier) = hierarchy {
-                        let class_fqn = class.fqn();
+                        let class_fqn = class.fqn().to_string();
                         if !hier.contains(&class_fqn) {
                             continue;
                         }
@@ -809,10 +809,10 @@ impl Backend {
         let current_class = crate::util::find_class_at_offset(&classes, offset)?;
 
         match ssp_kind {
-            SelfStaticParentKind::Parent => current_class.parent_class.clone(),
+            SelfStaticParentKind::Parent => current_class.parent_class.map(|a| a.to_string()),
             _ => {
                 // self / static → current class FQN
-                Some(build_fqn(&current_class.name, namespace))
+                Some(build_fqn(&current_class.name, namespace.as_deref()))
             }
         }
     }
@@ -851,7 +851,7 @@ impl Backend {
         let classes: Vec<Arc<ClassInfo>> =
             self.ast_map.read().get(uri).cloned().unwrap_or_default();
         let current_class = find_class_at_offset(&classes, offset)?;
-        let fqn = current_class.fqn();
+        let fqn = current_class.fqn().to_string();
         Some(self.collect_hierarchy_for_fqns(&[fqn]))
     }
 
@@ -944,7 +944,7 @@ impl Backend {
         offset: u32,
     ) -> Option<String> {
         let cc = find_class_at_offset(classes, offset)?;
-        let fqn = build_fqn(&cc.name, namespace);
+        let fqn = build_fqn(&cc.name, namespace.as_deref());
         Some(normalize_fqn(&fqn))
     }
 

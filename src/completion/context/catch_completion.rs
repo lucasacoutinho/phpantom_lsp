@@ -447,7 +447,7 @@ impl Backend {
                 let fqn = if let Some(ns) = file_ns {
                     format!("{}\\{}", ns, cls.name)
                 } else {
-                    cls.name.clone()
+                    cls.name.to_string()
                 };
                 loaded.insert(fqn);
             }
@@ -619,7 +619,7 @@ impl Backend {
                             }
                             let cls_fqn = match file_namespace {
                                 Some(ns) => format!("{}\\{}", ns, cls.name),
-                                None => cls.name.clone(),
+                                None => cls.name.to_string(),
                             };
                             if !matches_class_prefix(
                                 &cls.name,
@@ -634,7 +634,7 @@ impl Backend {
                                 continue;
                             }
                             candidates.push((
-                                cls.name.clone(),
+                                cls.name.to_string(),
                                 cls_fqn,
                                 cls.deprecation_message.clone(),
                             ));

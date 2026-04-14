@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::atom;
 use crate::php_type::PhpType;
 use crate::test_fixtures::{
     make_class, make_method, make_method_with_params, make_param, no_loader,
@@ -12,7 +13,7 @@ use std::sync::Arc;
 fn applies_to_model_subclass() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -39,9 +40,9 @@ fn does_not_apply_to_non_model() {
 fn synthesizes_has_many_property() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
 
     let result = provider.provide(&user, &no_loader, None);
     let rel_prop = result
@@ -63,9 +64,11 @@ fn synthesizes_has_many_property() {
 fn synthesizes_has_one_property() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods
-        .push(make_method("profile", Some("HasOne<Profile, $this>")));
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
+        "profile",
+        Some("HasOne<Profile, $this>"),
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     let rel_prop = result
@@ -80,9 +83,11 @@ fn synthesizes_has_one_property() {
 fn synthesizes_belongs_to_property() {
     let provider = LaravelModelProvider;
     let mut post = make_class("App\\Models\\Post");
-    post.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    post.methods
-        .push(make_method("author", Some("BelongsTo<User, $this>")));
+    post.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    post.methods.push(Arc::new(make_method(
+        "author",
+        Some("BelongsTo<User, $this>"),
+    )));
 
     let result = provider.provide(&post, &no_loader, None);
     let rel_prop = result
@@ -97,10 +102,10 @@ fn synthesizes_belongs_to_property() {
 fn synthesizes_morph_to_property() {
     let provider = LaravelModelProvider;
     let mut comment = make_class("App\\Models\\Comment");
-    comment.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    comment.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     comment
         .methods
-        .push(make_method("commentable", Some("MorphTo")));
+        .push(Arc::new(make_method("commentable", Some("MorphTo"))));
 
     let result = provider.provide(&comment, &no_loader, None);
     let rel_prop = result
@@ -125,9 +130,11 @@ fn synthesizes_morph_to_property() {
 fn synthesizes_belongs_to_many_property() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods
-        .push(make_method("roles", Some("BelongsToMany<Role, $this>")));
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
+        "roles",
+        Some("BelongsToMany<Role, $this>"),
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     let rel_prop = result
@@ -145,13 +152,17 @@ fn synthesizes_belongs_to_many_property() {
 fn synthesizes_multiple_relationship_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
-    user.methods
-        .push(make_method("profile", Some("HasOne<Profile, $this>")));
-    user.methods
-        .push(make_method("roles", Some("BelongsToMany<Role, $this>")));
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
+    user.methods.push(Arc::new(make_method(
+        "profile",
+        Some("HasOne<Profile, $this>"),
+    )));
+    user.methods.push(Arc::new(make_method(
+        "roles",
+        Some("BelongsToMany<Role, $this>"),
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     // 3 relationship properties + 3 _count properties = 6
@@ -170,12 +181,14 @@ fn synthesizes_multiple_relationship_properties() {
 fn skips_non_relationship_methods() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     user.laravel_mut().timestamps = Some(false);
     user.methods
-        .push(make_method("getFullName", Some("string")));
-    user.methods.push(make_method("save", Some("bool")));
-    user.methods.push(make_method("toArray", Some("array")));
+        .push(Arc::new(make_method("getFullName", Some("string"))));
+    user.methods
+        .push(Arc::new(make_method("save", Some("bool"))));
+    user.methods
+        .push(Arc::new(make_method("toArray", Some("array"))));
 
     let result = provider.provide(&user, &no_loader, None);
     assert!(result.properties.is_empty());
@@ -185,9 +198,9 @@ fn skips_non_relationship_methods() {
 fn skips_methods_without_return_type() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     user.laravel_mut().timestamps = Some(false);
-    user.methods.push(make_method("posts", None));
+    user.methods.push(Arc::new(make_method("posts", None)));
 
     let result = provider.provide(&user, &no_loader, None);
     assert!(result.properties.is_empty());
@@ -197,11 +210,11 @@ fn skips_methods_without_return_type() {
 fn handles_fqn_relationship_return_types() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
         "posts",
         Some("Illuminate\\Database\\Eloquent\\Relations\\HasMany<Post, $this>"),
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     let rel_prop = result
@@ -223,8 +236,9 @@ fn relationship_without_generics_and_singular_produces_nothing() {
     // However, a _count property is still produced.
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method("profile", Some("HasOne")));
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods
+        .push(Arc::new(make_method("profile", Some("HasOne"))));
 
     let result = provider.provide(&user, &no_loader, None);
     assert!(
@@ -246,8 +260,9 @@ fn collection_relationship_without_generics_uses_model_fallback() {
     // Collection<Model>.
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method("posts", Some("HasMany")));
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods
+        .push(Arc::new(make_method("posts", Some("HasMany"))));
 
     let result = provider.provide(&user, &no_loader, None);
     let rel_prop = result
@@ -266,9 +281,9 @@ fn collection_relationship_without_generics_uses_model_fallback() {
 fn relationships_produce_no_virtual_methods_or_constants() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
 
     let result = provider.provide(&user, &no_loader, None);
     assert!(
@@ -282,11 +297,11 @@ fn relationships_produce_no_virtual_methods_or_constants() {
 fn provides_fqn_related_type_in_collection() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
         "posts",
         Some("HasMany<\\App\\Models\\Post, $this>"),
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     let rel_prop = result
@@ -305,11 +320,11 @@ fn provides_fqn_related_type_in_collection() {
 fn provides_fqn_related_type_singular() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
         "profile",
         Some("HasOne<\\App\\Models\\Profile, $this>"),
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     let rel_prop = result
@@ -329,8 +344,8 @@ fn provides_fqn_related_type_singular() {
 fn synthesizes_scope_as_both_static_and_instance() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method_with_params(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param(
@@ -338,7 +353,7 @@ fn synthesizes_scope_as_both_static_and_instance() {
             Some("\\Illuminate\\Database\\Eloquent\\Builder"),
             true,
         )],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     assert_eq!(result.methods.len(), 2, "Expected both static and instance");
@@ -364,8 +379,8 @@ fn synthesizes_scope_as_both_static_and_instance() {
 fn synthesizes_scope_with_extra_params() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method_with_params(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeOfType",
         Some("void"),
         vec![
@@ -376,7 +391,7 @@ fn synthesizes_scope_with_extra_params() {
             ),
             make_param("$type", Some("string"), true),
         ],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     assert_eq!(result.methods.len(), 2);
@@ -395,17 +410,17 @@ fn synthesizes_scope_with_extra_params() {
 fn synthesizes_multiple_scopes() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method_with_params(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
-    user.methods.push(make_method_with_params(
+    )));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeVerified",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     // 2 scopes × 2 variants (static + instance) = 4
@@ -425,14 +440,14 @@ fn synthesizes_multiple_scopes() {
 fn scope_and_relationship_coexist() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
-    user.methods.push(make_method_with_params(
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     // posts + posts_count = 2 properties
@@ -454,12 +469,12 @@ fn scope_method_not_treated_as_relationship() {
     // It should be treated as a scope, not produce a property.
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method_with_params(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     assert!(
@@ -476,12 +491,12 @@ fn scope_method_not_treated_as_relationship() {
 fn scope_with_custom_return_type() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method_with_params(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("\\App\\Builders\\UserBuilder"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
     let instance = result.methods.iter().find(|m| !m.is_static).unwrap();
@@ -497,7 +512,7 @@ fn scope_with_custom_return_type() {
 fn synthesizes_scope_attribute_as_both_static_and_instance() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let mut scope_method = make_method_with_params(
         "active",
@@ -509,7 +524,7 @@ fn synthesizes_scope_attribute_as_both_static_and_instance() {
         )],
     );
     scope_method.has_scope_attribute = true;
-    user.methods.push(scope_method);
+    user.methods.push(Arc::new(scope_method));
 
     let result = provider.provide(&user, &no_loader, None);
     assert_eq!(result.methods.len(), 2, "Expected both static and instance");
@@ -527,7 +542,7 @@ fn synthesizes_scope_attribute_as_both_static_and_instance() {
 fn synthesizes_scope_attribute_with_extra_params() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let mut scope_method = make_method_with_params(
         "ofType",
@@ -542,7 +557,7 @@ fn synthesizes_scope_attribute_with_extra_params() {
         ],
     );
     scope_method.has_scope_attribute = true;
-    user.methods.push(scope_method);
+    user.methods.push(Arc::new(scope_method));
 
     let result = provider.provide(&user, &no_loader, None);
     let instance = result.methods.iter().find(|m| !m.is_static).unwrap();
@@ -555,14 +570,14 @@ fn synthesizes_scope_attribute_with_extra_params() {
 fn scope_attribute_and_convention_scope_coexist() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     // Convention scope
-    user.methods.push(make_method_with_params(
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeVerified",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
     // Attribute scope
     let mut scope_method = make_method_with_params(
         "active",
@@ -570,7 +585,7 @@ fn scope_attribute_and_convention_scope_coexist() {
         vec![make_param("$query", Some("Builder"), true)],
     );
     scope_method.has_scope_attribute = true;
-    user.methods.push(scope_method);
+    user.methods.push(Arc::new(scope_method));
 
     let result = provider.provide(&user, &no_loader, None);
     // 2 methods per scope × 2 scopes = 4
@@ -586,10 +601,10 @@ fn scope_attribute_and_convention_scope_coexist() {
 fn scope_attribute_and_relationship_coexist() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
 
     let mut scope_method = make_method_with_params(
         "active",
@@ -597,7 +612,7 @@ fn scope_attribute_and_relationship_coexist() {
         vec![make_param("$query", Some("Builder"), true)],
     );
     scope_method.has_scope_attribute = true;
-    user.methods.push(scope_method);
+    user.methods.push(Arc::new(scope_method));
 
     let result = provider.provide(&user, &no_loader, None);
     assert!(
@@ -614,7 +629,7 @@ fn scope_attribute_and_relationship_coexist() {
 fn scope_attribute_with_custom_return_type() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let mut scope_method = make_method_with_params(
         "active",
@@ -622,7 +637,7 @@ fn scope_attribute_with_custom_return_type() {
         vec![make_param("$query", Some("Builder"), true)],
     );
     scope_method.has_scope_attribute = true;
-    user.methods.push(scope_method);
+    user.methods.push(Arc::new(scope_method));
 
     let result = provider.provide(&user, &no_loader, None);
     let instance = result.methods.iter().find(|m| !m.is_static).unwrap();
@@ -636,7 +651,7 @@ fn scope_attribute_with_custom_return_type() {
 fn scope_attribute_not_treated_as_relationship() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let mut scope_method = make_method_with_params(
         "active",
@@ -644,7 +659,7 @@ fn scope_attribute_not_treated_as_relationship() {
         vec![make_param("$query", Some("Builder"), true)],
     );
     scope_method.has_scope_attribute = true;
-    user.methods.push(scope_method);
+    user.methods.push(Arc::new(scope_method));
 
     let result = provider.provide(&user, &no_loader, None);
     assert!(
@@ -662,8 +677,8 @@ fn scope_attribute_not_treated_as_relationship() {
 /// Helper: create a minimal Builder class with template params and methods.
 fn make_builder(methods: Vec<MethodInfo>) -> ClassInfo {
     let mut builder = make_class(ELOQUENT_BUILDER_FQN);
-    builder.template_params = vec!["TModel".to_string()];
-    builder.methods = methods.into();
+    builder.template_params = vec![atom("TModel")];
+    builder.methods = methods.into_iter().map(Arc::new).collect::<Vec<_>>().into();
     builder
 }
 
@@ -671,7 +686,7 @@ fn make_builder(methods: Vec<MethodInfo>) -> ClassInfo {
 fn provide_includes_builder_forwarded_methods() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let builder = make_builder(vec![
@@ -728,12 +743,12 @@ fn provide_scope_beats_builder_method_with_same_name() {
     // at the merge layer).
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method_with_params(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeWhere",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let builder = make_builder(vec![make_method("where", Some("static"))]);
@@ -776,9 +791,11 @@ fn provide_scope_beats_builder_method_with_same_name() {
 fn synthesizes_legacy_accessor_property() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods
-        .push(make_method("getFullNameAttribute", Some("string")));
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
+        "getFullNameAttribute",
+        Some("string"),
+    )));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -808,11 +825,11 @@ fn synthesizes_legacy_accessor_property() {
 fn synthesizes_modern_accessor_property() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
         "fullName",
         Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
-    ));
+    )));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -841,11 +858,11 @@ fn synthesizes_modern_accessor_property() {
 fn synthesizes_modern_accessor_property_with_generic_type() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods.push(make_method(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
         "fullName",
         Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute<string, never>"),
-    ));
+    )));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -873,9 +890,9 @@ fn synthesizes_modern_accessor_property_with_generic_type() {
 fn synthesizes_modern_accessor_property_short_name_generic() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     user.methods
-        .push(make_method("age", Some("Attribute<int>")));
+        .push(Arc::new(make_method("age", Some("Attribute<int>"))));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -896,13 +913,15 @@ fn synthesizes_modern_accessor_property_short_name_generic() {
 fn accessor_and_relationship_coexist() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods
-        .push(make_method("getFullNameAttribute", Some("string")));
-    user.methods.push(make_method(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
+        "getFullNameAttribute",
+        Some("string"),
+    )));
+    user.methods.push(Arc::new(make_method(
         "posts",
         Some("HasMany<App\\Models\\Post, $this>"),
-    ));
+    )));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -930,9 +949,9 @@ fn get_attribute_method_not_treated_as_accessor() {
     // getAttribute() is a real Eloquent method, not an accessor.
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
     user.methods
-        .push(make_method("getAttribute", Some("mixed")));
+        .push(Arc::new(make_method("getAttribute", Some("mixed"))));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -963,22 +982,24 @@ fn get_attribute_method_not_treated_as_accessor() {
 fn accessor_scope_and_relationship_all_coexist() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
-    user.methods
-        .push(make_method("getFullNameAttribute", Some("string")));
-    user.methods.push(make_method(
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
+    user.methods.push(Arc::new(make_method(
+        "getFullNameAttribute",
+        Some("string"),
+    )));
+    user.methods.push(Arc::new(make_method(
         "firstName",
         Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
-    ));
-    user.methods.push(make_method_with_params(
+    )));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
-    user.methods.push(make_method(
+    )));
+    user.methods.push(Arc::new(make_method(
         "posts",
         Some("HasMany<App\\Models\\Post, $this>"),
-    ));
+    )));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -1009,11 +1030,11 @@ fn accessor_scope_and_relationship_all_coexist() {
 fn legacy_accessor_preserves_deprecated() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let mut accessor = make_method("getOldNameAttribute", Some("string"));
     accessor.deprecation_message = Some("Use newName instead".into());
-    user.methods.push(accessor);
+    user.methods.push(Arc::new(accessor));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -1039,12 +1060,12 @@ fn legacy_accessor_preserves_deprecated() {
 fn synthesizes_property_from_body_inferred_has_many() {
     let provider = LaravelModelProvider;
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     // Method with no @return annotation — return_type is set by
     // the parser from body inference.
     user.methods
-        .push(make_method("posts", Some("HasMany<Post>")));
+        .push(Arc::new(make_method("posts", Some("HasMany<Post>"))));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -1067,12 +1088,12 @@ fn synthesizes_property_from_body_inferred_has_many() {
 fn synthesizes_property_from_body_inferred_morph_to() {
     let provider = LaravelModelProvider;
     let mut comment = make_class("App\\Models\\Comment");
-    comment.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    comment.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     // morphTo inferred from body — bare name, no generics.
     comment
         .methods
-        .push(make_method("commentable", Some("MorphTo")));
+        .push(Arc::new(make_method("commentable", Some("MorphTo"))));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -1099,8 +1120,8 @@ fn synthesizes_property_from_body_inferred_morph_to() {
 fn synthesizes_cast_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![
         ("is_admin".to_string(), "boolean".to_string()),
         ("created_at".to_string(), "datetime".to_string()),
@@ -1129,8 +1150,8 @@ fn synthesizes_cast_properties() {
 fn cast_properties_are_public_and_not_static() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1148,16 +1169,16 @@ fn cast_properties_are_public_and_not_static() {
 fn cast_properties_coexist_with_relationships_and_scopes() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
-    user.methods.push(make_method_with_params(
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
 
@@ -1184,15 +1205,17 @@ fn cast_properties_coexist_with_relationships_and_scopes() {
 fn cast_properties_coexist_with_accessors() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
-    user.methods
-        .push(make_method("getFullNameAttribute", Some("string")));
-    user.methods.push(make_method(
+    user.methods.push(Arc::new(make_method(
+        "getFullNameAttribute",
+        Some("string"),
+    )));
+    user.methods.push(Arc::new(make_method(
         "avatarUrl",
         Some("Illuminate\\Database\\Eloquent\\Casts\\Attribute"),
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
 
@@ -1208,8 +1231,8 @@ fn cast_properties_coexist_with_accessors() {
 fn empty_casts_produces_no_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = Vec::new();
     user.laravel_mut().timestamps = Some(false);
 
@@ -1221,8 +1244,8 @@ fn empty_casts_produces_no_properties() {
 fn cast_decimal_with_precision_synthesizes_float() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![("price".to_string(), "decimal:2".to_string())];
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1240,8 +1263,8 @@ fn cast_decimal_with_precision_synthesizes_float() {
 fn synthesizes_dates_properties_as_carbon() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().dates_definitions =
         vec!["deleted_at".to_string(), "trial_ends_at".to_string()];
 
@@ -1266,8 +1289,8 @@ fn synthesizes_dates_properties_as_carbon() {
 fn dates_properties_are_public_and_not_static() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().dates_definitions = vec!["deleted_at".to_string()];
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1284,8 +1307,8 @@ fn dates_properties_are_public_and_not_static() {
 fn casts_take_priority_over_dates() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     // $casts defines deleted_at as immutable_datetime, $dates also lists it
     user.laravel_mut().casts_definitions =
         vec![("deleted_at".to_string(), "immutable_datetime".to_string())];
@@ -1310,8 +1333,8 @@ fn casts_take_priority_over_dates() {
 fn dates_coexist_with_casts_for_different_columns() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
     user.laravel_mut().dates_definitions = vec!["deleted_at".to_string()];
 
@@ -1351,8 +1374,8 @@ fn dates_coexist_with_casts_for_different_columns() {
 fn dates_take_priority_over_attribute_defaults() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().dates_definitions = vec!["deleted_at".to_string()];
     user.laravel_mut().attributes_definitions = vec![(
         "deleted_at".to_string(),
@@ -1378,8 +1401,8 @@ fn dates_take_priority_over_attribute_defaults() {
 fn dates_take_priority_over_column_names() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().dates_definitions = vec!["deleted_at".to_string()];
     user.laravel_mut().column_names = vec!["deleted_at".to_string(), "name".to_string()];
 
@@ -1407,8 +1430,8 @@ fn dates_take_priority_over_column_names() {
 fn empty_dates_produces_no_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().dates_definitions = Vec::new();
     user.laravel_mut().timestamps = Some(false);
 
@@ -1420,16 +1443,16 @@ fn empty_dates_produces_no_properties() {
 fn dates_coexist_with_relationships_and_scopes() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().dates_definitions = vec!["deleted_at".to_string()];
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
-    user.methods.push(make_method_with_params(
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param("$query", Some("Builder<static>"), true)],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
 
@@ -1453,8 +1476,8 @@ fn dates_coexist_with_relationships_and_scopes() {
 fn synthesizes_attribute_default_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().attributes_definitions = vec![
         ("role".to_string(), PhpType::Named("string".to_string())),
         ("is_active".to_string(), PhpType::Named("bool".to_string())),
@@ -1480,8 +1503,8 @@ fn synthesizes_attribute_default_properties() {
 fn attribute_defaults_are_public_and_not_static() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().attributes_definitions =
         vec![("role".to_string(), PhpType::Named("string".to_string()))];
 
@@ -1496,8 +1519,8 @@ fn attribute_defaults_are_public_and_not_static() {
 fn casts_take_priority_over_attribute_defaults() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     // Both $casts and $attributes define is_active
     user.laravel_mut().casts_definitions = vec![("is_active".to_string(), "boolean".to_string())];
     user.laravel_mut().attributes_definitions =
@@ -1527,8 +1550,8 @@ fn casts_take_priority_over_attribute_defaults() {
 fn attribute_defaults_coexist_with_casts_for_different_columns() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
     user.laravel_mut().attributes_definitions =
         vec![("role".to_string(), PhpType::Named("string".to_string()))];
@@ -1549,17 +1572,17 @@ fn attribute_defaults_coexist_with_casts_for_different_columns() {
 fn attribute_defaults_coexist_with_relationships_and_scopes() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().attributes_definitions =
         vec![("role".to_string(), PhpType::Named("string".to_string()))];
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
-    user.methods.push(make_method_with_params(
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
 
@@ -1584,8 +1607,8 @@ fn attribute_defaults_coexist_with_relationships_and_scopes() {
 fn empty_attributes_produces_no_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().attributes_definitions = Vec::new();
     user.laravel_mut().timestamps = Some(false);
 
@@ -1597,8 +1620,8 @@ fn empty_attributes_produces_no_properties() {
 fn attribute_default_float_type() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().attributes_definitions =
         vec![("rating".to_string(), PhpType::Named("float".to_string()))];
 
@@ -1615,8 +1638,8 @@ fn attribute_default_float_type() {
 fn attribute_default_null_type() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().attributes_definitions =
         vec![("bio".to_string(), PhpType::Named("null".to_string()))];
 
@@ -1629,8 +1652,8 @@ fn attribute_default_null_type() {
 fn attribute_default_array_type() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().attributes_definitions =
         vec![("settings".to_string(), PhpType::Named("array".to_string()))];
 
@@ -1649,8 +1672,8 @@ fn attribute_default_array_type() {
 fn synthesizes_column_name_properties_as_mixed() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().column_names = vec![
         "name".to_string(),
         "email".to_string(),
@@ -1676,8 +1699,8 @@ fn synthesizes_column_name_properties_as_mixed() {
 fn column_name_properties_are_public_and_not_static() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().column_names = vec!["name".to_string()];
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1691,8 +1714,8 @@ fn column_name_properties_are_public_and_not_static() {
 fn casts_take_priority_over_column_names() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
     user.laravel_mut().column_names = vec!["is_admin".to_string(), "name".to_string()];
 
@@ -1719,8 +1742,8 @@ fn casts_take_priority_over_column_names() {
 fn attributes_take_priority_over_column_names() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().attributes_definitions =
         vec![("role".to_string(), PhpType::Named("string".to_string()))];
     user.laravel_mut().column_names = vec!["role".to_string(), "email".to_string()];
@@ -1748,8 +1771,8 @@ fn attributes_take_priority_over_column_names() {
 fn all_three_sources_coexist() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions = vec![("is_admin".to_string(), "boolean".to_string())];
     user.laravel_mut().attributes_definitions =
         vec![("role".to_string(), PhpType::Named("string".to_string()))];
@@ -1795,16 +1818,16 @@ fn all_three_sources_coexist() {
 fn column_names_coexist_with_relationships_and_scopes() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().column_names = vec!["email".to_string()];
     user.methods
-        .push(make_method("posts", Some("HasMany<Post, $this>")));
-    user.methods.push(make_method_with_params(
+        .push(Arc::new(make_method("posts", Some("HasMany<Post, $this>"))));
+    user.methods.push(Arc::new(make_method_with_params(
         "scopeActive",
         Some("void"),
         vec![make_param("$query", Some("Builder"), true)],
-    ));
+    )));
 
     let result = provider.provide(&user, &no_loader, None);
 
@@ -1829,8 +1852,8 @@ fn column_names_coexist_with_relationships_and_scopes() {
 fn empty_column_names_produces_no_extra_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().column_names = Vec::new();
     user.laravel_mut().timestamps = Some(false);
 
@@ -1844,8 +1867,8 @@ fn empty_column_names_produces_no_extra_properties() {
 fn default_model_gets_timestamp_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     // Ensure laravel metadata is initialized (timestamps defaults to None → inherits true)
     user.laravel_mut();
 
@@ -1870,8 +1893,8 @@ fn default_model_gets_timestamp_properties() {
 fn timestamps_explicitly_true_gets_timestamp_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().timestamps = Some(true);
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1890,8 +1913,8 @@ fn timestamps_explicitly_true_gets_timestamp_properties() {
 fn timestamps_false_produces_no_timestamp_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().timestamps = Some(false);
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1910,8 +1933,8 @@ fn timestamps_false_produces_no_timestamp_properties() {
 fn custom_created_at_column_name() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().created_at_name = Some(Some("created".to_string()));
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1939,8 +1962,8 @@ fn custom_created_at_column_name() {
 fn custom_updated_at_column_name() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().updated_at_name = Some(Some("modified_at".to_string()));
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1968,8 +1991,8 @@ fn custom_updated_at_column_name() {
 fn null_created_at_disables_created_at_property() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().created_at_name = Some(None); // CREATED_AT = null
 
     let result = provider.provide(&user, &no_loader, None);
@@ -1988,8 +2011,8 @@ fn null_created_at_disables_created_at_property() {
 fn null_updated_at_disables_updated_at_property() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().updated_at_name = Some(None); // UPDATED_AT = null
 
     let result = provider.provide(&user, &no_loader, None);
@@ -2008,8 +2031,8 @@ fn null_updated_at_disables_updated_at_property() {
 fn casts_take_priority_over_timestamp_defaults() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().casts_definitions =
         vec![("created_at".to_string(), "immutable_datetime".to_string())];
 
@@ -2036,8 +2059,8 @@ fn casts_take_priority_over_timestamp_defaults() {
 fn timestamp_properties_are_public_and_not_static() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut();
 
     let result = provider.provide(&user, &no_loader, None);
@@ -2054,8 +2077,8 @@ fn timestamp_properties_are_public_and_not_static() {
 fn timestamps_false_with_custom_names_still_no_properties() {
     let provider = LaravelModelProvider;
     let mut user = make_class(ELOQUENT_MODEL_FQN);
-    user.name = "User".to_string();
-    user.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    user.name = crate::atom::atom("User");
+    user.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     user.laravel_mut().timestamps = Some(false);
     user.laravel_mut().created_at_name = Some(Some("created".to_string()));
     user.laravel_mut().updated_at_name = Some(Some("modified".to_string()));
@@ -2096,12 +2119,16 @@ fn builder_scope_returns_empty_for_non_model() {
 #[test]
 fn builder_scope_extracts_scope_methods_as_instance() {
     let mut model = make_class("App\\Models\\User");
-    model.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-    model.methods.push(make_method("scopeActive", Some("void")));
+    model.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     model
         .methods
-        .push(make_method("scopeVerified", Some("void")));
-    model.methods.push(make_method("getName", Some("string")));
+        .push(Arc::new(make_method("scopeActive", Some("void"))));
+    model
+        .methods
+        .push(Arc::new(make_method("scopeVerified", Some("void"))));
+    model
+        .methods
+        .push(Arc::new(make_method("getName", Some("string"))));
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\User" {
@@ -2135,11 +2162,11 @@ fn builder_scope_extracts_scope_methods_as_instance() {
 #[test]
 fn builder_scope_substitutes_static_in_return_type() {
     let mut model = make_class("App\\Models\\Brand");
-    model.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    model.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     // Default scope return type contains `static`
     model
         .methods
-        .push(make_method("scopePopular", Some("void")));
+        .push(Arc::new(make_method("scopePopular", Some("void"))));
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
@@ -2172,15 +2199,15 @@ fn builder_scope_substitutes_static_in_return_type() {
 #[test]
 fn builder_scope_strips_query_parameter() {
     let mut model = make_class("App\\Models\\Task");
-    model.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-    model.methods.push(make_method_with_params(
+    model.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+    model.methods.push(Arc::new(make_method_with_params(
         "scopeOfType",
         Some("void"),
         vec![
             make_param("$query", Some("Builder"), true),
             make_param("$type", Some("string"), true),
         ],
-    ));
+    )));
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Task" {
@@ -2204,11 +2231,11 @@ fn builder_scope_strips_query_parameter() {
 #[test]
 fn builder_scope_with_custom_return_type() {
     let mut model = make_class("App\\Models\\Post");
-    model.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-    model.methods.push(make_method(
+    model.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+    model.methods.push(Arc::new(make_method(
         "scopeDraft",
         Some("\\Illuminate\\Database\\Eloquent\\Builder<static>"),
-    ));
+    )));
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Post" {
@@ -2235,10 +2262,10 @@ fn builder_scope_with_custom_return_type() {
 #[test]
 fn builder_scope_preserves_deprecated() {
     let mut model = make_class("App\\Models\\Item");
-    model.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+    model.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
     let mut scope = make_method("scopeOld", Some("void"));
     scope.deprecation_message = Some("Use scopeNew() instead".into());
-    model.methods.push(scope);
+    model.methods.push(Arc::new(scope));
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Item" {

@@ -185,7 +185,7 @@ fn class_to_symbol(class: &ClassInfo, content: &str) -> Option<DocumentSymbol> {
     };
 
     Some(DocumentSymbol {
-        name: class.name.clone(),
+        name: class.name.to_string(),
         detail,
         kind,
         tags,
@@ -230,7 +230,7 @@ fn method_to_symbol(method: &MethodInfo, content: &str) -> Option<DocumentSymbol
     };
 
     Some(DocumentSymbol {
-        name: method.name.clone(),
+        name: method.name.to_string(),
         detail,
         kind,
         tags,
@@ -313,7 +313,7 @@ fn constant_to_symbol(
     let _ = is_enum;
 
     Some(DocumentSymbol {
-        name: constant.name.clone(),
+        name: constant.name.to_string(),
         detail,
         kind,
         tags,
@@ -344,7 +344,7 @@ fn function_to_symbol(func: &FunctionInfo, content: &str) -> Option<DocumentSymb
     };
 
     Some(DocumentSymbol {
-        name: func.name.clone(),
+        name: func.name.to_string(),
         detail,
         kind: SymbolKind::FUNCTION,
         tags,
@@ -482,9 +482,9 @@ fn find_name_after_keyword(content: &str, keyword_offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::atom::atom;
     use crate::php_type::PhpType;
     use crate::types::{ClassLikeKind, MethodInfo, ParameterInfo, Visibility};
-    use std::collections::HashMap;
 
     #[test]
     fn short_name_extracts_last_segment() {
@@ -504,7 +504,7 @@ mod tests {
     #[test]
     fn build_method_detail_simple() {
         let method = MethodInfo {
-            name: "foo".to_string(),
+            name: crate::atom::atom("foo"),
             name_offset: 0,
             parameters: vec![],
             return_type: Some(PhpType::parse("void")),
@@ -519,7 +519,7 @@ mod tests {
             deprecation_message: None,
             deprecated_replacement: None,
             template_params: vec![],
-            template_param_bounds: HashMap::new(),
+            template_param_bounds: Default::default(),
             template_bindings: vec![],
             has_scope_attribute: false,
             is_abstract: false,
@@ -534,11 +534,11 @@ mod tests {
     #[test]
     fn build_method_detail_with_params() {
         let method = MethodInfo {
-            name: "process".to_string(),
+            name: crate::atom::atom("process"),
             name_offset: 0,
             parameters: vec![
                 ParameterInfo {
-                    name: "$input".to_string(),
+                    name: crate::atom::atom("$input"),
                     is_required: true,
                     type_hint: Some(PhpType::parse("string")),
                     native_type_hint: None,
@@ -549,7 +549,7 @@ mod tests {
                     closure_this_type: None,
                 },
                 ParameterInfo {
-                    name: "$items".to_string(),
+                    name: crate::atom::atom("$items"),
                     is_required: false,
                     type_hint: Some(PhpType::parse("array")),
                     native_type_hint: None,
@@ -572,7 +572,7 @@ mod tests {
             deprecation_message: None,
             deprecated_replacement: None,
             template_params: vec![],
-            template_param_bounds: HashMap::new(),
+            template_param_bounds: Default::default(),
             template_bindings: vec![],
             has_scope_attribute: false,
             is_abstract: false,
@@ -591,15 +591,17 @@ mod tests {
     fn build_class_detail_with_parent_and_interfaces() {
         let class = ClassInfo {
             kind: ClassLikeKind::Class,
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             methods: Default::default(),
+            method_index: Default::default(),
+            indexed_method_count: 0,
             properties: Default::default(),
             constants: Default::default(),
             start_offset: 0,
             end_offset: 0,
             keyword_offset: 0,
-            parent_class: Some("Bar".to_string()),
-            interfaces: vec!["Baz".to_string(), "Qux".to_string()],
+            parent_class: Some(atom("Bar")),
+            interfaces: vec![atom("Baz"), atom("Qux")],
             used_traits: vec![],
             mixins: vec![],
             mixin_generics: vec![],
@@ -610,12 +612,12 @@ mod tests {
             links: Vec::new(),
             see_refs: Vec::new(),
             template_params: vec![],
-            template_param_bounds: HashMap::new(),
-            template_param_defaults: HashMap::new(),
+            template_param_bounds: Default::default(),
+            template_param_defaults: Default::default(),
             extends_generics: vec![],
             implements_generics: vec![],
             use_generics: vec![],
-            type_aliases: HashMap::new(),
+            type_aliases: Default::default(),
             trait_precedences: vec![],
             trait_aliases: vec![],
             class_docblock: None,
@@ -632,15 +634,17 @@ mod tests {
     fn build_class_detail_interface_uses_extends() {
         let class = ClassInfo {
             kind: ClassLikeKind::Interface,
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             methods: Default::default(),
+            method_index: Default::default(),
+            indexed_method_count: 0,
             properties: Default::default(),
             constants: Default::default(),
             start_offset: 0,
             end_offset: 0,
             keyword_offset: 0,
             parent_class: None,
-            interfaces: vec!["Bar".to_string()],
+            interfaces: vec![atom("Bar")],
             used_traits: vec![],
             mixins: vec![],
             mixin_generics: vec![],
@@ -651,12 +655,12 @@ mod tests {
             links: Vec::new(),
             see_refs: Vec::new(),
             template_params: vec![],
-            template_param_bounds: HashMap::new(),
-            template_param_defaults: HashMap::new(),
+            template_param_bounds: Default::default(),
+            template_param_defaults: Default::default(),
             extends_generics: vec![],
             implements_generics: vec![],
             use_generics: vec![],
-            type_aliases: HashMap::new(),
+            type_aliases: Default::default(),
             trait_precedences: vec![],
             trait_aliases: vec![],
             class_docblock: None,
@@ -672,7 +676,7 @@ mod tests {
     #[test]
     fn function_detail_no_params_no_return() {
         let func = FunctionInfo {
-            name: "noop".to_string(),
+            name: crate::atom::atom("noop"),
             name_offset: 0,
             parameters: vec![],
             return_type: None,
@@ -687,7 +691,7 @@ mod tests {
             deprecation_message: None,
             deprecated_replacement: None,
             template_params: vec![],
-            template_param_bounds: HashMap::new(),
+            template_param_bounds: Default::default(),
             template_bindings: vec![],
             throws: Vec::new(),
             is_polyfill: false,

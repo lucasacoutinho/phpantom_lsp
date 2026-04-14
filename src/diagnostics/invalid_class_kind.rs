@@ -362,7 +362,7 @@ fn is_throwable_inner(
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     visited: &mut HashSet<String>,
 ) -> bool {
-    let fqn = class.fqn();
+    let fqn = class.fqn().to_string();
     if !visited.insert(fqn.clone()) {
         return false;
     }

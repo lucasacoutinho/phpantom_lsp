@@ -153,7 +153,7 @@ fn count_commas_in_string() {
 #[test]
 fn format_param_with_default_value() {
     let p = ParameterInfo {
-        name: "$limit".to_string(),
+        name: crate::atom::atom("$limit"),
         type_hint: Some(PhpType::parse("int")),
         native_type_hint: Some(PhpType::parse("int")),
         description: None,
@@ -169,7 +169,7 @@ fn format_param_with_default_value() {
 #[test]
 fn format_param_with_null_default() {
     let p = ParameterInfo {
-        name: "$name".to_string(),
+        name: crate::atom::atom("$name"),
         type_hint: Some(PhpType::parse("?string")),
         native_type_hint: Some(PhpType::parse("?string")),
         description: None,
@@ -186,7 +186,7 @@ fn format_param_with_null_default() {
 fn format_param_optional_no_known_default() {
     // Optional but no default_value extracted — no ` = ...` suffix.
     let p = ParameterInfo {
-        name: "$x".to_string(),
+        name: crate::atom::atom("$x"),
         type_hint: Some(PhpType::parse("int")),
         native_type_hint: Some(PhpType::parse("int")),
         description: None,
@@ -203,7 +203,7 @@ fn format_param_optional_no_known_default() {
 fn format_param_variadic_no_default_even_if_set() {
     // Variadic params should never show a default value.
     let p = ParameterInfo {
-        name: "$items".to_string(),
+        name: crate::atom::atom("$items"),
         type_hint: Some(PhpType::parse("string")),
         native_type_hint: Some(PhpType::parse("string")),
         description: None,
@@ -219,7 +219,7 @@ fn format_param_variadic_no_default_even_if_set() {
 #[test]
 fn format_param_simple() {
     let p = ParameterInfo {
-        name: "$x".to_string(),
+        name: crate::atom::atom("$x"),
         type_hint: Some(PhpType::parse("int")),
         native_type_hint: Some(PhpType::parse("int")),
         description: None,
@@ -235,7 +235,7 @@ fn format_param_simple() {
 #[test]
 fn format_param_variadic() {
     let p = ParameterInfo {
-        name: "$items".to_string(),
+        name: crate::atom::atom("$items"),
         type_hint: Some(PhpType::parse("string")),
         native_type_hint: Some(PhpType::parse("string")),
         description: None,
@@ -251,7 +251,7 @@ fn format_param_variadic() {
 #[test]
 fn format_param_reference() {
     let p = ParameterInfo {
-        name: "$arr".to_string(),
+        name: crate::atom::atom("$arr"),
         type_hint: Some(PhpType::parse("array")),
         native_type_hint: Some(PhpType::parse("array")),
         description: None,
@@ -267,7 +267,7 @@ fn format_param_reference() {
 #[test]
 fn format_param_no_type() {
     let p = ParameterInfo {
-        name: "$x".to_string(),
+        name: crate::atom::atom("$x"),
         type_hint: None,
         native_type_hint: None,
         description: None,
@@ -286,7 +286,7 @@ fn format_param_no_type() {
 fn build_signature_label() {
     let params = vec![
         ParameterInfo {
-            name: "$name".to_string(),
+            name: crate::atom::atom("$name"),
             type_hint: Some(PhpType::parse("string")),
             native_type_hint: Some(PhpType::parse("string")),
             description: None,
@@ -297,7 +297,7 @@ fn build_signature_label() {
             closure_this_type: None,
         },
         ParameterInfo {
-            name: "$age".to_string(),
+            name: crate::atom::atom("$age"),
             type_hint: Some(PhpType::parse("int")),
             native_type_hint: Some(PhpType::parse("int")),
             description: None,
@@ -317,7 +317,7 @@ fn build_signature_label() {
 fn build_signature_parameter_offsets() {
     let params = vec![
         ParameterInfo {
-            name: "$a".to_string(),
+            name: crate::atom::atom("$a"),
             type_hint: None,
             native_type_hint: None,
             description: None,
@@ -328,7 +328,7 @@ fn build_signature_parameter_offsets() {
             closure_this_type: None,
         },
         ParameterInfo {
-            name: "$b".to_string(),
+            name: crate::atom::atom("$b"),
             type_hint: None,
             native_type_hint: None,
             description: None,
@@ -365,7 +365,7 @@ fn build_signature_no_return_type_shows_mixed() {
 fn build_signature_with_default_values() {
     let params = vec![
         ParameterInfo {
-            name: "$name".to_string(),
+            name: crate::atom::atom("$name"),
             type_hint: Some(PhpType::parse("string")),
             native_type_hint: Some(PhpType::parse("string")),
             description: None,
@@ -376,7 +376,7 @@ fn build_signature_with_default_values() {
             closure_this_type: None,
         },
         ParameterInfo {
-            name: "$count".to_string(),
+            name: crate::atom::atom("$count"),
             type_hint: Some(PhpType::parse("int")),
             native_type_hint: Some(PhpType::parse("int")),
             description: None,
@@ -403,7 +403,7 @@ fn build_signature_param_documentation_same_types() {
     // When effective == native, only the description text is shown.
     let params = vec![
         ParameterInfo {
-            name: "$callback".to_string(),
+            name: crate::atom::atom("$callback"),
             type_hint: Some(PhpType::parse("callable")),
             native_type_hint: Some(PhpType::parse("callable")),
             description: Some("The callback function to run for each element.".to_string()),
@@ -414,7 +414,7 @@ fn build_signature_param_documentation_same_types() {
             closure_this_type: None,
         },
         ParameterInfo {
-            name: "$array".to_string(),
+            name: crate::atom::atom("$array"),
             type_hint: Some(PhpType::parse("array")),
             native_type_hint: Some(PhpType::parse("array")),
             description: None,
@@ -445,7 +445,7 @@ fn build_signature_param_documentation_same_types() {
 fn build_signature_param_documentation_effective_differs() {
     // When effective != native, the doc line is prefixed with the shortened effective type.
     let params = vec![ParameterInfo {
-        name: "$users".to_string(),
+        name: crate::atom::atom("$users"),
         type_hint: Some(PhpType::parse("list<User>")),
         native_type_hint: Some(PhpType::parse("array")),
         description: Some("The active users.".to_string()),
@@ -473,7 +473,7 @@ fn build_signature_param_documentation_effective_differs() {
 fn build_signature_param_effective_only_no_native() {
     // When effective exists but native is None, show effective prefix.
     let params = vec![ParameterInfo {
-        name: "$items".to_string(),
+        name: crate::atom::atom("$items"),
         type_hint: Some(PhpType::parse("list<Pen>")),
         native_type_hint: None,
         description: Some("The items.".to_string()),
@@ -501,7 +501,7 @@ fn build_signature_param_effective_differs_no_description() {
     // When effective != native but there is no description text,
     // the shortened effective type alone is shown (e.g. `class-string<T>`).
     let params = vec![ParameterInfo {
-        name: "$class".to_string(),
+        name: crate::atom::atom("$class"),
         type_hint: Some(PhpType::parse("class-string<T>")),
         native_type_hint: Some(PhpType::parse("string")),
         description: None,
@@ -537,7 +537,7 @@ fn build_signature_no_sig_documentation() {
 fn build_signature_param_effective_fqn_shortened_in_doc() {
     // FQNs inside the effective type are shortened to base names in param docs.
     let params = vec![ParameterInfo {
-        name: "$users".to_string(),
+        name: crate::atom::atom("$users"),
         type_hint: Some(PhpType::parse("list<\\App\\Models\\User>")),
         native_type_hint: Some(PhpType::parse("array")),
         description: Some("The active users.".to_string()),
@@ -563,7 +563,7 @@ fn build_signature_param_effective_fqn_shortened_in_doc() {
 fn build_signature_param_effective_fqn_no_desc() {
     // FQN shortened even when there is no description.
     let params = vec![ParameterInfo {
-        name: "$item".to_string(),
+        name: crate::atom::atom("$item"),
         type_hint: Some(PhpType::parse("\\App\\Models\\Item")),
         native_type_hint: Some(PhpType::parse("object")),
         description: None,
@@ -670,7 +670,7 @@ fn shorten_no_namespace_unchanged() {
 fn clamp_within_range() {
     let params = vec![
         ParameterInfo {
-            name: "$a".to_string(),
+            name: crate::atom::atom("$a"),
             type_hint: None,
             native_type_hint: None,
             description: None,
@@ -681,7 +681,7 @@ fn clamp_within_range() {
             closure_this_type: None,
         },
         ParameterInfo {
-            name: "$b".to_string(),
+            name: crate::atom::atom("$b"),
             type_hint: None,
             native_type_hint: None,
             description: None,
@@ -699,7 +699,7 @@ fn clamp_within_range() {
 #[test]
 fn clamp_exceeds_range() {
     let params = vec![ParameterInfo {
-        name: "$a".to_string(),
+        name: crate::atom::atom("$a"),
         type_hint: None,
         native_type_hint: None,
         description: None,

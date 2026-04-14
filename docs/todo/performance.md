@@ -17,119 +17,35 @@ within the same impact tier.
 
 ## P1. Reference-counted `ClassInfo` (`Arc<ClassInfo>`)
 
-**Impact: High · Effort: Medium**
+**Impact: High · Effort: Medium-High**
 
-**`type_hint_to_classes` → `Vec<Arc<ClassInfo>>`.**
-`type_hint_to_classes` is the main bridge between the type-string
-world and the class-object world. It is called from both the
-call-resolution pipeline (which already returns `Vec<Arc<ClassInfo>>`
-and currently wraps each result with `Arc::new`) and the variable-
-resolution pipeline (which still operates on `Vec<ClassInfo>`).
-Changing `type_hint_to_classes` (and its recursive helper
-`type_hint_to_classes_depth`) to return `Vec<Arc<ClassInfo>>` would
-eliminate ~15 `Arc::new` wraps at call sites that were added during
-the call-resolution conversion, and would be a natural stepping
-stone if someone later decides to convert the variable-resolution
-pipeline.
+**Tracked as [ER5 Phase 4c](../todo/eager-resolution.md#phase-4c-eliminate-classinfo-cloning-next).**
 
-The variable-resolution pipeline (`resolve_variable_types`,
-`resolve_rhs_expression`, `check_expression_for_assignment`, and
-~30 helper functions) still operates on `Vec<ClassInfo>` internally.
-Converting it would eliminate ~29 deep clones at bridge sites in
-`rhs_resolution.rs`, `foreach_resolution.rs`, and
-`closure_resolution.rs`, but the cascade touches ~86 sites across
-the subsystem. The effort-to-impact ratio is poor: each eliminated
-clone saves one per-request copy, not a hot-loop copy, and the
-parent-chain walks in `declaring.rs`, `inheritance.rs`, and
-`phpdoc.rs` will always need `Arc::unwrap_or_clone` for mutation
-regardless.
+Fresh profiling (perf, release build, example.php) confirmed this is
+the single largest remaining bottleneck: **~38% of CPU** is spent in
+`ClassInfo::clone`, `drop_in_place<ClassInfo>`, and associated
+malloc/free. The fix is to change `ResolvedType.class_info` from
+`Option<ClassInfo>` to `Option<Arc<ClassInfo>>` and propagate Arc
+sharing through `type_hint_to_classes_typed` and the variable
+resolution pipeline. See the eager-resolution doc for the full plan.
 
 ---
 
-## P1.5. Layered class resolution (zero-copy inheritance)
+## P1.5. ~~Layered class resolution (zero-copy inheritance)~~
 
-**Impact: High · Effort: Very High**
+**Superseded by [ER5 Phase 4](../todo/eager-resolution.md#er5--mago-style-separated-metadata).**
 
-### Problem
-
-`resolve_class_with_inheritance` builds a flat `ClassInfo` by cloning
-the base class and then copying every method, property, and constant
-from traits, parents, and interfaces into the result. For an Eloquent
-model this means deep-copying hundreds of `MethodInfo` structs (each
-containing `String` fields, `Vec<ParameterInfo>`, etc.). Even with
-`SharedVec` making the top-level Vec clone O(1), the individual
-`MethodInfo` clones during the merge are the single largest remaining
-allocation cost (~4 % of CPU in `perf` profiles).
-
-The fundamental issue: the resolved class is a **copy** of all
-inherited members rather than a **view** over immutable originals.
-
-### Ideal architecture
-
-Replace the flat merged `ClassInfo` with a layered view that
-references the originals without copying:
-
-```text
-ResolvedClass {
-    own:     Arc<ClassInfo>,                  // parsed, immutable
-    traits:  Vec<Arc<ClassInfo>>,             // resolved traits
-    parent:  Option<Arc<ResolvedClass>>,      // resolved parent (recursive)
-    virtual: Vec<Arc<MethodInfo>>,            // @method, @mixin, scopes
-    iface_fill: HashMap<String, TypeFillIn>,  // interface type enrichment
-}
-```
-
-Member lookups walk the layers (own → traits → parent → virtual)
-instead of iterating a single flat Vec. Dedup is handled by a
-name-based `HashSet` built lazily or maintained incrementally.
-
-Benefits:
-- **Zero-copy inheritance.** Moving a method from parent to child is
-  an `Arc::clone` (refcount bump), not a `MethodInfo` deep clone.
-- **Shared structure.** Two child classes that extend the same parent
-  share the parent's `Arc<ResolvedClass>` — the parent's methods
-  exist in memory once, not once per child.
-- **Cheaper cache invalidation.** Editing a child class only rebuilds
-  the child's layer; the parent layer stays cached.
-
-### Migration path
-
-1. **`Arc<MethodInfo>` everywhere.** Change `SharedVec<MethodInfo>`
-   to `SharedVec<Arc<MethodInfo>>` (and same for properties/constants).
-   This makes individual method clones O(1) within the existing flat
-   architecture — an incremental win without changing consumers.
-
-2. **Introduce `ResolvedClass` struct.** Start with a thin wrapper
-   that holds the flat `ClassInfo` inside, exposing the same
-   iteration API. Consumers migrate incrementally.
-
-3. **Layered storage.** Replace the flat `ClassInfo` inside
-   `ResolvedClass` with the layered structure. Change iteration to
-   walk layers. This is the big step — every `.methods.iter().find()`
-   call site needs to use the layered iterator.
-
-4. **Lazy dedup index.** Build a `HashMap<&str, (Layer, usize)>`
-   on first access (or maintain it incrementally during layer
-   construction) so that `find_method("foo")` is O(1) without
-   scanning all layers.
-
-### Risks
-
-- Every consumer that does `.methods.iter()` or `.methods.len()`
-  needs to work with the layered iterator. A `Deref`-based shim
-  can ease migration but adds indirection.
-- Mutation sites (`merge_traits_into`, virtual member providers)
-  need to operate on the layer structure rather than pushing into
-  a flat Vec.
-- The `resolved_class_cache` currently stores `Arc<ClassInfo>`;
-  it would store `Arc<ResolvedClass>` instead.
-
-### When to implement
-
-This is the right long-term direction but a major refactor (~1 month).
-Evaluate after the `Arc<MethodInfo>` step (migration path step 1)
-is complete and profiling confirms that the flat-merge copy cost is
-still the dominant bottleneck.
+The original proposal was to replace the flat merged `ClassInfo` with
+a layered view (`ResolvedClass` with own/traits/parent/virtual
+layers). Profiling and comparison with Mago's architecture showed
+that the real problem is not the per-merge cost (Phase 3's
+Arc-wrapping already made individual method copies O(1)) but the
+number of times merging is invoked (251K calls during diagnostics on
+the `shared` project). The Mago-style approach (separated method
+storage with pre-populated immutable metadata) addresses both
+problems: merges become trivial (copy identifier atoms) and analysis
+never re-merges at all. See `docs/todo/eager-resolution.md` for the
+full plan.
 
 ---
 
@@ -808,6 +724,51 @@ so this fast-path would apply to the majority of checks.
    structured type representation throughout the codebase, interning
    the name strings inside each `PhpType` node (replacing owned
    `String` with `Atom` or `Arc<str>`) is a natural next step.
+
+---
+
+## P19. Analysis time dominated by per-expression class resolution
+
+**Impact: High · Effort: High**
+
+**Tracked in [eager-resolution.md](../todo/eager-resolution.md).**
+
+### Current status (after Phase 4a + 4b)
+
+The double scope walk bug has been fixed (Phase 4b), bringing
+release-mode analysis of example.php from ~18s to ~9.5s. The
+remaining bottleneck is **ClassInfo cloning** (38% of CPU per
+perf profiling). This is addressed by Phase 4c in the
+eager-resolution doc.
+
+### Current profiling data (release build, example.php)
+
+| Phase | Wall time | Notes |
+|---|---|---|
+| Init + parse + eager populate | < 1s | negligible |
+| `build_diagnostic_scopes` | **8.9s** | forward walker |
+| Fast diagnostics | 0.0s | |
+| Slow diagnostics | 0.6s | fixed double-walk bug |
+| **Total** | **~9.5s** | target: < 3s |
+
+The 8.9s scope walk makes 8,726 calls to `resolve_rhs_expression`
+with 5,559 resolved-class cache hits and 396 misses. The time is
+dominated by allocation churn from `ClassInfo::clone` (4.2% self),
+associated malloc (7.3%), memcpy (5.7%), and free (7.8%).
+
+### Fix
+
+Phase 4c: change `ResolvedType.class_info` from `Option<ClassInfo>`
+to `Option<Arc<ClassInfo>>` and propagate Arc sharing through the
+resolution pipeline. See
+[eager-resolution.md Phase 4c](../todo/eager-resolution.md).
+
+### Success criteria
+
+- `phpantom_lsp analyze --project-root . example.php` completes in
+  under 2 seconds (release build).
+- The diagnostic/analysis pass minimises `ClassInfo` cloning to only
+  cases requiring mutation (generic substitution).
 
 ---
 

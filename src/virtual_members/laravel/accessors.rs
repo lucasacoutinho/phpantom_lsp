@@ -92,7 +92,7 @@ pub(super) fn extract_modern_accessor_type(method: &MethodInfo) -> PhpType {
 /// `masterRecipe()` returning `BelongsToMany` is NOT an accessor even
 /// though `snake_to_camel("master_recipe")` produces `"masterRecipe"`.
 pub(crate) fn is_accessor_method(class: &ClassInfo, method_name: &str) -> bool {
-    let method = match class.methods.iter().find(|m| m.name == method_name) {
+    let method = match class.get_method(method_name) {
         Some(m) => m,
         None => return false,
     };

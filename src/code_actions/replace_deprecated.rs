@@ -155,10 +155,8 @@ impl Backend {
                     let resolved = resolve_class_fully_cached(&base_class, &class_loader, cache);
 
                     let method = base_class
-                        .methods
-                        .iter()
-                        .find(|m| m.name == *member_name)
-                        .or_else(|| resolved.methods.iter().find(|m| m.name == *member_name));
+                        .get_method(member_name)
+                        .or_else(|| resolved.get_method(member_name));
 
                     let replacement_template =
                         match method.and_then(|m| m.deprecated_replacement.as_ref()) {
@@ -520,7 +518,7 @@ fn resolve_subject_to_class(
             let fqn = if let Some(ns) = ctx.namespace {
                 format!("{}\\{}", ns, cls.name)
             } else {
-                cls.name.clone()
+                cls.name.to_string()
             };
             backend
                 .find_or_load_class(&fqn)

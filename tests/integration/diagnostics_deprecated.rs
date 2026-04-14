@@ -1,4 +1,5 @@
 use crate::common::{create_test_backend, create_test_backend_with_function_stubs};
+use phpantom_lsp::atom::atom;
 use phpantom_lsp::php_type::PhpType;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
@@ -2116,7 +2117,7 @@ fn replace_deprecated_function_call_action_offered() {
             (
                 "file:///stubs.php".to_string(),
                 FunctionInfo {
-                    name: "read_exif_data".to_string(),
+                    name: atom("read_exif_data"),
                     name_offset: 0,
                     parameters: vec![],
                     return_type: Some(PhpType::parse("array")),
@@ -2132,7 +2133,7 @@ fn replace_deprecated_function_call_action_offered() {
                     deprecated_replacement: Some("exif_read_data(%parametersList%)".to_string()),
                     template_params: vec![],
                     template_bindings: vec![],
-                    template_param_bounds: std::collections::HashMap::new(),
+                    template_param_bounds: Default::default(),
                     throws: vec![],
                     is_polyfill: false,
                 },

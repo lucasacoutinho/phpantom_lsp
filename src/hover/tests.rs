@@ -33,14 +33,14 @@ fn extract_description_none_when_empty() {
 #[test]
 fn namespace_line_with_namespace() {
     assert_eq!(
-        namespace_line(&Some("App\\Models".to_string())),
+        namespace_line(Some("App\\Models")),
         "namespace App\\Models;\n"
     );
 }
 
 #[test]
 fn namespace_line_without_namespace() {
-    assert_eq!(namespace_line(&None), "");
+    assert_eq!(namespace_line(None), "");
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn format_params_empty() {
 fn format_params_with_types() {
     let params = vec![
         ParameterInfo {
-            name: "$name".to_string(),
+            name: crate::atom::atom("$name"),
             type_hint: Some(PhpType::parse("string")),
             native_type_hint: Some(PhpType::parse("string")),
             description: None,
@@ -63,7 +63,7 @@ fn format_params_with_types() {
             closure_this_type: None,
         },
         ParameterInfo {
-            name: "$age".to_string(),
+            name: crate::atom::atom("$age"),
             type_hint: Some(PhpType::parse("int")),
             native_type_hint: Some(PhpType::parse("int")),
             description: None,
@@ -83,7 +83,7 @@ fn format_params_with_types() {
 #[test]
 fn format_params_variadic() {
     let params = vec![ParameterInfo {
-        name: "$items".to_string(),
+        name: crate::atom::atom("$items"),
         type_hint: Some(PhpType::parse("string")),
         native_type_hint: Some(PhpType::parse("string")),
         description: None,
@@ -99,7 +99,7 @@ fn format_params_variadic() {
 #[test]
 fn format_params_reference() {
     let params = vec![ParameterInfo {
-        name: "$arr".to_string(),
+        name: crate::atom::atom("$arr"),
         type_hint: Some(PhpType::parse("array")),
         native_type_hint: Some(PhpType::parse("array")),
         description: None,

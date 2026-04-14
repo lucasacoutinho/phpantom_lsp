@@ -234,7 +234,7 @@ pub(crate) fn try_inject_builder_scopes(
         None => return,
     };
 
-    inject_scopes_and_model_methods(result, model_name, class_loader);
+    inject_scopes_and_model_methods(result, model_name, class_loader, None);
 }
 
 /// Inject scope methods and model virtual methods onto a class that has
@@ -275,7 +275,7 @@ pub(crate) fn try_inject_mixin_builder_scopes(
     let mut root_subs: HashMap<String, PhpType> = HashMap::new();
     for (i, param_name) in raw_cls.template_params.iter().enumerate() {
         if let Some(arg) = generic_args.get(i) {
-            root_subs.insert(param_name.clone(), arg.clone());
+            root_subs.insert(param_name.to_string(), arg.clone());
         }
     }
 
@@ -296,13 +296,13 @@ pub(crate) fn try_inject_mixin_builder_scopes(
         if let Some(model_name) =
             find_builder_mixin_model(&current, &active_subs, raw_cls, class_loader)
         {
-            inject_scopes_and_model_methods(result, &model_name, class_loader);
+            inject_scopes_and_model_methods(result, &model_name, class_loader, None);
             return;
         }
 
         // Move to the parent class.
-        let parent_name = match current.parent_class.as_ref() {
-            Some(name) => name.clone(),
+        let parent_name = match current.parent_class {
+            Some(name) => name,
             None => break,
         };
         depth += 1;
@@ -328,7 +328,7 @@ pub(crate) fn try_inject_mixin_builder_scopes(
             for (i, param_name) in parent.template_params.iter().enumerate() {
                 if let Some(arg) = args.get(i) {
                     let resolved = arg.substitute(&active_subs);
-                    level_subs.insert(param_name.clone(), resolved);
+                    level_subs.insert(param_name.to_string(), resolved);
                 }
             }
             active_subs = level_subs;
@@ -398,6 +398,7 @@ fn inject_scopes_and_model_methods(
     result: &mut ClassInfo,
     model_arg: &str,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    cache: Option<&ResolvedClassCache>,
 ) {
     // 1. Inject scope methods.
     let scope_methods = build_scope_methods_for_builder(model_arg, class_loader);
@@ -407,12 +408,12 @@ fn inject_scopes_and_model_methods(
             .iter()
             .any(|m| m.name == method.name && m.is_static == method.is_static);
         if !already_exists {
-            result.methods.push(method);
+            result.methods.push(Arc::new(method));
         }
     }
 
     // 2. Inject @method virtual methods from the model.
-    inject_model_virtual_methods(result, model_arg, class_loader);
+    inject_model_virtual_methods(result, model_arg, class_loader, cache);
 
     // 3. Inject where{PropertyName}() dynamic methods from the model's
     //    known columns.  These are instance methods on the Builder so
@@ -426,7 +427,7 @@ fn inject_scopes_and_model_methods(
                 .iter()
                 .any(|m| m.name.eq_ignore_ascii_case(&method.name))
             {
-                result.methods.push(method);
+                result.methods.push(Arc::new(method));
             }
         }
     }
@@ -455,6 +456,7 @@ fn inject_model_virtual_methods(
     builder: &mut ClassInfo,
     model_name: &str,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+    cache: Option<&ResolvedClassCache>,
 ) {
     use crate::php_type::PhpType;
 
@@ -469,12 +471,8 @@ fn inject_model_virtual_methods(
 
     // Resolve the model fully so that @method tags from traits and
     // parent classes are included.
-    let resolved_model = if let Some(cache) = crate::virtual_members::active_resolved_class_cache()
-    {
-        crate::virtual_members::resolve_class_fully_cached(&model_class, class_loader, cache)
-    } else {
-        crate::virtual_members::resolve_class_fully(&model_class, class_loader)
-    };
+    let resolved_model =
+        crate::virtual_members::resolve_class_fully_maybe_cached(&model_class, class_loader, cache);
 
     // Build a substitution map: `static`/`self`/`$this` in return
     // types should become the concrete model name.  The `@method`
@@ -502,8 +500,8 @@ fn inject_model_virtual_methods(
             continue;
         }
 
-        // Clone and convert to an instance method on the builder.
-        let mut forwarded = method.clone();
+        // Clone the inner MethodInfo and convert to an instance method on the builder.
+        let mut forwarded = (**method).clone();
         forwarded.is_static = false;
 
         // Substitute self-referencing return types.
@@ -511,7 +509,7 @@ fn inject_model_virtual_methods(
             *ret = ret.substitute(&subs);
         }
 
-        builder.methods.push(forwarded);
+        builder.methods.push(Arc::new(forwarded));
     }
 }
 

@@ -20,6 +20,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::atom::{Atom, atom};
 use crate::docblock;
 use crate::inheritance;
 use crate::inheritance::ClassRef;
@@ -139,7 +140,7 @@ impl VirtualMemberProvider for PHPDocProvider {
         // Walk the parent chain to check for ancestor mixins or docblocks
         // with @method/@property tags.  Use a cheap Arc handle instead of
         // cloning the entire ClassInfo at each level.
-        let mut current_parent = class.parent_class.clone();
+        let mut current_parent = class.parent_class;
         let mut depth = 0u32;
         while let Some(ref parent_name) = current_parent {
             depth += 1;
@@ -161,7 +162,7 @@ impl VirtualMemberProvider for PHPDocProvider {
             {
                 return true;
             }
-            current_parent = parent.parent_class.clone();
+            current_parent = parent.parent_class;
         }
 
         false
@@ -178,7 +179,7 @@ impl VirtualMemberProvider for PHPDocProvider {
         &self,
         class: &ClassInfo,
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-        _cache: Option<&super::ResolvedClassCache>,
+        cache: Option<&super::ResolvedClassCache>,
     ) -> VirtualMembers {
         let mut methods = Vec::new();
         let mut properties = Vec::new();
@@ -197,9 +198,10 @@ impl VirtualMemberProvider for PHPDocProvider {
         // lower-priority sources (trait tags, parent tags, `@mixin`
         // members) from overriding them.
         let mut seen_methods: HashSet<String> =
-            class.methods.iter().map(|m| m.name.clone()).collect();
+            class.methods.iter().map(|m| m.name.to_string()).collect();
         let mut seen_props: HashSet<String> = HashSet::new();
-        let seen_consts: HashSet<String> = class.constants.iter().map(|c| c.name.clone()).collect();
+        let seen_consts: HashSet<String> =
+            class.constants.iter().map(|c| c.name.to_string()).collect();
 
         // ── Phase 1: @method and @property tags (higher precedence) ─────
 
@@ -207,14 +209,14 @@ impl VirtualMemberProvider for PHPDocProvider {
             && !doc_text.is_empty()
         {
             for m in docblock::extract_method_tags(doc_text) {
-                seen_methods.insert(m.name.clone());
+                seen_methods.insert(m.name.to_string());
                 methods.push(m);
             }
 
             for (name, type_hint) in docblock::extract_property_tags(doc_text) {
                 seen_props.insert(name.clone());
                 properties.push(PropertyInfo {
-                    name,
+                    name: atom(&name),
                     name_offset: 0,
                     type_hint,
                     native_type_hint: None,
@@ -247,7 +249,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                 && !doc_text.is_empty()
             {
                 for m in docblock::extract_method_tags(doc_text) {
-                    if seen_methods.insert(m.name.clone()) {
+                    if seen_methods.insert(m.name.to_string()) {
                         methods.push(m);
                     }
                 }
@@ -255,7 +257,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                 for (name, type_hint) in docblock::extract_property_tags(doc_text) {
                     if seen_props.insert(name.clone()) {
                         properties.push(PropertyInfo {
-                            name,
+                            name: atom(&name),
                             name_offset: 0,
                             type_hint,
                             native_type_hint: None,
@@ -282,7 +284,7 @@ impl VirtualMemberProvider for PHPDocProvider {
         // `class_docblock`.  Walk the parent chain and collect them.
         // Use a cheap handle instead of cloning ClassInfo at each level.
         {
-            let mut current_parent = class.parent_class.clone();
+            let mut current_parent = class.parent_class;
             let mut depth = 0u32;
             while let Some(ref parent_name) = current_parent {
                 depth += 1;
@@ -299,7 +301,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                     && !doc_text.is_empty()
                 {
                     for m in docblock::extract_method_tags(doc_text) {
-                        if seen_methods.insert(m.name.clone()) {
+                        if seen_methods.insert(m.name.to_string()) {
                             methods.push(m);
                         }
                     }
@@ -307,7 +309,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                     for (name, type_hint) in docblock::extract_property_tags(doc_text) {
                         if seen_props.insert(name.clone()) {
                             properties.push(PropertyInfo {
-                                name,
+                                name: atom(&name),
                                 name_offset: 0,
                                 type_hint,
                                 native_type_hint: None,
@@ -323,7 +325,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                     }
                 }
 
-                current_parent = parent.parent_class.clone();
+                current_parent = parent.parent_class;
             }
         }
 
@@ -357,6 +359,7 @@ impl VirtualMemberProvider for PHPDocProvider {
             &mut collector,
             &HashMap::new(),
             0,
+            cache,
         );
 
         // Collect from ancestor mixins.
@@ -373,7 +376,7 @@ impl VirtualMemberProvider for PHPDocProvider {
         let mut current_ancestor: ClassRef<'_> = ClassRef::Borrowed(class);
         let mut active_subs: HashMap<String, PhpType> = HashMap::new();
         let mut depth = 0u32;
-        while let Some(ref parent_name) = current_ancestor.parent_class.clone() {
+        while let Some(ref parent_name) = current_ancestor.parent_class {
             depth += 1;
             if depth > MAX_INHERITANCE_DEPTH {
                 break;
@@ -392,8 +395,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                 // Apply the accumulated substitution map to the
                 // parent's mixin generic arguments so that template
                 // param names are replaced with concrete types.
-                let resolved_mixin_generics: Vec<(String, Vec<PhpType>)> = if level_subs.is_empty()
-                {
+                let resolved_mixin_generics: Vec<(Atom, Vec<PhpType>)> = if level_subs.is_empty() {
                     parent.mixin_generics.clone()
                 } else {
                     parent
@@ -402,7 +404,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                         .map(|(name, args)| {
                             let resolved_args: Vec<PhpType> =
                                 args.iter().map(|arg| arg.substitute(&level_subs)).collect();
-                            (name.clone(), resolved_args)
+                            (*name, resolved_args)
                         })
                         .collect()
                 };
@@ -414,6 +416,7 @@ impl VirtualMemberProvider for PHPDocProvider {
                     &mut collector,
                     &level_subs,
                     0,
+                    cache,
                 );
             }
             active_subs = level_subs;
@@ -448,12 +451,13 @@ impl VirtualMemberProvider for PHPDocProvider {
 /// every Eloquent model class (very expensive: deep inheritance chain
 /// with dozens of traits).
 fn collect_mixin_members(
-    mixin_names: &[String],
-    mixin_generics: &[(String, Vec<PhpType>)],
+    mixin_names: &[Atom],
+    mixin_generics: &[(Atom, Vec<PhpType>)],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     collector: &mut MixinCollector,
     template_subs: &HashMap<String, PhpType>,
     depth: u32,
+    cache: Option<&super::ResolvedClassCache>,
 ) {
     if depth > MAX_MIXIN_DEPTH {
         return;
@@ -471,7 +475,7 @@ fn collect_mixin_members(
                 continue;
             }
         } else {
-            mixin_name.clone()
+            mixin_name.to_string()
         };
 
         let mixin_class = if let Some(c) = class_loader(&resolved_mixin_name) {
@@ -499,15 +503,33 @@ fn collect_mixin_members(
         //
         // Results are cached in a thread-local map so that the same
         // mixin (e.g. Builder) is only resolved once per thread.
-        let resolved_mixin = MIXIN_CACHE.with(|cache| {
-            let mut map = cache.borrow_mut();
-            Arc::clone(map.entry(resolved_mixin_name.clone()).or_insert_with(|| {
-                Arc::new(crate::inheritance::resolve_class_with_inheritance(
-                    &mixin_class,
-                    class_loader,
-                ))
-            }))
-        });
+        let resolved_mixin = if let Some(c) = cache {
+            let map = c.lock();
+            if let Some(cached) = map.get(&(Atom::from(&resolved_mixin_name), Vec::new())) {
+                Arc::clone(cached)
+            } else {
+                drop(map);
+                MIXIN_CACHE.with(|thread_cache| {
+                    let mut map = thread_cache.borrow_mut();
+                    Arc::clone(map.entry(resolved_mixin_name.clone()).or_insert_with(|| {
+                        Arc::new(crate::inheritance::resolve_class_with_inheritance(
+                            &mixin_class,
+                            class_loader,
+                        ))
+                    }))
+                })
+            }
+        } else {
+            MIXIN_CACHE.with(|thread_cache| {
+                let mut map = thread_cache.borrow_mut();
+                Arc::clone(map.entry(resolved_mixin_name.clone()).or_insert_with(|| {
+                    Arc::new(crate::inheritance::resolve_class_with_inheritance(
+                        &mixin_class,
+                        class_loader,
+                    ))
+                }))
+            })
+        };
 
         // Build a substitution map from the mixin class's template params
         // to the concrete types provided in the @mixin tag's generic args.
@@ -515,7 +537,7 @@ fn collect_mixin_members(
             let mut map = HashMap::new();
             for (i, param_name) in mixin_class.template_params.iter().enumerate() {
                 if let Some(arg) = args.get(i) {
-                    map.insert(param_name.clone(), arg.clone());
+                    map.insert(param_name.to_string(), arg.clone());
                 }
             }
             map
@@ -531,10 +553,10 @@ fn collect_mixin_members(
             }
             // Skip if the base-resolved class already has this method,
             // or if a previous @method tag or mixin already contributed it.
-            if !collector.dedup.methods.insert(method.name.clone()) {
+            if !collector.dedup.methods.insert(method.name.to_string()) {
                 continue;
             }
-            let mut method = method.clone();
+            let mut method = (**method).clone();
             if !subs.is_empty() {
                 inheritance::apply_substitution_to_method(&mut method, &subs);
             }
@@ -555,7 +577,7 @@ fn collect_mixin_members(
             if property.visibility != Visibility::Public {
                 continue;
             }
-            if !collector.dedup.properties.insert(property.name.clone()) {
+            if !collector.dedup.properties.insert(property.name.to_string()) {
                 continue;
             }
             let mut property = property.clone();
@@ -570,7 +592,7 @@ fn collect_mixin_members(
             if constant.visibility != Visibility::Public {
                 continue;
             }
-            if !collector.dedup.constants.insert(constant.name.clone()) {
+            if !collector.dedup.constants.insert(constant.name.to_string()) {
                 continue;
             }
             collector.constants.push(constant.clone());
@@ -585,6 +607,7 @@ fn collect_mixin_members(
                 collector,
                 &HashMap::new(),
                 depth + 1,
+                cache,
             );
         }
     }
@@ -623,11 +646,16 @@ pub fn resolve_template_param_mixins(
 
     // Only process mixins whose name is a template parameter — the
     // rest were already resolved during `PHPDocProvider::provide`.
-    let template_mixins: Vec<String> = original_class
+    let template_mixins: Vec<Atom> = original_class
         .mixins
         .iter()
-        .filter(|m| original_class.template_params.contains(m))
-        .cloned()
+        .filter(|m| {
+            original_class
+                .template_params
+                .iter()
+                .any(|t| t.as_str() == m.as_str())
+        })
+        .copied()
         .collect();
 
     if template_mixins.is_empty() {
@@ -658,6 +686,7 @@ pub fn resolve_template_param_mixins(
         &mut collector,
         template_subs,
         0,
+        None,
     );
 
     super::VirtualMembers {
@@ -709,7 +738,7 @@ fn build_mixin_substitution_map(
             } else {
                 arg.substitute(active_subs)
             };
-            map.insert(param_name.clone(), resolved);
+            map.insert(param_name.to_string(), resolved);
         }
     }
 

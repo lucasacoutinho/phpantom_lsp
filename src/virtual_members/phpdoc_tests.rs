@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::atom;
 use crate::php_type::PhpType;
 use crate::test_fixtures::{make_class, make_constant, make_method, make_property, no_loader};
 use std::sync::Arc;
@@ -32,7 +33,7 @@ fn does_not_apply_when_docblock_empty_and_no_mixins() {
 fn applies_when_class_has_mixins() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let class_loader = |_: &str| -> Option<Arc<ClassInfo>> { None };
     assert!(provider.applies_to(&class, &class_loader));
@@ -42,10 +43,10 @@ fn applies_when_class_has_mixins() {
 fn applies_when_ancestor_has_mixins() {
     let provider = PHPDocProvider;
     let mut class = make_class("Child");
-    class.parent_class = Some("Parent".to_string());
+    class.parent_class = Some(atom("Parent"));
 
     let mut parent = make_class("Parent");
-    parent.mixins = vec!["Mixin".to_string()];
+    parent.mixins = vec![atom("Mixin")];
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "Parent" {
@@ -284,13 +285,14 @@ fn provides_both_methods_and_properties() {
 fn provides_public_methods_from_mixin() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let mut bar = make_class("Bar");
-    bar.methods.push(make_method("doStuff", Some("string")));
+    bar.methods
+        .push(Arc::new(make_method("doStuff", Some("string"))));
     let mut private_method = make_method("secret", Some("void"));
     private_method.visibility = Visibility::Private;
-    bar.methods.push(private_method);
+    bar.methods.push(Arc::new(private_method));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "Bar" {
@@ -309,7 +311,7 @@ fn provides_public_methods_from_mixin() {
 fn provides_public_properties_from_mixin() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let mut bar = make_class("Bar");
     bar.properties.push(make_property("name", Some("string")));
@@ -334,7 +336,7 @@ fn provides_public_properties_from_mixin() {
 fn provides_public_constants_from_mixin() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let mut bar = make_class("Bar");
     bar.constants.push(make_constant("MAX_SIZE"));
@@ -359,12 +361,16 @@ fn provides_public_constants_from_mixin() {
 fn mixin_does_not_overwrite_existing_class_members() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string()];
-    class.methods.push(make_method("doStuff", Some("int")));
+    class.mixins = vec![atom("Bar")];
+    class
+        .methods
+        .push(Arc::new(make_method("doStuff", Some("int"))));
 
     let mut bar = make_class("Bar");
-    bar.methods.push(make_method("doStuff", Some("string")));
-    bar.methods.push(make_method("barOnly", Some("void")));
+    bar.methods
+        .push(Arc::new(make_method("doStuff", Some("string"))));
+    bar.methods
+        .push(Arc::new(make_method("barOnly", Some("void"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "Bar" {
@@ -384,12 +390,15 @@ fn mixin_does_not_overwrite_existing_class_members() {
 fn mixin_leaves_this_return_type_as_is_for_consumer_resolution() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let mut bar = make_class("Bar");
-    bar.methods.push(make_method("fluent", Some("$this")));
-    bar.methods.push(make_method("selfRef", Some("self")));
-    bar.methods.push(make_method("staticRef", Some("static")));
+    bar.methods
+        .push(Arc::new(make_method("fluent", Some("$this"))));
+    bar.methods
+        .push(Arc::new(make_method("selfRef", Some("self"))));
+    bar.methods
+        .push(Arc::new(make_method("staticRef", Some("static"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "Bar" {
@@ -423,13 +432,15 @@ fn mixin_leaves_this_return_type_as_is_for_consumer_resolution() {
 fn mixin_collects_from_ancestor_mixins() {
     let provider = PHPDocProvider;
     let mut class = make_class("Child");
-    class.parent_class = Some("Parent".to_string());
+    class.parent_class = Some(atom("Parent"));
 
     let mut parent = make_class("Parent");
-    parent.mixins = vec!["Mixin".to_string()];
+    parent.mixins = vec![atom("Mixin")];
 
     let mut mixin = make_class("Mixin");
-    mixin.methods.push(make_method("mixinMethod", Some("void")));
+    mixin
+        .methods
+        .push(Arc::new(make_method("mixinMethod", Some("void"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         match name {
@@ -448,14 +459,16 @@ fn mixin_collects_from_ancestor_mixins() {
 fn mixin_recurses_into_mixin_mixins() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let mut bar = make_class("Bar");
-    bar.mixins = vec!["Baz".to_string()];
-    bar.methods.push(make_method("barMethod", Some("void")));
+    bar.mixins = vec![atom("Baz")];
+    bar.methods
+        .push(Arc::new(make_method("barMethod", Some("void"))));
 
     let mut baz = make_class("Baz");
-    baz.methods.push(make_method("bazMethod", Some("void")));
+    baz.methods
+        .push(Arc::new(make_method("bazMethod", Some("void"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         match name {
@@ -475,13 +488,15 @@ fn mixin_recurses_into_mixin_mixins() {
 fn multiple_mixins() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string(), "Baz".to_string()];
+    class.mixins = vec![atom("Bar"), atom("Baz")];
 
     let mut bar = make_class("Bar");
-    bar.methods.push(make_method("barMethod", Some("void")));
+    bar.methods
+        .push(Arc::new(make_method("barMethod", Some("void"))));
 
     let mut baz = make_class("Baz");
-    baz.methods.push(make_method("bazMethod", Some("void")));
+    baz.methods
+        .push(Arc::new(make_method("bazMethod", Some("void"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         match name {
@@ -501,13 +516,15 @@ fn multiple_mixins() {
 fn first_mixin_wins_on_name_collision() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string(), "Baz".to_string()];
+    class.mixins = vec![atom("Bar"), atom("Baz")];
 
     let mut bar = make_class("Bar");
-    bar.methods.push(make_method("shared", Some("string")));
+    bar.methods
+        .push(Arc::new(make_method("shared", Some("string"))));
 
     let mut baz = make_class("Baz");
-    baz.methods.push(make_method("shared", Some("int")));
+    baz.methods
+        .push(Arc::new(make_method("shared", Some("int"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         match name {
@@ -533,11 +550,13 @@ fn method_tag_beats_mixin_method() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
     class.class_docblock = Some("/** @method string doStuff() */".to_string());
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let mut bar = make_class("Bar");
-    bar.methods.push(make_method("doStuff", Some("int")));
-    bar.methods.push(make_method("barOnly", Some("void")));
+    bar.methods
+        .push(Arc::new(make_method("doStuff", Some("int"))));
+    bar.methods
+        .push(Arc::new(make_method("barOnly", Some("void"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "Bar" {
@@ -566,7 +585,7 @@ fn property_tag_beats_mixin_property() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
     class.class_docblock = Some("/** @property string $name */".to_string());
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let mut bar = make_class("Bar");
     bar.properties.push(make_property("name", Some("int")));
@@ -598,10 +617,11 @@ fn property_tag_beats_mixin_property() {
 fn mixin_only_no_docblock() {
     let provider = PHPDocProvider;
     let mut class = make_class("Foo");
-    class.mixins = vec!["Bar".to_string()];
+    class.mixins = vec![atom("Bar")];
 
     let mut bar = make_class("Bar");
-    bar.methods.push(make_method("barMethod", Some("void")));
+    bar.methods
+        .push(Arc::new(make_method("barMethod", Some("void"))));
     bar.properties.push(make_property("barProp", Some("int")));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
@@ -631,25 +651,25 @@ fn mixin_template_param_substituted_via_ancestor_walk() {
 
     // The child class: extends Subclient<EventsApi>
     let mut child = make_class("EventSubclient");
-    child.parent_class = Some("Subclient".to_string());
+    child.parent_class = Some(atom("Subclient"));
     child.extends_generics = vec![(
-        "Subclient".to_string(),
+        atom("Subclient"),
         vec![PhpType::Named("EventsApi".to_string())],
     )];
 
     // The parent class: @template TWraps, @mixin TWraps
     let mut subclient = make_class("Subclient");
-    subclient.template_params = vec!["TWraps".to_string()];
-    subclient.mixins = vec!["TWraps".to_string()];
+    subclient.template_params = vec![atom("TWraps")];
+    subclient.mixins = vec![atom("TWraps")];
 
     // The mixin target class
     let mut events_api = make_class("EventsApi");
     events_api
         .methods
-        .push(make_method("createEvent", Some("void")));
+        .push(Arc::new(make_method("createEvent", Some("void"))));
     events_api
         .methods
-        .push(make_method("getEvents", Some("array")));
+        .push(Arc::new(make_method("getEvents", Some("array"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         match name {

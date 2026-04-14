@@ -96,6 +96,7 @@ pub(crate) type ParseErrorEntry = (String, u32, u32);
 // ─── Module declarations ────────────────────────────────────────────────────
 
 pub mod analyse;
+pub mod atom;
 pub mod classmap_scanner;
 mod code_actions;
 mod code_lens;
@@ -133,6 +134,7 @@ pub mod stubs;
 pub mod subject_expr;
 pub(crate) mod subject_extraction;
 pub(crate) mod symbol_map;
+pub(crate) mod toposort;
 mod type_hierarchy;
 pub mod types;
 mod util;
@@ -352,6 +354,13 @@ pub struct Backend {
     /// `parse_and_cache_content`) so that stale results never survive
     /// an edit.
     pub(crate) resolved_class_cache: virtual_members::ResolvedClassCache,
+    /// Global method store: `(class_fqn, method_name)` → `Arc<MethodInfo>`.
+    ///
+    /// Populated alongside `fqn_index` whenever classes are parsed or
+    /// loaded.  Currently a read-only mirror of the methods already stored
+    /// inside `ClassInfo.methods`; future phases will make this the
+    /// authoritative source and shrink `ClassInfo.methods` to just names.
+    pub(crate) method_store: types::MethodStore,
     /// Embedded PHP stubs for built-in functions (e.g. `array_map`,
     /// `str_contains`, …).  Maps function name → raw PHP source code.
     ///
@@ -591,6 +600,7 @@ impl Backend {
             stub_function_index: RwLock::new(stubs::build_stub_function_index()),
             stub_constant_index: RwLock::new(stubs::build_stub_constant_index()),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
+            method_store: Arc::new(RwLock::new(HashMap::new())),
             php_version: Mutex::new(types::PhpVersion::default()),
             diag_version: Arc::new(AtomicU64::new(0)),
             diag_notify: Arc::new(tokio::sync::Notify::new()),
@@ -650,6 +660,7 @@ impl Backend {
             stub_function_index: RwLock::new(HashMap::new()),
             stub_constant_index: RwLock::new(HashMap::new()),
             resolved_class_cache: virtual_members::new_resolved_class_cache(),
+            method_store: Arc::new(RwLock::new(HashMap::new())),
             php_version: Mutex::new(types::PhpVersion::default()),
             diag_version: Arc::new(AtomicU64::new(0)),
             diag_notify: Arc::new(tokio::sync::Notify::new()),
@@ -855,6 +866,37 @@ impl Backend {
         *self.php_version.lock()
     }
 
+    /// Populate the method store from a slice of classes.
+    ///
+    /// For each class, inserts every method under the key
+    /// `(class_fqn, method.name)`.  Called from `update_ast_inner`
+    /// and `parse_and_cache_content_versioned` after classes are parsed.
+    pub(crate) fn populate_method_store(&self, classes: &[Arc<ClassInfo>]) {
+        let mut store = self.method_store.write();
+        for cls in classes {
+            let fqn = cls.fqn().to_string();
+            for method in &cls.methods {
+                let key = (fqn.clone(), method.name.to_string());
+                store.insert(key, Arc::clone(method));
+            }
+        }
+    }
+
+    /// Remove all method store entries whose class FQN matches any of
+    /// the given FQNs.
+    ///
+    /// Called before re-populating after a file re-parse so that renamed
+    /// or deleted methods do not linger.
+    pub(crate) fn evict_methods_for_fqns(&self, fqns: &[String]) {
+        if fqns.is_empty() {
+            return;
+        }
+        let mut store = self.method_store.write();
+        for fqn in fqns {
+            store.retain(|k, _| k.0 != *fqn);
+        }
+    }
+
     /// Create a shallow clone of this `Backend` that shares every
     /// `Arc`-wrapped field with the original.
     ///
@@ -899,6 +941,7 @@ impl Backend {
             class_not_found_cache: Arc::clone(&self.class_not_found_cache),
             stub_index: RwLock::new(self.stub_index.read().clone()),
             resolved_class_cache: Arc::clone(&self.resolved_class_cache),
+            method_store: Arc::clone(&self.method_store),
             stub_function_index: RwLock::new(self.stub_function_index.read().clone()),
             stub_constant_index: RwLock::new(self.stub_constant_index.read().clone()),
             php_version: Mutex::new(self.php_version()),

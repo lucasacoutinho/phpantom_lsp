@@ -89,7 +89,7 @@ fn replace_collection_in_type(ty: &PhpType, custom_collection: &str) -> PhpType 
 pub(super) fn build_builder_forwarded_methods(
     class: &ClassInfo,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
-    _cache: Option<&ResolvedClassCache>,
+    cache: Option<&ResolvedClassCache>,
 ) -> Vec<MethodInfo> {
     // Load the Eloquent Builder class.
     let builder_class = match class_loader(ELOQUENT_BUILDER_FQN) {
@@ -102,31 +102,27 @@ pub(super) fn build_builder_forwarded_methods(
     // does not extend Model, so the LaravelModelProvider will not
     // recurse.
     //
-    // Use the uncached variant here.  The cache is keyed by
-    // (FQN, generic_args), but the base Builder resolved here has
-    // empty generic args.  If we stored it in the cache, later code
-    // paths that call `resolve_class_fully_cached` on a Builder
-    // candidate (e.g. `build_union_completion_items`) would get this
-    // pre-scope-injection version back instead of computing a fresh
-    // resolution.  Scope methods are model-specific and injected at
-    // a higher layer (`try_inject_builder_scopes` in type resolution),
-    // so the base Builder must not be cached here.
-    //
-    // The top-level `resolve_class_fully_cached` call on the model
-    // class already caches the final merged result (including these
-    // forwarded methods), so the per-model cost is paid only once.
-    let resolved_builder =
-        crate::virtual_members::resolve_class_fully(&builder_class, class_loader);
+    // With topological population, the base Builder at cache key
+    // ("Illuminate\\Database\\Eloquent\\Builder", []) is already
+    // fully resolved in the cache when model providers run.  Scope
+    // injection happens at a higher layer (`try_inject_builder_scopes`
+    // in type resolution), not during Builder resolution, so the
+    // cached value is correct to use here.
+    let resolved_builder = crate::virtual_members::resolve_class_fully_maybe_cached(
+        &builder_class,
+        class_loader,
+        cache,
+    );
 
     // Build a substitution map: TModel → concrete model class name,
     // and static/$this/self → Builder<ConcreteModel>.
     let builder_self_type = PhpType::Generic(
         ELOQUENT_BUILDER_FQN.to_string(),
-        vec![PhpType::Named(class.name.clone())],
+        vec![PhpType::Named(class.name.to_string())],
     );
     let mut subs = super::self_ref_subs(builder_self_type);
     for param in &builder_class.template_params {
-        subs.insert(param.clone(), PhpType::Named(class.name.clone()));
+        subs.insert(param.to_string(), PhpType::Named(class.name.to_string()));
     }
 
     let mut methods = Vec::new();
@@ -151,7 +147,7 @@ pub(super) fn build_builder_forwarded_methods(
             continue;
         }
 
-        let mut forwarded = method.clone();
+        let mut forwarded = (**method).clone();
         forwarded.is_static = true;
 
         // Apply template and self-type substitutions.

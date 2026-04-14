@@ -49,10 +49,11 @@ pub(in crate::completion) fn resolve_class_string_targets(
                 cursor_offset,
                 class_loader,
                 loaders: Loaders::default(),
-                resolved_class_cache: None,
+                resolved_class_cache: crate::virtual_members::active_resolved_class_cache(),
                 enclosing_return_type: None,
                 branch_aware: false,
                 match_arm_narrowing: Default::default(),
+                scope_var_resolver: None,
             };
             resolve_class_string_in_statements(program.statements.iter(), &ctx)
         },

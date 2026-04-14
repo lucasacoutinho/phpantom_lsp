@@ -6,6 +6,7 @@
 //! to locate the source file and position of the member's declaration.
 
 use crate::Backend;
+use crate::atom::Atom;
 use crate::types::*;
 use std::sync::Arc;
 
@@ -25,7 +26,10 @@ impl Backend {
     ) -> (String, Option<String>) {
         for alias in &class.trait_aliases {
             if alias.alias.as_deref() == Some(member_name) {
-                return (alias.method_name.clone(), alias.trait_name.clone());
+                return (
+                    alias.method_name.to_string(),
+                    alias.trait_name.map(|a| a.to_string()),
+                );
             }
         }
         (member_name.to_string(), None)
@@ -49,7 +53,7 @@ impl Backend {
     ) -> Option<(ClassInfo, String)> {
         // Check if this class directly declares the member.
         if Self::classify_member(class, member_name, MemberAccessHint::Unknown).is_some() {
-            let fqn = build_fqn(&class.name, &class.file_namespace);
+            let fqn = build_fqn(&class.name, class.file_namespace.as_deref());
             return Some((class.clone(), fqn));
         }
 
@@ -63,8 +67,8 @@ impl Backend {
         // Walk up the parent chain.
         let mut current = class.clone();
         for _ in 0..MAX_INHERITANCE_DEPTH {
-            let parent_name = match current.parent_class.as_ref() {
-                Some(name) => name.clone(),
+            let parent_name = match current.parent_class {
+                Some(name) => name,
                 None => break,
             };
             let parent = match class_loader(&parent_name) {
@@ -72,7 +76,7 @@ impl Backend {
                 None => break,
             };
             if Self::classify_member(&parent, member_name, MemberAccessHint::Unknown).is_some() {
-                return Some((parent, parent_name));
+                return Some((parent, parent_name.to_string()));
             }
             // Check traits used by the parent class.
             if let Some(found) =
@@ -87,11 +91,11 @@ impl Backend {
         // Interfaces can declare `@method` / `@property` / `@property-read`
         // tags that should be resolvable via go-to-definition.
         {
-            let mut all_iface_names: Vec<String> = class.interfaces.clone();
+            let mut all_iface_names: Vec<Atom> = class.interfaces.clone();
             let mut iface_current = class.clone();
             for _ in 0..MAX_INHERITANCE_DEPTH {
-                let parent_name = match iface_current.parent_class.as_ref() {
-                    Some(name) => name.clone(),
+                let parent_name = match iface_current.parent_class {
+                    Some(name) => name,
                     None => break,
                 };
                 let parent = match class_loader(&parent_name) {
@@ -100,7 +104,7 @@ impl Backend {
                 };
                 for iface in &parent.interfaces {
                     if !all_iface_names.contains(iface) {
-                        all_iface_names.push(iface.clone());
+                        all_iface_names.push(*iface);
                     }
                 }
                 iface_current = parent;
@@ -110,7 +114,7 @@ impl Backend {
                     if Self::classify_member(&iface, member_name, MemberAccessHint::Unknown)
                         .is_some()
                     {
-                        return Some((iface, iface_name.clone()));
+                        return Some((iface, iface_name.to_string()));
                     }
                     // Walk the interface's own extends chain (interfaces
                     // stored in `parent_class` or `interfaces`).
@@ -125,11 +129,11 @@ impl Backend {
                                 )
                                 .is_some()
                             {
-                                return Some((pi, parent_iface.clone()));
+                                return Some((pi, parent_iface.to_string()));
                             }
                         }
-                        match iface_ancestor.parent_class.as_ref() {
-                            Some(pn) => match class_loader(pn) {
+                        match iface_ancestor.parent_class {
+                            Some(pn) => match class_loader(&pn) {
                                 Some(p) => iface_ancestor = Arc::unwrap_or_clone(p),
                                 None => break,
                             },
@@ -151,8 +155,8 @@ impl Backend {
         // e.g. `User extends Model` where `Model` has `@mixin Builder`.
         let mut ancestor = class.clone();
         for _ in 0..MAX_INHERITANCE_DEPTH {
-            let parent_name = match ancestor.parent_class.as_ref() {
-                Some(name) => name.clone(),
+            let parent_name = match ancestor.parent_class {
+                Some(name) => name,
                 None => break,
             };
             let parent = match class_loader(&parent_name) {
@@ -179,7 +183,7 @@ impl Backend {
     /// Returns `(ClassInfo, fqn)` where `fqn` is the fully-qualified name
     /// that was used to load the declaring class from `class_loader`.
     pub(in crate::definition) fn find_declaring_in_traits(
-        trait_names: &[String],
+        trait_names: &[Atom],
         member_name: &str,
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
         depth: usize,
@@ -196,7 +200,7 @@ impl Backend {
             };
             if Self::classify_member(&trait_info, member_name, MemberAccessHint::Unknown).is_some()
             {
-                return Some((trait_info, trait_name.clone()));
+                return Some((trait_info, trait_name.to_string()));
             }
             // Recurse into traits used by this trait.
             if let Some(found) = Self::find_declaring_in_traits(
@@ -213,19 +217,19 @@ impl Backend {
             // the declaring UnitEnum interface.
             let mut current = trait_info;
             let mut parent_depth = depth;
-            while let Some(ref parent_name) = current.parent_class {
+            while let Some(parent_name) = current.parent_class {
                 parent_depth += 1;
                 if parent_depth > MAX_TRAIT_DEPTH as usize {
                     break;
                 }
-                let parent = if let Some(p) = class_loader(parent_name) {
+                let parent = if let Some(p) = class_loader(&parent_name) {
                     Arc::unwrap_or_clone(p)
                 } else {
                     break;
                 };
                 if Self::classify_member(&parent, member_name, MemberAccessHint::Unknown).is_some()
                 {
-                    return Some((parent, parent_name.clone()));
+                    return Some((parent, parent_name.to_string()));
                 }
                 if let Some(found) = Self::find_declaring_in_traits(
                     &parent.used_traits,
@@ -253,7 +257,7 @@ impl Backend {
     /// Returns `(ClassInfo, fqn)` where `fqn` is the fully-qualified name
     /// that was used to load the declaring class from `class_loader`.
     pub(in crate::definition) fn find_declaring_in_mixins(
-        mixin_names: &[String],
+        mixin_names: &[Atom],
         member_name: &str,
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
         depth: usize,
@@ -282,7 +286,7 @@ impl Backend {
                 // share the same short name (e.g. Eloquent\Builder vs
                 // Query\Builder).
                 if !fqn.contains('\\') && fqn == mixin_class.name {
-                    return Some((declaring_class, mixin_name.clone()));
+                    return Some((declaring_class, mixin_name.to_string()));
                 }
                 return Some((declaring_class, fqn));
             }

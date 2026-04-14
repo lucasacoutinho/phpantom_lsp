@@ -297,7 +297,7 @@ impl Backend {
         for class in &ctx.classes {
             let class_fqn = match &class.file_namespace {
                 Some(ns) => format!("{}\\{}", ns, class.name),
-                None => class.name.clone(),
+                None => class.name.to_string(),
             };
             if class_fqn == fqn || class.name == fqn {
                 return kind_to_token_type(class.kind);
@@ -331,7 +331,7 @@ impl Backend {
         for class in &ctx.classes {
             let class_fqn = match &class.file_namespace {
                 Some(ns) => format!("{}\\{}", ns, class.name),
-                None => class.name.clone(),
+                None => class.name.to_string(),
             };
             if class_fqn == fqn || class.name == fqn {
                 if class.deprecation_message.is_some() {

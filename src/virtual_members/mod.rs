@@ -57,6 +57,7 @@ use std::sync::Arc;
 
 use parking_lot::Mutex;
 
+use crate::atom::{Atom, atom};
 use crate::inheritance::{
     ClassRef, apply_substitution_to_method, apply_substitution_to_property,
     enrich_method_from_ancestor, enrich_property_from_ancestor, resolve_class_with_inheritance,
@@ -77,7 +78,7 @@ use crate::virtual_members::laravel::patches::apply_laravel_patches;
 ///
 /// Generic args are stored normalized (fully qualified, sorted when
 /// order-independent) to avoid near-miss cache entries.
-pub type ResolvedClassCacheKey = (String, Vec<String>);
+pub type ResolvedClassCacheKey = (Atom, Vec<String>);
 
 /// Thread-safe cache of fully-resolved classes, keyed by FQN + generic args.
 ///
@@ -178,10 +179,13 @@ pub fn active_resolved_class_cache() -> Option<&'static ResolvedClassCache> {
 /// from its parent.  When the parent's `@property` docblock changes,
 /// the child's cache entry still holds the old inherited property and
 /// must be discarded.
-pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn: &str) {
+pub fn evict_fqn(
+    cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>,
+    fqn: &str,
+) -> Vec<String> {
     // Fast path: nothing to evict from an empty cache.
     if cache.is_empty() {
-        return;
+        return vec![];
     }
 
     // Remove direct matches for this FQN (any generic-arg variant).
@@ -197,7 +201,7 @@ pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn
         let seed = [fqn.to_string()];
         let has_dependent = cache.values().any(|cls| depends_on_any(cls, &seed));
         if !has_dependent {
-            return;
+            return vec![];
         }
     }
 
@@ -209,8 +213,9 @@ pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn
         let mut newly_evicted: Vec<String> = Vec::new();
 
         for ((cached_fqn, _), cls) in cache.iter() {
-            if depends_on_any(cls, &evicted) && !evicted.contains(cached_fqn) {
-                newly_evicted.push(cached_fqn.clone());
+            let cached_fqn_str = cached_fqn.to_string();
+            if depends_on_any(cls, &evicted) && !evicted.contains(&cached_fqn_str) {
+                newly_evicted.push(cached_fqn_str);
             }
         }
 
@@ -223,6 +228,8 @@ pub fn evict_fqn(cache: &mut HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>, fqn
             evicted.push(dep_fqn.clone());
         }
     }
+
+    evicted
 }
 
 /// Check whether `cls` directly depends on any FQN in `fqns` through
@@ -385,21 +392,21 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
         .methods
         .iter()
         .enumerate()
-        .map(|(i, m)| ((m.name.clone(), m.is_static), i))
+        .map(|(i, m)| ((m.name.to_string(), m.is_static), i))
         .collect();
 
     for method in virtual_members.methods {
-        let key = (method.name.clone(), method.is_static);
+        let key = (method.name.to_string(), method.is_static);
         if let Some(&idx) = method_index.get(&key) {
             if class.methods[idx].has_scope_attribute {
                 // Replace the #[Scope]-attributed original with the
                 // synthesized virtual scope method.
-                class.methods.make_mut()[idx] = method;
+                class.methods.make_mut()[idx] = Arc::new(method);
             }
             // Otherwise: real declared member — keep the original.
         } else {
             let new_idx = class.methods.len();
-            class.methods.push(method);
+            class.methods.push(Arc::new(method));
             method_index.insert(key, new_idx);
         }
     }
@@ -409,11 +416,11 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
         .properties
         .iter()
         .enumerate()
-        .map(|(i, p)| (p.name.clone(), i))
+        .map(|(i, p)| (p.name.to_string(), i))
         .collect();
 
     for property in virtual_members.properties {
-        if let Some(&idx) = prop_index.get(&property.name) {
+        if let Some(&idx) = prop_index.get(&property.name.to_string()) {
             // The property already exists.  Replace it only when the
             // incoming property carries a strictly more specific type.
             // This lets PHPDoc `@property array<string> $tags` override
@@ -426,13 +433,14 @@ pub fn merge_virtual_members(class: &mut ClassInfo, virtual_members: VirtualMemb
             }
         } else {
             let new_idx = class.properties.len();
-            prop_index.insert(property.name.clone(), new_idx);
+            prop_index.insert(property.name.to_string(), new_idx);
             class.properties.push(property);
         }
     }
-    let mut const_names: HashSet<String> = class.constants.iter().map(|c| c.name.clone()).collect();
+    let mut const_names: HashSet<String> =
+        class.constants.iter().map(|c| c.name.to_string()).collect();
     for constant in virtual_members.constants {
-        if const_names.insert(constant.name.clone()) {
+        if const_names.insert(constant.name.to_string()) {
             class.constants.push(constant);
         }
     }
@@ -524,6 +532,100 @@ pub fn default_providers() -> Vec<Box<dyn VirtualMemberProvider>> {
         // PHPDoc provider — @method / @property / @mixin tags.
         Box::new(phpdoc::PHPDocProvider),
     ]
+}
+
+// ─── Recursion guard ────────────────────────────────────────────────────────
+//
+// Thread-local depth counter and set of class FQNs currently being
+// resolved by `resolve_class_fully_inner` on this thread.  When a class
+// is already in the set, re-entrant calls return a partial result (base
+// inheritance only, no virtual members or interface merging) instead of
+// recursing.  The depth counter provides an additional safety net: when
+// nesting exceeds `MAX_RESOLVE_DEPTH`, resolution bails out regardless
+// of the per-class guard.
+
+/// Maximum nesting depth for `resolve_class_fully_inner` before
+/// returning a partial (base-only) result.  This is a safety net in
+/// addition to the per-class `RESOLVING` guard.
+const MAX_RESOLVE_DEPTH: u32 = 30;
+
+thread_local! {
+    static RESOLVING: std::cell::RefCell<HashSet<String>> =
+        std::cell::RefCell::new(HashSet::new());
+    static RESOLVE_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Mark a class as being resolved.  Returns `true` if it was freshly
+/// inserted (caller should proceed), `false` if it was already present
+/// (caller should bail to avoid infinite recursion).
+fn mark_resolving(fqn: &str) -> bool {
+    RESOLVING.with(|set| set.borrow_mut().insert(fqn.to_string()))
+}
+
+/// Remove a class from the resolving set when resolution is complete.
+fn unmark_resolving(fqn: &str) {
+    RESOLVING.with(|set| set.borrow_mut().remove(fqn));
+}
+
+// ─── Eager class population ─────────────────────────────────────────────────
+
+/// Pre-populate the [`ResolvedClassCache`] from a pre-computed
+/// topologically sorted list of class FQNs.
+///
+/// Because the topological sort guarantees that all dependencies of a
+/// class are processed before the class itself, each call to
+/// [`resolve_class_fully_inner`] finds its parents, traits, interfaces,
+/// and mixins already in the cache.  Provider callbacks (which call
+/// `resolve_class_fully` for related classes) hit the cache immediately
+/// instead of recursing, eliminating the unbounded mutual recursion that
+/// previously caused stack overflow on large codebases.
+///
+/// This function should be called once after initial indexing is complete
+/// (all files parsed into `ast_map`) and again incrementally when files
+/// change (see ER4 in `docs/todo/eager-resolution.md`).
+///
+/// # Arguments
+///
+/// * `sorted_fqns` — class FQNs in topological (dependency-first) order,
+///   e.g. from [`crate::toposort::toposort_from_ast_map`].
+/// * `cache` — the [`ResolvedClassCache`] to populate (typically
+///   `Backend.resolved_class_cache`).
+/// * `class_loader` — a closure that resolves a class FQN to its raw
+///   (un-merged) `ClassInfo`.  Typically `Backend::class_loader` or a
+///   closure over `fqn_index` + `find_or_load_class`.
+pub fn populate_from_sorted(
+    sorted_fqns: &[String],
+    cache: &ResolvedClassCache,
+    class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
+) {
+    for fqn in sorted_fqns {
+        // Skip classes already in the cache (e.g. from a previous
+        // incremental population run).
+        let cache_key: ResolvedClassCacheKey = (atom(fqn), Vec::new());
+        {
+            let map = cache.lock();
+            if map.contains_key(&cache_key) {
+                continue;
+            }
+        }
+
+        // Load the raw (un-merged) class.  If the class_loader cannot
+        // find it (e.g. it was removed between toposort and now), skip.
+        let raw_class = match class_loader(fqn) {
+            Some(c) => c,
+            None => continue,
+        };
+
+        // resolve_class_fully_inner will:
+        // 1. Check cache (miss for this class, but hits for deps)
+        // 2. Run resolve_class_with_inheritance (parent chain walk —
+        //    parents are raw, but the walk is bounded by MAX_INHERITANCE_DEPTH)
+        // 3. Run apply_virtual_members — providers call resolve_class_fully
+        //    for related classes, which hit the cache (already populated)
+        // 4. Merge interfaces — also hit cache for resolved interfaces
+        // 5. Store result in cache
+        resolve_class_fully_inner(&raw_class, class_loader, Some(cache), &[]);
+    }
 }
 
 // ─── Full class resolution ──────────────────────────────────────────────────
@@ -658,7 +760,7 @@ fn resolve_class_fully_inner(
     generic_args: &[String],
 ) -> Arc<ClassInfo> {
     let fqn = class.fqn();
-    let cache_key: ResolvedClassCacheKey = (fqn.clone(), generic_args.to_vec());
+    let cache_key: ResolvedClassCacheKey = (fqn, generic_args.to_vec());
 
     // ── Cache lookup ────────────────────────────────────────────────
     if let Some(cache) = cache {
@@ -668,6 +770,19 @@ fn resolve_class_fully_inner(
         }
     }
 
+    // ── Recursion guard ─────────────────────────────────────────────
+    // If this class is already being resolved on this thread (re-entrant
+    // call from a virtual member provider or interface merge), or we have
+    // exceeded the maximum nesting depth, return a partial result with
+    // base inheritance only.  This breaks the mutual recursion that
+    // causes stack overflow.
+    let depth = RESOLVE_DEPTH.with(|d| d.get());
+    if depth >= MAX_RESOLVE_DEPTH || !mark_resolving(&fqn) {
+        // Already resolving or too deep — return base-only resolution.
+        return Arc::new(resolve_class_with_inheritance(class, class_loader));
+    }
+    RESOLVE_DEPTH.with(|d| d.set(depth + 1));
+
     // ── Uncached resolution ─────────────────────────────────────────
     let mut merged = resolve_class_with_inheritance(class, class_loader);
 
@@ -675,7 +790,7 @@ fn resolve_class_fully_inner(
     // Inject missing `@mixin` annotations before virtual member
     // providers run, so that `collect_mixin_members` picks them up.
     if fqn == "Illuminate\\Redis\\Connections\\Connection" {
-        let mixin = "Redis".to_string();
+        let mixin = atom("Redis");
         if !merged.mixins.contains(&mixin) {
             merged.mixins.push(mixin);
         }
@@ -701,7 +816,7 @@ fn resolve_class_fully_inner(
     //    from `@implements` on parent classes are also collected, with
     //    the `@extends` chain substitutions applied so that template
     //    parameters from intermediate classes resolve correctly.
-    let mut all_iface_names: Vec<String> = class.interfaces.clone();
+    let mut all_iface_names: Vec<String> = class.interfaces.iter().map(|a| a.to_string()).collect();
 
     // Collect all `@implements` generics from the class and its parent
     // chain.  As we walk up the `extends` chain we apply the active
@@ -715,8 +830,11 @@ fn resolve_class_fully_inner(
     // Walking from Test2: active_subs starts empty, then after loading
     // Test1 we get {TKey => int}.  Test1's `@implements MyIterator<TKey, string>`
     // becomes `@implements MyIterator<int, string>` after substitution.
-    let mut all_implements_generics: Vec<(String, Vec<PhpType>)> =
-        class.implements_generics.clone();
+    let mut all_implements_generics: Vec<(String, Vec<PhpType>)> = class
+        .implements_generics
+        .iter()
+        .map(|(a, v)| (a.to_string(), v.clone()))
+        .collect();
     {
         let mut current: ClassRef<'_> = ClassRef::Borrowed(class);
         let mut depth = 0u32;
@@ -751,7 +869,7 @@ fn resolve_class_fully_inner(
                             } else {
                                 arg.substitute(&active_subs)
                             };
-                            map.insert(param_name.clone(), resolved);
+                            map.insert(param_name.to_string(), resolved);
                         }
                     }
                     map
@@ -766,8 +884,9 @@ fn resolve_class_fully_inner(
                 }
 
                 for iface in &parent.interfaces {
-                    if !all_iface_names.contains(iface) {
-                        all_iface_names.push(iface.clone());
+                    let iface_str = iface.to_string();
+                    if !all_iface_names.contains(&iface_str) {
+                        all_iface_names.push(iface_str);
                     }
                 }
 
@@ -779,7 +898,7 @@ fn resolve_class_fully_inner(
                     } else {
                         args.iter().map(|a| a.substitute(&level_subs)).collect()
                     };
-                    all_implements_generics.push((iface_name.clone(), resolved_args));
+                    all_implements_generics.push((iface_name.to_string(), resolved_args));
                 }
 
                 active_subs = level_subs;
@@ -804,8 +923,9 @@ fn resolve_class_fully_inner(
             // JsonSerializable, UnitValue — all of those need to be
             // resolved and their members merged transitively.
             for child_iface in &iface.interfaces {
-                if !all_iface_names.contains(child_iface) {
-                    all_iface_names.push(child_iface.clone());
+                let child_iface_str = child_iface.to_string();
+                if !all_iface_names.contains(&child_iface_str) {
+                    all_iface_names.push(child_iface_str);
                 }
             }
 
@@ -828,7 +948,7 @@ fn resolve_class_fully_inner(
                         .get(param)
                         .cloned()
                         .unwrap_or_else(PhpType::mixed);
-                    iface_subs.insert(param.clone(), bound);
+                    iface_subs.insert(param.to_string(), bound);
                 }
             }
 
@@ -845,17 +965,20 @@ fn resolve_class_fully_inner(
                     } else {
                         args.iter().map(|a| a.substitute(&iface_subs)).collect()
                     };
-                    all_implements_generics.push((name.clone(), resolved_args));
+                    all_implements_generics.push((name.to_string(), resolved_args));
                 }
             }
             for (name, args) in &iface.implements_generics {
-                if !all_implements_generics.iter().any(|(n, _)| n == name) {
+                if !all_implements_generics
+                    .iter()
+                    .any(|(n, _)| n.as_str() == name.as_str())
+                {
                     let resolved_args: Vec<PhpType> = if iface_subs.is_empty() {
                         args.clone()
                     } else {
                         args.iter().map(|a| a.substitute(&iface_subs)).collect()
                     };
-                    all_implements_generics.push((name.clone(), resolved_args));
+                    all_implements_generics.push((name.to_string(), resolved_args));
                 }
             }
 
@@ -893,10 +1016,12 @@ fn resolve_class_fully_inner(
     // the merged Test2 class gets `implements_generics` containing
     // `("MyIterator", ["int", "string"])`.
     for (name, args) in &all_implements_generics {
-        if !merged.implements_generics.iter().any(|(n, _)| n == name) {
-            merged
-                .implements_generics
-                .push((name.clone(), args.clone()));
+        if !merged
+            .implements_generics
+            .iter()
+            .any(|(n, _)| n.as_str() == name.as_str())
+        {
+            merged.implements_generics.push((atom(name), args.clone()));
         }
     }
 
@@ -908,6 +1033,11 @@ fn resolve_class_fully_inner(
     apply_laravel_patches(&mut merged, &fqn);
 
     // ── Cache store ─────────────────────────────────────────────────
+    // ── Remove from recursion guard ─────────────────────────────────
+    unmark_resolving(&fqn);
+    RESOLVE_DEPTH.with(|d| d.set(depth));
+
+    merged.rebuild_method_index();
     let result = Arc::new(merged);
     if let Some(cache) = cache {
         cache.lock().insert(cache_key, Arc::clone(&result));
@@ -938,7 +1068,7 @@ fn merge_interface_members_into(
     // interface members before merging.
     if !iface_subs.is_empty() {
         for method in resolved_iface.methods.make_mut().iter_mut() {
-            apply_substitution_to_method(method, iface_subs);
+            apply_substitution_to_method(Arc::make_mut(method), iface_subs);
         }
         for property in resolved_iface.properties.make_mut().iter_mut() {
             apply_substitution_to_property(property, iface_subs);
@@ -958,7 +1088,7 @@ fn merge_interface_members_into(
                 .methods
                 .iter()
                 .enumerate()
-                .map(|(i, m)| (m.name.clone(), i))
+                .map(|(i, m)| (m.name.to_string(), i))
                 .collect(),
         )
     } else {
@@ -968,7 +1098,7 @@ fn merge_interface_members_into(
     for iface_method in resolved_iface.methods.into_vec() {
         // Find the existing method index — O(1) via HashMap or O(N) linear scan.
         let existing_idx = if let Some(ref index) = method_index {
-            index.get(&iface_method.name).copied()
+            index.get(&iface_method.name.to_string()).copied()
         } else {
             merged
                 .methods
@@ -981,7 +1111,7 @@ fn merge_interface_members_into(
             // Delegate to the shared enrichment helper which handles
             // return types, parameters, descriptions, template params,
             // conditional returns, and type assertions uniformly.
-            enrich_method_from_ancestor(existing, &iface_method);
+            enrich_method_from_ancestor(Arc::make_mut(existing), &iface_method);
         } else {
             merged.methods.push(iface_method);
         }
@@ -999,10 +1129,13 @@ fn merge_interface_members_into(
             merged.properties.push(property);
         }
     }
-    let existing_consts: HashSet<String> =
-        merged.constants.iter().map(|c| c.name.clone()).collect();
+    let existing_consts: HashSet<String> = merged
+        .constants
+        .iter()
+        .map(|c| c.name.to_string())
+        .collect();
     for constant in resolved_iface.constants.into_vec() {
-        if !existing_consts.contains(&constant.name) {
+        if !existing_consts.contains(&constant.name.to_string()) {
             merged.constants.push(constant);
         }
     }
@@ -1039,7 +1172,7 @@ fn build_implements_substitution_map(
     let mut map = HashMap::new();
     for (i, param_name) in iface.template_params.iter().enumerate() {
         if let Some(arg) = type_args.get(i) {
-            map.insert(param_name.clone(), arg.clone());
+            map.insert(param_name.to_string(), arg.clone());
         }
     }
     map

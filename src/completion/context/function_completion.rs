@@ -237,7 +237,7 @@ impl Backend {
                         FunctionItemBuilder::new(
                             label,
                             build_callable_snippet(&info.name, &info.parameters),
-                            info.name.clone(),
+                            info.name.to_string(),
                             format!("4_{}", info.name.to_lowercase()),
                             fqn.clone(),
                             uri.to_string(),

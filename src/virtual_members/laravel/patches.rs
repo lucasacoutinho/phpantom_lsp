@@ -50,6 +50,8 @@
 //!    overrides these return types so that downstream property access
 //!    on query results resolves correctly.
 
+use std::sync::Arc;
+
 use crate::php_type::PhpType;
 use crate::types::ClassInfo;
 
@@ -101,6 +103,7 @@ pub fn apply_laravel_patches(class: &mut ClassInfo, fqn: &str) {
 fn patch_eloquent_builder_call_return_type(class: &mut ClassInfo) {
     let static_type = PhpType::static_();
     for method in class.methods.make_mut().iter_mut() {
+        let method = Arc::make_mut(method);
         if (method.name == "__call" || method.name == "__callStatic")
             && method.return_type.as_ref().is_some_and(|rt| rt.is_mixed())
         {
@@ -127,6 +130,7 @@ fn patch_eloquent_builder_call_return_type(class: &mut ClassInfo) {
 fn patch_conditionable_when_unless(class: &mut ClassInfo) {
     let this_type = PhpType::this();
     for method in class.methods.make_mut().iter_mut() {
+        let method = Arc::make_mut(method);
         if method.name != "when" && method.name != "unless" {
             continue;
         }
@@ -213,6 +217,7 @@ fn patch_db_select_return_types(class: &mut ClassInfo) {
     let std_or_null = PhpType::Nullable(Box::new(std_class));
 
     for method in class.methods.make_mut().iter_mut() {
+        let method = Arc::make_mut(method);
         match method.name.as_str() {
             "select" | "selectFromWriteConnection" | "selectResultSets" => {
                 if method

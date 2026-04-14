@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::common::{create_test_backend, create_test_backend_with_stubs};
 use phpantom_lsp::Backend;
+use phpantom_lsp::atom::atom;
 use phpantom_lsp::php_type::PhpType;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
@@ -2409,7 +2410,7 @@ async fn test_use_import_excludes_constants_and_functions() {
             (
                 "file:///funcs.php".to_string(),
                 phpantom_lsp::types::FunctionInfo {
-                    name: "some_widget_func".to_string(),
+                    name: atom("some_widget_func"),
                     name_offset: 0,
                     parameters: vec![],
                     return_type: None,
@@ -2425,7 +2426,7 @@ async fn test_use_import_excludes_constants_and_functions() {
                     deprecated_replacement: None,
                     template_params: vec![],
                     template_bindings: vec![],
-                    template_param_bounds: std::collections::HashMap::new(),
+                    template_param_bounds: Default::default(),
                     throws: vec![],
                     is_polyfill: false,
                 },
@@ -2542,7 +2543,7 @@ async fn test_use_function_shows_only_functions() {
             (
                 "file:///funcs.php".to_string(),
                 phpantom_lsp::types::FunctionInfo {
-                    name: "array_merge".to_string(),
+                    name: atom("array_merge"),
                     name_offset: 0,
                     parameters: vec![],
                     return_type: Some(PhpType::parse("array")),
@@ -2558,7 +2559,7 @@ async fn test_use_function_shows_only_functions() {
                     deprecated_replacement: None,
                     template_params: vec![],
                     template_bindings: vec![],
-                    template_param_bounds: std::collections::HashMap::new(),
+                    template_param_bounds: Default::default(),
                     throws: vec![],
                     is_polyfill: false,
                 },

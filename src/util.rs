@@ -83,7 +83,7 @@ pub(crate) fn resolve_name_via_loader(
     class_loader: &dyn Fn(&str) -> Option<Arc<crate::types::ClassInfo>>,
 ) -> String {
     class_loader(name)
-        .map(|cls| cls.fqn())
+        .map(|cls| cls.fqn().to_string())
         .unwrap_or_else(|| name.to_string())
 }
 
@@ -410,7 +410,7 @@ pub(crate) fn unquote_php_string(raw: &str) -> Option<&str> {
 ///
 /// `("Foo", Some("App\\Models"))` → `"App\\Models\\Foo"`,
 /// `("Foo", None)` → `"Foo"`.
-pub(crate) fn build_fqn(short_name: &str, namespace: &Option<String>) -> String {
+pub(crate) fn build_fqn(short_name: &str, namespace: Option<&str>) -> String {
     match namespace {
         Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, short_name),
         _ => short_name.to_string(),
@@ -799,7 +799,7 @@ pub(crate) fn is_subtype_of(
     let ancestor_fqn: String = if ancestor_name.contains('\\') {
         ancestor_name.to_string()
     } else if let Some(loaded) = class_loader(ancestor_name) {
-        loaded.fqn()
+        loaded.fqn().to_string()
     } else {
         // Cannot resolve — keep the original name.  For root-namespace
         // classes this is already the FQN.
@@ -816,7 +816,7 @@ pub(crate) fn is_subtype_of(
     // resolve_parent_class_names), walking the full interface
     // inheritance tree so that transitive relationships are found
     // (e.g. Response implements ResponseInterface extends MessageInterface).
-    let mut iface_queue: Vec<String> = class.interfaces.clone();
+    let mut iface_queue: Vec<String> = class.interfaces.iter().map(|a| a.to_string()).collect();
     let mut visited_ifaces: std::collections::HashSet<String> =
         iface_queue.iter().cloned().collect();
     while let Some(iface_name) = iface_queue.pop() {
@@ -829,20 +829,20 @@ pub(crate) fn is_subtype_of(
             // (first parent for single-extends compat) and
             // `interfaces` (all parents for multi-extends).
             for parent_iface in &iface_info.interfaces {
-                if visited_ifaces.insert(parent_iface.clone()) {
-                    iface_queue.push(parent_iface.clone());
+                if visited_ifaces.insert(parent_iface.to_string()) {
+                    iface_queue.push(parent_iface.to_string());
                 }
             }
             if let Some(ref pc) = iface_info.parent_class
-                && visited_ifaces.insert(pc.clone())
+                && visited_ifaces.insert(pc.to_string())
             {
-                iface_queue.push(pc.clone());
+                iface_queue.push(pc.to_string());
             }
         }
     }
 
     // Walk the parent class chain (parent_class is also a resolved FQN).
-    let mut current_parent = class.parent_class.clone();
+    let mut current_parent = class.parent_class.map(|a| a.to_string());
     let mut depth = 0u32;
     while let Some(ref name) = current_parent {
         depth += 1;
@@ -855,7 +855,11 @@ pub(crate) fn is_subtype_of(
         // Load the parent to check its interfaces (transitively)
         // and continue the class chain.
         if let Some(parent_info) = class_loader(name) {
-            let mut p_iface_queue: Vec<String> = parent_info.interfaces.clone();
+            let mut p_iface_queue: Vec<String> = parent_info
+                .interfaces
+                .iter()
+                .map(|a| a.to_string())
+                .collect();
             let mut p_visited: std::collections::HashSet<String> =
                 p_iface_queue.iter().cloned().collect();
             while let Some(iface_name) = p_iface_queue.pop() {
@@ -864,18 +868,18 @@ pub(crate) fn is_subtype_of(
                 }
                 if let Some(iface_info) = class_loader(&iface_name) {
                     for pi in &iface_info.interfaces {
-                        if p_visited.insert(pi.clone()) {
-                            p_iface_queue.push(pi.clone());
+                        if p_visited.insert(pi.to_string()) {
+                            p_iface_queue.push(pi.to_string());
                         }
                     }
                     if let Some(ref pc) = iface_info.parent_class
-                        && p_visited.insert(pc.clone())
+                        && p_visited.insert(pc.to_string())
                     {
-                        p_iface_queue.push(pc.clone());
+                        p_iface_queue.push(pc.to_string());
                     }
                 }
             }
-            current_parent = parent_info.parent_class.clone();
+            current_parent = parent_info.parent_class.map(|a| a.to_string());
         } else {
             break;
         }
@@ -1530,7 +1534,7 @@ impl Backend {
                     .filter(|c| !c.name.starts_with("__anonymous@"))
                     .map(|c| match &c.file_namespace {
                         Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
-                        _ => c.name.clone(),
+                        _ => c.name.to_string(),
                     })
                     .collect()
             })
@@ -1707,9 +1711,9 @@ pub(crate) fn resolve_class_keyword(
     current_class: Option<&ClassInfo>,
 ) -> Option<String> {
     if is_self_or_static(keyword) {
-        current_class.map(|cc| cc.name.clone())
+        current_class.map(|cc| cc.name.to_string())
     } else if keyword.eq_ignore_ascii_case("parent") {
-        current_class.and_then(|cc| cc.parent_class.clone())
+        current_class.and_then(|cc| cc.parent_class.map(|a| a.to_string()))
     } else {
         None
     }
@@ -1962,10 +1966,10 @@ mod tests {
         interfaces: &[&str],
     ) -> Arc<crate::types::ClassInfo> {
         Arc::new(crate::types::ClassInfo {
-            name: name.to_string(),
-            file_namespace: namespace.map(|s| s.to_string()),
-            parent_class: parent.map(|s| s.to_string()),
-            interfaces: interfaces.iter().map(|s| s.to_string()).collect(),
+            name: crate::atom::atom(name),
+            file_namespace: namespace.map(crate::atom::atom),
+            parent_class: parent.map(crate::atom::atom),
+            interfaces: interfaces.iter().map(|s| crate::atom::atom(s)).collect(),
             ..Default::default()
         })
     }

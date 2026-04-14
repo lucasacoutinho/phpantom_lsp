@@ -7,6 +7,7 @@ use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
 use crate::Backend;
+use crate::atom::atom;
 use crate::docblock;
 use crate::types::*;
 
@@ -103,7 +104,7 @@ impl Backend {
                         continue;
                     }
 
-                    let name = func.name.value.to_string();
+                    let name = atom(func.name.value);
                     let name_offset = func.name.span.start.offset;
                     let php_version = doc_ctx.and_then(|ctx| ctx.php_version);
                     let mut parameters = extract_parameters(
@@ -178,27 +179,29 @@ impl Backend {
                             .unwrap_or_default();
                         let tpl_params: Vec<String> =
                             params_full.iter().map(|(n, _, _, _)| n.clone()).collect();
-                        let tpl_param_bounds: std::collections::HashMap<
-                            String,
-                            crate::php_type::PhpType,
-                        > = params_full
-                            .iter()
-                            .filter_map(|(name, bound, _, _)| {
-                                bound.as_ref().map(|b| (name.clone(), b.clone()))
-                            })
-                            .collect();
-                        let tpl_bindings = if !tpl_params.is_empty() {
-                            info.as_ref()
-                                .map(|i| {
-                                    docblock::extract_template_param_bindings_from_info(
-                                        i,
-                                        &tpl_params,
-                                    )
+                        let tpl_param_bounds: crate::atom::AtomMap<crate::php_type::PhpType> =
+                            params_full
+                                .iter()
+                                .filter_map(|(name, bound, _, _)| {
+                                    bound.as_ref().map(|b| (atom(name), b.clone()))
                                 })
-                                .unwrap_or_default()
-                        } else {
-                            Vec::new()
-                        };
+                                .collect();
+                        let tpl_bindings: Vec<(crate::atom::Atom, crate::atom::Atom)> =
+                            if !tpl_params.is_empty() {
+                                info.as_ref()
+                                    .map(|i| {
+                                        docblock::extract_template_param_bindings_from_info(
+                                            i,
+                                            &tpl_params,
+                                        )
+                                        .into_iter()
+                                        .map(|(a, b)| (atom(&a), atom(&b)))
+                                        .collect()
+                                    })
+                                    .unwrap_or_default()
+                            } else {
+                                Vec::new()
+                            };
 
                         // If no explicit conditional return type was found,
                         // try to synthesize one from function-level @template
@@ -285,7 +288,7 @@ impl Backend {
                             Vec::new(),
                             Vec::new(),
                             Vec::new(),
-                            std::collections::HashMap::new(),
+                            crate::atom::AtomMap::<crate::php_type::PhpType>::default(),
                             Vec::new(),
                             Vec::new(),
                         )
@@ -363,7 +366,7 @@ impl Backend {
                                 let description =
                                     docblock::extract_param_description_from_info(info, &tag_name);
                                 parameters.push(ParameterInfo {
-                                    name: tag_name,
+                                    name: atom(&tag_name),
                                     is_required: false,
                                     type_hint: Some(tag_type),
                                     native_type_hint: None,
@@ -377,6 +380,8 @@ impl Backend {
                         }
                     }
 
+                    let func_tpl_atoms: Vec<crate::atom::Atom> =
+                        func_template_params.iter().map(|s| atom(s)).collect();
                     functions.push(FunctionInfo {
                         name,
                         name_offset,
@@ -392,7 +397,7 @@ impl Backend {
                         type_assertions,
                         deprecation_message,
                         deprecated_replacement,
-                        template_params: func_template_params,
+                        template_params: func_tpl_atoms,
                         template_param_bounds: func_template_param_bounds,
                         template_bindings: func_template_bindings,
                         throws,

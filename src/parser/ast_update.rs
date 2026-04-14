@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::atom::{Atom, atom};
 use crate::php_type::PhpType;
 use crate::symbol_map::extract_symbol_map;
 use crate::types::TypeAliasDef;
@@ -235,7 +236,8 @@ impl Backend {
             // This mirrors the resolution done for class method return
             // types and parameter hints in `resolve_parent_class_names`.
             for func in &mut functions {
-                let skip_names: Vec<String> = func.template_params.clone();
+                let skip_names: Vec<String> =
+                    func.template_params.iter().map(|a| a.to_string()).collect();
                 let resolver = Self::build_type_resolver(&use_map, &namespace, &skip_names);
 
                 if let Some(ref ret) = func.return_type {
@@ -272,7 +274,7 @@ impl Backend {
                 let fqn = if let Some(ref ns) = func_info.namespace {
                     format!("{}\\{}", ns, &func_info.name)
                 } else {
-                    func_info.name.clone()
+                    func_info.name.to_string()
                 };
 
                 // Skip polyfill functions when a native stub exists.
@@ -372,7 +374,7 @@ impl Backend {
             .iter()
             .map(|(c, ns)| {
                 let mut cls = c.clone();
-                cls.file_namespace = ns.clone();
+                cls.file_namespace = ns.as_deref().map(atom);
                 cls
             })
             .collect();
@@ -398,7 +400,7 @@ impl Backend {
             .filter(|c| !c.name.starts_with("__anonymous@"))
             .map(|c| match &c.file_namespace {
                 Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
-                _ => c.name.clone(),
+                _ => c.name.to_string(),
             })
             .collect();
 
@@ -434,7 +436,7 @@ impl Backend {
                 let fqn = if let Some(ns) = class_ns {
                     format!("{}\\{}", ns, &class.name)
                 } else {
-                    class.name.clone()
+                    class.name.to_string()
                 };
                 idx.insert(fqn.clone(), uri_string.clone());
                 // The `classes` vec already has `file_namespace` set,
@@ -456,7 +458,7 @@ impl Backend {
                     }
                     let fqn = match class_ns {
                         Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, class.name),
-                        _ => class.name.clone(),
+                        _ => class.name.to_string(),
                     };
                     nf_cache.remove(&fqn);
                 }
@@ -471,6 +473,13 @@ impl Backend {
             uri_string.clone(),
             classes.into_iter().map(Arc::new).collect(),
         );
+
+        // Populate the global method store for O(1) method lookup.
+        self.evict_methods_for_fqns(&old_fqns);
+        if let Some(arc_classes) = self.ast_map.read().get(&uri_string) {
+            self.populate_method_store(arc_classes);
+        }
+
         self.symbol_maps
             .write()
             .insert(uri_string.clone(), symbol_map);
@@ -508,6 +517,7 @@ impl Backend {
         // dependent cascade) for every class during bulk operations
         // like `analyse`.
         let mut any_signature_changed = false;
+        let mut evicted_fqns: Vec<String> = Vec::new();
 
         if !old_fqns.is_empty() {
             let mut cache = self.resolved_class_cache.lock();
@@ -517,7 +527,7 @@ impl Backend {
                 .filter(|(c, _)| !c.name.starts_with("__anonymous@"))
                 .map(|(c, ns)| match ns {
                     Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
-                    _ => c.name.clone(),
+                    _ => c.name.to_string(),
                 })
                 .collect();
 
@@ -532,7 +542,7 @@ impl Backend {
                                 Some(ns) if !ns.is_empty() => {
                                     format!("{}\\{}", ns, c.name)
                                 }
-                                _ => c.name.clone(),
+                                _ => c.name.to_string(),
                             };
                             f == *fqn
                         }
@@ -544,7 +554,7 @@ impl Backend {
                     !c.name.starts_with("__anonymous@") && {
                         let f = match ns {
                             Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, c.name),
-                            _ => c.name.clone(),
+                            _ => c.name.to_string(),
                         };
                         f == *fqn
                     }
@@ -556,7 +566,8 @@ impl Backend {
                     }
                     _ => {
                         // Signature changed or class was removed — evict.
-                        crate::virtual_members::evict_fqn(&mut cache, fqn);
+                        let evicted = crate::virtual_members::evict_fqn(&mut cache, fqn);
+                        evicted_fqns.extend(evicted);
                         any_signature_changed = true;
                     }
                 }
@@ -565,10 +576,38 @@ impl Backend {
             // Evict new FQNs that did not exist before (new classes).
             for fqn in &new_fqns {
                 if !old_fqns.contains(fqn) {
-                    crate::virtual_members::evict_fqn(&mut cache, fqn);
+                    let evicted = crate::virtual_members::evict_fqn(&mut cache, fqn);
+                    evicted_fqns.extend(evicted);
                     any_signature_changed = true;
                 }
             }
+        }
+
+        // Dedup evicted FQNs before repopulation.
+        evicted_fqns.sort();
+        evicted_fqns.dedup();
+
+        // ── ER4: Eagerly re-populate evicted classes ─────────────────
+        if !evicted_fqns.is_empty() {
+            // Toposort just the evicted subset using their current
+            // (just-parsed) ClassInfo from ast_map.
+            let sorted = {
+                let ast_map = self.ast_map.read();
+                let iter = ast_map
+                    .values()
+                    .flat_map(|classes| classes.iter())
+                    .filter(|c| evicted_fqns.contains(&c.fqn().to_string()))
+                    .map(|c| (c.fqn().to_string(), c.as_ref()));
+                crate::toposort::toposort_classes(iter)
+            };
+
+            let class_loader =
+                |name: &str| -> Option<Arc<ClassInfo>> { self.find_or_load_class(name) };
+            crate::virtual_members::populate_from_sorted(
+                &sorted,
+                &self.resolved_class_cache,
+                &class_loader,
+            );
         }
 
         any_signature_changed
@@ -592,44 +631,44 @@ impl Backend {
         // A type alias defined on one class can be referenced from methods
         // in a different class in the same file, so we must skip all of
         // them to avoid mangling alias names into FQN form.
-        let all_alias_names: Vec<String> = classes
+        let all_alias_names: Vec<Atom> = classes
             .iter()
-            .flat_map(|c| c.type_aliases.keys().cloned())
+            .flat_map(|c| c.type_aliases.keys().copied())
             .collect();
 
         for class in classes.iter_mut() {
             if let Some(ref parent) = class.parent_class {
                 let resolved = Self::resolve_name(parent, use_map, namespace);
-                class.parent_class = Some(resolved);
+                class.parent_class = Some(atom(&resolved));
             }
             // Resolve trait names to fully-qualified names
             class.used_traits = class
                 .used_traits
                 .iter()
-                .map(|t| Self::resolve_name(t, use_map, namespace))
+                .map(|t| atom(&Self::resolve_name(t, use_map, namespace)))
                 .collect();
 
             // Resolve interface names to fully-qualified names
             class.interfaces = class
                 .interfaces
                 .iter()
-                .map(|i| Self::resolve_name(i, use_map, namespace))
+                .map(|i| atom(&Self::resolve_name(i, use_map, namespace)))
                 .collect();
 
             // Resolve trait names in `insteadof` precedence adaptations
             for prec in &mut class.trait_precedences {
-                prec.trait_name = Self::resolve_name(&prec.trait_name, use_map, namespace);
+                prec.trait_name = atom(&Self::resolve_name(&prec.trait_name, use_map, namespace));
                 prec.insteadof = prec
                     .insteadof
                     .iter()
-                    .map(|t| Self::resolve_name(t, use_map, namespace))
+                    .map(|t| atom(&Self::resolve_name(t, use_map, namespace)))
                     .collect();
             }
 
             // Resolve trait names in `as` alias adaptations
             for alias in &mut class.trait_aliases {
                 if let Some(ref t) = alias.trait_name {
-                    alias.trait_name = Some(Self::resolve_name(t, use_map, namespace));
+                    alias.trait_name = Some(atom(&Self::resolve_name(t, use_map, namespace)));
                 }
             }
 
@@ -643,9 +682,9 @@ impl Backend {
                 .iter()
                 .map(|m| {
                     if class.template_params.contains(m) {
-                        m.clone()
+                        *m
                     } else {
-                        Self::resolve_name(m, use_map, namespace)
+                        atom(&Self::resolve_name(m, use_map, namespace))
                     }
                 })
                 .collect();
@@ -717,30 +756,34 @@ impl Backend {
             // that forwarded params (e.g. `@use BuildsQueries<TModel>`
             // where TModel is a class-level template) remain as bare
             // names and match substitution map keys later.
-            let tpl_params = &class.template_params;
+            let tpl_params: Vec<String> = class
+                .template_params
+                .iter()
+                .map(|a| a.to_string())
+                .collect();
             Self::resolve_generics_type_args(
                 &mut class.extends_generics,
                 use_map,
                 namespace,
-                tpl_params,
+                &tpl_params,
             );
             Self::resolve_generics_type_args(
                 &mut class.implements_generics,
                 use_map,
                 namespace,
-                tpl_params,
+                &tpl_params,
             );
             Self::resolve_generics_type_args(
                 &mut class.use_generics,
                 use_map,
                 namespace,
-                tpl_params,
+                &tpl_params,
             );
             Self::resolve_generics_type_args(
                 &mut class.mixin_generics,
                 use_map,
                 namespace,
-                tpl_params,
+                &tpl_params,
             );
 
             // Resolve class-like names in method return types and property
@@ -757,8 +800,8 @@ impl Backend {
             let template_params = &class.template_params;
             let skip_names: Vec<String> = template_params
                 .iter()
-                .cloned()
-                .chain(all_alias_names.iter().cloned())
+                .map(|a| a.to_string())
+                .chain(all_alias_names.iter().map(|a| a.to_string()))
                 .collect();
             let resolver = Self::build_type_resolver(use_map, namespace, &skip_names);
 
@@ -783,6 +826,7 @@ impl Backend {
             }
 
             for method in class.methods.make_mut() {
+                let method = Arc::make_mut(method);
                 // Build a per-method skip list that includes both class-level
                 // and method-level template params so that names like `T` in
                 // `@return Collection<T>` are not namespace-resolved.
@@ -799,7 +843,7 @@ impl Backend {
                     method_skip = skip_names
                         .iter()
                         .cloned()
-                        .chain(method.template_params.iter().cloned())
+                        .chain(method.template_params.iter().map(|a| a.to_string()))
                         .collect();
                     // SAFETY: `method_skip` lives until end of this
                     // `for method` iteration, so the closure is valid.
@@ -966,7 +1010,7 @@ impl Backend {
     /// e.g. `Illuminate\Database\Eloquent\TModel`, preventing it from
     /// matching substitution map keys during generic resolution.
     fn resolve_generics_type_args(
-        generics: &mut [(String, Vec<PhpType>)],
+        generics: &mut [(Atom, Vec<PhpType>)],
         use_map: &HashMap<String, String>,
         namespace: &Option<String>,
         skip_names: &[String],
@@ -974,7 +1018,8 @@ impl Backend {
         let resolver = Self::build_type_resolver(use_map, namespace, skip_names);
         for (class_name, type_args) in generics.iter_mut() {
             // Resolve the base class/trait/interface name
-            *class_name = Self::resolve_name(class_name, use_map, namespace);
+            let resolved: String = Self::resolve_name(class_name, use_map, namespace);
+            *class_name = atom(&resolved);
 
             // Resolve each type argument (now PhpType) via resolve_names
             for arg in type_args.iter_mut() {

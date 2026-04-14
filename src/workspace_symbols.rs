@@ -132,7 +132,7 @@ impl Backend {
                         continue;
                     }
 
-                    let fqn = class.fqn();
+                    let fqn = class.fqn().to_string();
 
                     let content = match self.get_file_content_arc(file_uri) {
                         Some(c) => c,
@@ -173,7 +173,7 @@ impl Backend {
                                         .unwrap_or_else(|_| Url::parse("file:///unknown").unwrap()),
                                     range: Range::new(pos, pos),
                                 },
-                                container_name: class.file_namespace.clone(),
+                                container_name: class.file_namespace.map(|a| a.to_string()),
                             },
                             tier,
                         });
@@ -417,7 +417,7 @@ impl Backend {
                             .deprecation_message
                             .as_ref()
                             .map(|_| vec![SymbolTag::DEPRECATED]);
-                        (k, t, class_info.file_namespace.clone())
+                        (k, t, class_info.file_namespace.map(|a| a.to_string()))
                     } else {
                         (SymbolKind::CLASS, None, namespace_from_fqn(fqn))
                     };
@@ -524,7 +524,7 @@ impl Backend {
 fn function_display_name(func: &FunctionInfo) -> String {
     match &func.namespace {
         Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, func.name),
-        _ => func.name.clone(),
+        _ => func.name.to_string(),
     }
 }
 

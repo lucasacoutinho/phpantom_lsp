@@ -330,7 +330,7 @@ impl Backend {
         };
 
         let has_member = match member_kind {
-            MemberKind::Method(name) => cls.methods.iter().any(|m| m.name == *name),
+            MemberKind::Method(name) => cls.has_method(name),
             MemberKind::Constant(name) => cls.constants.iter().any(|c| c.name == *name),
             MemberKind::Property(_) => false, // interfaces don't have properties
         };
@@ -482,9 +482,7 @@ fn extract_member_kind(ctx: &CursorContext<'_>) -> Option<MemberKind> {
 fn find_member_visibility_in_class(cls: &ClassInfo, member_kind: &MemberKind) -> Option<u8> {
     match member_kind {
         MemberKind::Method(name) => cls
-            .methods
-            .iter()
-            .find(|m| m.name == *name)
+            .get_method(name)
             .map(|m| min_visibility_level(&m.visibility)),
         MemberKind::Property(name) => cls
             .properties

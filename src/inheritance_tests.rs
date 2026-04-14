@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::{AtomMap, atom};
 use crate::php_type::PhpType;
 use crate::types::ClassLikeKind;
 
@@ -186,23 +187,23 @@ fn test_apply_substitution_fqn_closure() {
 #[test]
 fn test_build_substitution_map_basic() {
     let child = ClassInfo {
-        name: "LanguageCollection".to_string(),
-        parent_class: Some("Collection".to_string()),
+        name: crate::atom::atom("LanguageCollection"),
+        parent_class: Some(atom("Collection")),
         is_final: true,
         extends_generics: vec![(
-            "Collection".to_string(),
+            atom("Collection"),
             vec![PhpType::parse("int"), PhpType::parse("Language")],
         )],
         ..ClassInfo::default()
     };
 
     let parent = ClassInfo {
-        name: "Collection".to_string(),
-        template_params: vec!["TKey".to_string(), "TValue".to_string()],
+        name: crate::atom::atom("Collection"),
+        template_params: vec![atom("TKey"), atom("TValue")],
         ..ClassInfo::default()
     };
 
-    let subs = build_substitution_map(&child, &parent, &HashMap::new());
+    let subs = build_substitution_map(&child, &parent, &Default::default());
     assert_eq!(subs.get("TKey").unwrap().to_string(), "int");
     assert_eq!(subs.get("TValue").unwrap().to_string(), "Language");
 }
@@ -214,16 +215,16 @@ fn test_build_substitution_map_chained() {
     // B's @extends A<T> should resolve to A<Foo>, giving {U => Foo}
 
     let current_b = ClassInfo {
-        name: "B".to_string(),
-        parent_class: Some("A".to_string()),
-        template_params: vec!["T".to_string()],
-        extends_generics: vec![("A".to_string(), vec![PhpType::parse("T")])],
+        name: crate::atom::atom("B"),
+        parent_class: Some(atom("A")),
+        template_params: vec![atom("T")],
+        extends_generics: vec![(atom("A"), vec![PhpType::parse("T")])],
         ..ClassInfo::default()
     };
 
     let parent_a = ClassInfo {
-        name: "A".to_string(),
-        template_params: vec!["U".to_string()],
+        name: crate::atom::atom("A"),
+        template_params: vec![atom("U")],
         ..ClassInfo::default()
     };
 
@@ -296,10 +297,10 @@ fn test_apply_substitution_to_method_modifies_return_and_params() {
     let subs = make_subs(&[("TValue", "Language"), ("TKey", "int")]);
 
     let mut method = MethodInfo {
-        name: "first".to_string(),
+        name: crate::atom::atom("first"),
         name_offset: 0,
         parameters: vec![crate::types::ParameterInfo {
-            name: "$key".to_string(),
+            name: crate::atom::atom("$key"),
             is_required: false,
             type_hint: Some(PhpType::parse("TKey")),
             native_type_hint: Some(PhpType::parse("TKey")),
@@ -321,7 +322,7 @@ fn test_apply_substitution_to_method_modifies_return_and_params() {
         deprecation_message: None,
         deprecated_replacement: None,
         template_params: Vec::new(),
-        template_param_bounds: HashMap::new(),
+        template_param_bounds: Default::default(),
         template_bindings: Vec::new(),
         has_scope_attribute: false,
         is_abstract: false,
@@ -362,11 +363,11 @@ fn test_extends_generics_propagate_through_parent_use_generics() {
 
     // The trait: has @template TKey, TValue and a method returning TValue.
     let trait_info = ClassInfo {
-        name: "EnumerableMethods".to_string(),
+        name: crate::atom::atom("EnumerableMethods"),
         kind: ClassLikeKind::Trait,
-        template_params: vec!["TKey".to_string(), "TValue".to_string()],
-        methods: vec![MethodInfo {
-            name: "first".to_string(),
+        template_params: vec![atom("TKey"), atom("TValue")],
+        methods: vec![Arc::new(MethodInfo {
+            name: crate::atom::atom("first"),
             name_offset: 0,
             parameters: vec![],
             return_type: Some(PhpType::parse("TValue")),
@@ -381,25 +382,25 @@ fn test_extends_generics_propagate_through_parent_use_generics() {
             deprecation_message: None,
             deprecated_replacement: None,
             template_params: Vec::new(),
-            template_param_bounds: HashMap::new(),
+            template_param_bounds: Default::default(),
             template_bindings: Vec::new(),
             has_scope_attribute: false,
             is_abstract: false,
             is_virtual: false,
             type_assertions: Vec::new(),
             throws: Vec::new(),
-        }]
+        })]
         .into(),
         ..ClassInfo::default()
     };
 
     // The parent class: has @template TKey, TValue and @use EnumerableMethods<TKey, TValue>.
     let parent_class = ClassInfo {
-        name: "DataCollection".to_string(),
-        template_params: vec!["TKey".to_string(), "TValue".to_string()],
-        used_traits: vec!["EnumerableMethods".to_string()],
+        name: crate::atom::atom("DataCollection"),
+        template_params: vec![atom("TKey"), atom("TValue")],
+        used_traits: vec![atom("EnumerableMethods")],
         use_generics: vec![(
-            "EnumerableMethods".to_string(),
+            atom("EnumerableMethods"),
             vec![PhpType::parse("TKey"), PhpType::parse("TValue")],
         )],
         ..ClassInfo::default()
@@ -407,10 +408,10 @@ fn test_extends_generics_propagate_through_parent_use_generics() {
 
     // The child class: @extends DataCollection<int, DeliveryOption>
     let child_class = ClassInfo {
-        name: "DeliveryOptionCollection".to_string(),
-        parent_class: Some("DataCollection".to_string()),
+        name: crate::atom::atom("DeliveryOptionCollection"),
+        parent_class: Some(atom("DataCollection")),
         extends_generics: vec![(
-            "DataCollection".to_string(),
+            atom("DataCollection"),
             vec![PhpType::parse("int"), PhpType::parse("DeliveryOption")],
         )],
         is_final: true,
@@ -446,10 +447,16 @@ fn test_apply_generic_args_right_aligns_single_arg_for_collection() {
     // Collection has `@template TKey of array-key` and `@template TValue`,
     // the single arg should bind to TValue, not TKey.
     let collection = ClassInfo {
-        name: "Collection".to_string(),
-        template_params: vec!["TKey".to_string(), "TValue".to_string()],
-        template_param_bounds: HashMap::from([("TKey".to_string(), PhpType::parse("array-key"))]),
-        methods: vec![MethodInfo::virtual_method("first", Some("TValue"))].into(),
+        name: crate::atom::atom("Collection"),
+        template_params: vec![atom("TKey"), atom("TValue")],
+        template_param_bounds: [(atom("TKey"), PhpType::parse("array-key"))]
+            .into_iter()
+            .collect::<AtomMap<_>>(),
+        methods: vec![Arc::new(MethodInfo::virtual_method(
+            "first",
+            Some("TValue"),
+        ))]
+        .into(),
         ..ClassInfo::default()
     };
 
@@ -471,10 +478,16 @@ fn test_apply_generic_args_right_aligns_single_arg_for_collection() {
 fn test_apply_generic_args_no_right_align_when_all_args_provided() {
     // When both args are provided, positional mapping is used as-is.
     let collection = ClassInfo {
-        name: "Collection".to_string(),
-        template_params: vec!["TKey".to_string(), "TValue".to_string()],
-        template_param_bounds: HashMap::from([("TKey".to_string(), PhpType::parse("array-key"))]),
-        methods: vec![MethodInfo::virtual_method("first", Some("TValue"))].into(),
+        name: crate::atom::atom("Collection"),
+        template_params: vec![atom("TKey"), atom("TValue")],
+        template_param_bounds: [(atom("TKey"), PhpType::parse("array-key"))]
+            .into_iter()
+            .collect::<AtomMap<_>>(),
+        methods: vec![Arc::new(MethodInfo::virtual_method(
+            "first",
+            Some("TValue"),
+        ))]
+        .into(),
         ..ClassInfo::default()
     };
 
@@ -496,9 +509,13 @@ fn test_apply_generic_args_no_right_align_without_key_bound() {
     // When the leading param has no key-like bound, positional mapping
     // is used even with fewer args.
     let cls = ClassInfo {
-        name: "Pair".to_string(),
-        template_params: vec!["TFirst".to_string(), "TSecond".to_string()],
-        methods: vec![MethodInfo::virtual_method("first", Some("TFirst"))].into(),
+        name: crate::atom::atom("Pair"),
+        template_params: vec![atom("TFirst"), atom("TSecond")],
+        methods: vec![Arc::new(MethodInfo::virtual_method(
+            "first",
+            Some("TFirst"),
+        ))]
+        .into(),
         ..ClassInfo::default()
     };
 
@@ -520,10 +537,12 @@ fn test_apply_generic_args_no_right_align_without_key_bound() {
 fn test_apply_generic_args_right_align_with_int_bound() {
     // `int` is also a key-like bound.
     let cls = ClassInfo {
-        name: "TypedList".to_string(),
-        template_params: vec!["TKey".to_string(), "TValue".to_string()],
-        template_param_bounds: HashMap::from([("TKey".to_string(), PhpType::parse("int"))]),
-        methods: vec![MethodInfo::virtual_method("get", Some("TValue"))].into(),
+        name: crate::atom::atom("TypedList"),
+        template_params: vec![atom("TKey"), atom("TValue")],
+        template_param_bounds: [(atom("TKey"), PhpType::parse("int"))]
+            .into_iter()
+            .collect::<AtomMap<_>>(),
+        methods: vec![Arc::new(MethodInfo::virtual_method("get", Some("TValue")))].into(),
         ..ClassInfo::default()
     };
 

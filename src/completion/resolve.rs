@@ -188,7 +188,7 @@ impl Backend {
 
             let hover = match data.kind.as_str() {
                 "method" => {
-                    let method = merged.methods.iter().find(|m| m.name == data.member_name);
+                    let method = merged.get_method(&data.member_name);
                     method.map(|m| {
                         let declaring = find_declaring_class(
                             &merged,
@@ -197,7 +197,7 @@ impl Backend {
                             &class_loader,
                         );
                         (
-                            declaring.name.clone(),
+                            declaring.name.to_string(),
                             self.hover_for_method(m, &declaring, &class_loader, &data.uri, content),
                         )
                     })
@@ -215,7 +215,7 @@ impl Backend {
                             &class_loader,
                         );
                         (
-                            declaring.name.clone(),
+                            declaring.name.to_string(),
                             self.hover_for_property(p, &declaring, &class_loader),
                         )
                     })
@@ -230,7 +230,7 @@ impl Backend {
                             &class_loader,
                         );
                         (
-                            declaring.name.clone(),
+                            declaring.name.to_string(),
                             self.hover_for_constant(c, &declaring, &class_loader),
                         )
                     })

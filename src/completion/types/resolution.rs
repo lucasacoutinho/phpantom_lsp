@@ -19,6 +19,7 @@
 ///   type alias reference.
 use std::sync::Arc;
 
+use crate::atom::atom;
 use crate::inheritance::{apply_generic_args, build_generic_subs};
 use crate::php_type::PhpType;
 use crate::types::*;
@@ -135,7 +136,7 @@ fn type_hint_to_classes_typed_depth(
                 entries
                     .iter()
                     .map(|e| PropertyInfo {
-                        name: e.key.clone().unwrap_or_default(),
+                        name: atom(&e.key.clone().unwrap_or_default()),
                         name_offset: 0,
                         type_hint: Some(e.value_type.clone()),
                         native_type_hint: None,
@@ -151,7 +152,7 @@ fn type_hint_to_classes_typed_depth(
             );
 
             vec![ClassInfo {
-                name: "__object_shape".to_string(),
+                name: atom("__object_shape"),
                 properties,
                 ..ClassInfo::default()
             }]
@@ -207,6 +208,12 @@ fn resolve_named_type(
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     depth: u8,
 ) -> Vec<ClassInfo> {
+    // ── Fast reject: built-in scalar/pseudo types can never resolve
+    //    to a class and are never type aliases. ──────────────────────
+    if is_builtin_non_class_type(name) {
+        return vec![];
+    }
+
     // ── Type alias resolution ──────────────────────────────────────
     if let Some(alias_type) = resolve_type_alias_typed(
         &PhpType::Named(name.to_string()),
@@ -252,8 +259,8 @@ fn resolve_named_type(
     // Case-insensitive to match PHP behaviour (`Parent::`, `PARENT::` are valid).
     if name.eq_ignore_ascii_case("parent") {
         let parent_name = find_class_by_name(all_classes, owning_class_name)
-            .and_then(|c| c.parent_class.clone())
-            .or_else(|| class_loader(owning_class_name).and_then(|c| c.parent_class.clone()));
+            .and_then(|c| c.parent_class)
+            .or_else(|| class_loader(owning_class_name).and_then(|c| c.parent_class));
         if let Some(parent) = parent_name {
             return find_class_by_name(all_classes, &parent)
                 .map(|c| ClassInfo::clone(c))
@@ -327,7 +334,11 @@ fn resolve_named_type(
                 // during `resolve_class_fully` because the concrete type
                 // is not yet known.  Now that generic args are concrete,
                 // resolve those mixins and merge their members.
-                if cls.mixins.iter().any(|m| cls.template_params.contains(m)) {
+                if cls
+                    .mixins
+                    .iter()
+                    .any(|m| cls.template_params.iter().any(|t| t == m.as_str()))
+                {
                     let subs = build_generic_subs(&cls, generic_args);
                     if !subs.is_empty() {
                         let mixin_members = virtual_members::phpdoc::resolve_template_param_mixins(
@@ -382,8 +393,8 @@ fn resolve_named_type(
             };
 
             if let Some(owner) = owning
-                && owner.template_params.iter().any(|p| p == short)
-                && let Some(bound) = owner.template_param_bounds.get(short)
+                && owner.template_params.iter().any(|p| p.as_str() == short)
+                && let Some(bound) = owner.template_param_bounds.get(&atom(short))
             {
                 return type_hint_to_classes_typed_depth(
                     bound,
@@ -397,7 +408,7 @@ fn resolve_named_type(
             // ── stdClass fallback ──────────────────────────────────
             if short == "stdClass" {
                 return vec![ClassInfo {
-                    name: "stdClass".to_string(),
+                    name: atom("stdClass"),
                     ..ClassInfo::default()
                 }];
             }
@@ -418,6 +429,59 @@ fn resolve_named_type(
 ///
 /// Pass an empty `owning_class_name` to search all classes without
 /// priority (used by the array-key completion path).
+/// Returns `true` for type names that are PHP built-in scalar or
+/// pseudo types which can never be class names or type aliases.
+/// This allows skipping the expensive alias/class lookup for the
+/// most common return types.
+#[inline]
+fn is_builtin_non_class_type(name: &str) -> bool {
+    matches!(
+        name,
+        "int"
+            | "float"
+            | "string"
+            | "bool"
+            | "array"
+            | "object"
+            | "null"
+            | "void"
+            | "never"
+            | "mixed"
+            | "true"
+            | "false"
+            | "callable"
+            | "iterable"
+            | "resource"
+            | "numeric"
+            | "scalar"
+            | "positive-int"
+            | "negative-int"
+            | "non-negative-int"
+            | "non-positive-int"
+            | "non-zero-int"
+            | "numeric-string"
+            | "non-empty-string"
+            | "non-falsy-string"
+            | "truthy-string"
+            | "literal-string"
+            | "class-string"
+            | "interface-string"
+            | "array-key"
+            | "list"
+            | "non-empty-list"
+            | "non-empty-array"
+            | "empty"
+            | "no-return"
+            | "never-return"
+            | "never-returns"
+            | "number"
+            | "double"
+            | "boolean"
+            | "integer"
+            | "real"
+    )
+}
+
 pub(crate) fn resolve_type_alias_typed(
     ty: &PhpType,
     owning_class_name: &str,
@@ -465,7 +529,7 @@ fn resolve_type_alias_once(
     let owning_class = all_classes.iter().find(|c| c.name == owning_class_name);
 
     if let Some(cls) = owning_class
-        && let Some(def) = cls.type_aliases.get(name)
+        && let Some(def) = cls.type_aliases.get(&atom(name))
     {
         return expand_type_alias_def(def, all_classes, class_loader);
     }
@@ -480,7 +544,7 @@ fn resolve_type_alias_once(
         if cls.name == owning_class_name {
             continue; // Already checked above.
         }
-        if let Some(def) = cls.type_aliases.get(name) {
+        if let Some(def) = cls.type_aliases.get(&atom(name)) {
             return expand_type_alias_def(def, all_classes, class_loader);
         }
     }
@@ -529,7 +593,7 @@ pub(crate) fn resolve_imported_type_alias(
         .or_else(|| class_loader(source_class_name).map(Arc::unwrap_or_clone));
 
     let source_class = source_class?;
-    let def = source_class.type_aliases.get(original_name)?;
+    let def = source_class.type_aliases.get(&atom(original_name))?;
 
     // Don't follow nested imports — just return the local definition.
     match def {

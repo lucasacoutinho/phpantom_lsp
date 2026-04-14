@@ -13,6 +13,7 @@
 use crate::common::{
     create_psr4_workspace, create_test_backend, create_test_backend_with_function_stubs,
 };
+use phpantom_lsp::atom::atom;
 use phpantom_lsp::php_type::PhpType;
 use phpantom_lsp::types::FunctionInfo;
 use tower_lsp::LanguageServer;
@@ -72,7 +73,7 @@ fn register_namespaced_function(
             (
                 uri.to_string(),
                 FunctionInfo {
-                    name: name.to_string(),
+                    name: atom(name),
                     name_offset: 0,
                     parameters: vec![],
                     return_type: Some(PhpType::parse("mixed")),
@@ -88,7 +89,7 @@ fn register_namespaced_function(
                     deprecated_replacement: None,
                     template_params: vec![],
                     template_bindings: vec![],
-                    template_param_bounds: std::collections::HashMap::new(),
+                    template_param_bounds: Default::default(),
                     throws: vec![],
                     is_polyfill: false,
                 },
@@ -106,7 +107,7 @@ fn register_global_function(backend: &phpantom_lsp::Backend, name: &str, uri: &s
             (
                 uri.to_string(),
                 FunctionInfo {
-                    name: name.to_string(),
+                    name: atom(name),
                     name_offset: 0,
                     parameters: vec![],
                     return_type: Some(PhpType::parse("string")),
@@ -122,7 +123,7 @@ fn register_global_function(backend: &phpantom_lsp::Backend, name: &str, uri: &s
                     deprecated_replacement: None,
                     template_params: vec![],
                     template_bindings: vec![],
-                    template_param_bounds: std::collections::HashMap::new(),
+                    template_param_bounds: Default::default(),
                     throws: vec![],
                     is_polyfill: false,
                 },
@@ -845,10 +846,10 @@ async fn test_use_function_namespaced_detail_shows_signature() {
             (
                 "file:///helpers.php".to_string(),
                 FunctionInfo {
-                    name: "enum_value".to_string(),
+                    name: atom("enum_value"),
                     name_offset: 0,
                     parameters: vec![phpantom_lsp::types::ParameterInfo {
-                        name: "$value".to_string(),
+                        name: atom("$value"),
                         is_required: true,
                         type_hint: Some(PhpType::parse("mixed")),
                         native_type_hint: Some(PhpType::parse("mixed")),
@@ -871,7 +872,7 @@ async fn test_use_function_namespaced_detail_shows_signature() {
                     deprecated_replacement: None,
                     template_params: vec![],
                     template_bindings: vec![],
-                    template_param_bounds: std::collections::HashMap::new(),
+                    template_param_bounds: Default::default(),
                     throws: vec![],
                     is_polyfill: false,
                 },
@@ -955,7 +956,7 @@ async fn test_deprecated_namespaced_function() {
             (
                 "file:///legacy.php".to_string(),
                 FunctionInfo {
-                    name: "old_helper".to_string(),
+                    name: atom("old_helper"),
                     name_offset: 0,
                     parameters: vec![],
                     return_type: None,
@@ -971,7 +972,7 @@ async fn test_deprecated_namespaced_function() {
                     deprecated_replacement: None,
                     template_params: vec![],
                     template_bindings: vec![],
-                    template_param_bounds: std::collections::HashMap::new(),
+                    template_param_bounds: Default::default(),
                     throws: vec![],
                     is_polyfill: false,
                 },

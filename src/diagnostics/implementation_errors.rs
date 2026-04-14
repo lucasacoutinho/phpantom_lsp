@@ -191,7 +191,7 @@ fn has_method_in_chain(
     class_loader: &dyn Fn(&str) -> Option<Arc<crate::types::ClassInfo>>,
     visited: &mut HashSet<String>,
 ) -> bool {
-    if !visited.insert(class.name.clone()) {
+    if !visited.insert(class.name.to_string()) {
         return false;
     }
 
@@ -227,7 +227,7 @@ fn has_abstract_method_in_chain(
     class_loader: &dyn Fn(&str) -> Option<Arc<crate::types::ClassInfo>>,
     visited: &mut HashSet<String>,
 ) -> bool {
-    if !visited.insert(class.name.clone()) {
+    if !visited.insert(class.name.to_string()) {
         return false;
     }
 

@@ -132,6 +132,7 @@ impl Backend {
             class_loader: &class_loader,
             resolved_class_cache: Some(&self.resolved_class_cache),
             function_loader: Some(&function_loader),
+            scope_var_resolver: None,
         };
         let candidates = ResolvedType::into_arced_classes(
             crate::completion::resolver::resolve_target_classes(subject, access_kind, &rctx),
@@ -298,7 +299,7 @@ impl Backend {
                                                             None => (
                                                                 effective_name.clone(),
                                                                 ClassInfo::clone(target_class),
-                                                                target_class.name.clone(),
+                                                                target_class.name.to_string(),
                                                             ),
                                                         }
                                                     }
@@ -461,7 +462,8 @@ impl Backend {
                                                             fallback_class,
                                                             &class_loader,
                                                         ) {
-                                                            let fqn = fallback_class.name.clone();
+                                                            let fqn =
+                                                                fallback_class.name.to_string();
                                                             if let Some((class_uri, class_content)) =
                                                                 self.find_class_file_content(
                                                                     &fqn, uri, content,
@@ -604,7 +606,7 @@ impl Backend {
         member_name: &str,
         hint: MemberAccessHint,
     ) -> Option<MemberKind> {
-        let has_method = class.methods.iter().any(|m| m.name == member_name);
+        let has_method = class.has_method(member_name);
         let has_property = class.properties.iter().any(|p| p.name == member_name);
         let has_constant = class.constants.iter().any(|c| c.name == member_name);
 

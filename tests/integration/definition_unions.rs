@@ -1,4 +1,5 @@
 use crate::common::{create_psr4_workspace, create_test_backend};
+use phpantom_lsp::atom::atom;
 use phpantom_lsp::php_type::PhpType;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
@@ -159,7 +160,7 @@ async fn test_goto_definition_union_return_type_standalone_function() {
             (
                 uri.to_string(),
                 phpantom_lsp::FunctionInfo {
-                    name: "getAnimal".to_string(),
+                    name: atom("getAnimal"),
                     name_offset: 0,
                     parameters: vec![],
                     return_type: Some(PhpType::parse("Dog|Cat")),
@@ -175,7 +176,7 @@ async fn test_goto_definition_union_return_type_standalone_function() {
                     deprecated_replacement: None,
                     template_params: vec![],
                     template_bindings: vec![],
-                    template_param_bounds: std::collections::HashMap::new(),
+                    template_param_bounds: Default::default(),
                     throws: vec![],
                     is_polyfill: false,
                 },

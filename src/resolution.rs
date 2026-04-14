@@ -92,7 +92,16 @@ impl Backend {
             return None;
         }
 
-        // ── Phase 0: Try the class_index (FQN → URI) ──
+        // ── Phase 0: Search all already-parsed files ────────────
+        // O(1) lookup via `fqn_index` (populated by `update_ast` and
+        // `parse_and_cache_content`), with a linear `ast_map` fallback
+        // for edge cases.  This is the fastest path — no disk I/O, no
+        // parsing — so it runs before any file-based resolution.
+        if let Some(cls) = self.find_class_in_ast_map(class_name) {
+            return Some(cls);
+        }
+
+        // ── Phase 1: Try the class_index (FQN → URI) ───────────
         // The class_index is populated by `scan_autoload_files` (Composer
         // `autoload_files.php` entries and their `require_once` chains),
         // by `update_ast` for every opened/changed file, and by the
@@ -108,13 +117,6 @@ impl Backend {
             && let Some(cls) = classes.iter().find(|c| c.name == last_segment)
         {
             return Some(Arc::clone(cls));
-        }
-
-        // ── Phase 1: Search all already-parsed files in the ast_map ──
-        // Checks short name + namespace to avoid false positives (e.g.
-        // "Demo\\PDO" won't match the global "PDO" stub).
-        if let Some(cls) = self.find_class_in_ast_map(class_name) {
-            return Some(cls);
         }
 
         // ── Phase 1.5: Try Composer classmap ──
@@ -375,8 +377,9 @@ impl Backend {
             if cls.file_namespace.is_none() {
                 cls.file_namespace = classes_with_ns[i]
                     .1
-                    .clone()
-                    .or_else(|| file_namespace.clone());
+                    .as_deref()
+                    .or(file_namespace.as_deref())
+                    .map(crate::atom::atom);
             }
         }
 
@@ -404,10 +407,21 @@ impl Backend {
                 if cls.name.starts_with("__anonymous@") {
                     continue;
                 }
-                let fqn = cls.fqn();
+                let fqn = cls.fqn().to_string();
                 fqn_idx.insert(fqn, Arc::clone(cls));
             }
         }
+
+        // Populate the method store from the freshly parsed classes.
+        {
+            let fqns: Vec<String> = arc_classes
+                .iter()
+                .filter(|c| !c.name.starts_with("__anonymous@"))
+                .map(|c| c.fqn().to_string())
+                .collect();
+            self.evict_methods_for_fqns(&fqns);
+        }
+        self.populate_method_store(&arc_classes);
 
         // Remove newly-discovered FQNs from the negative-result cache.
         {
@@ -419,7 +433,7 @@ impl Backend {
                     if cls.name.starts_with("__anonymous@") {
                         continue;
                     }
-                    let fqn = cls.fqn();
+                    let fqn = cls.fqn().to_string();
                     nf_cache.remove(&fqn);
                 }
             }
@@ -448,7 +462,7 @@ impl Backend {
             let mut cache = self.resolved_class_cache.lock();
             for cls in &arc_classes {
                 let fqn = cls.fqn();
-                crate::virtual_members::evict_fqn(&mut cache, &fqn);
+                let _ = crate::virtual_members::evict_fqn(&mut cache, &fqn);
             }
         }
 
@@ -571,7 +585,7 @@ impl Backend {
                         let fqn = if let Some(ref ns) = func.namespace {
                             format!("{}\\{}", ns, &func.name)
                         } else {
-                            func.name.clone()
+                            func.name.to_string()
                         };
 
                         // Check if this is the function we're looking for.

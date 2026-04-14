@@ -61,7 +61,7 @@ impl Backend {
             }
             SymbolKind::ClassDeclaration { name } => {
                 let ctx = self.file_context(uri);
-                let fqn = build_fqn(name, &ctx.namespace);
+                let fqn = build_fqn(name, ctx.namespace.as_deref());
                 self.highlight_class(symbol_map, content, &fqn, &ctx.use_map, &ctx.namespace)
             }
             SymbolKind::MemberAccess { member_name, .. } => {
@@ -207,7 +207,7 @@ impl Backend {
                         Self::resolve_to_fqn(name, use_map, namespace)
                     }
                 }
-                SymbolKind::ClassDeclaration { name } => build_fqn(name, namespace),
+                SymbolKind::ClassDeclaration { name } => build_fqn(name, namespace.as_deref()),
                 _ => continue,
             };
 

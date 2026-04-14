@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::atom;
 use crate::test_fixtures::{make_class, no_loader};
 use crate::types::ClassInfo;
 use std::sync::Arc;
@@ -20,7 +21,7 @@ fn rejects_unrelated_class() {
 #[test]
 fn direct_child_of_model() {
     let mut user = make_class("App\\Models\\User");
-    user.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    user.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -37,10 +38,10 @@ fn direct_child_of_model() {
 #[test]
 fn indirect_child_of_model() {
     let mut user = make_class("App\\Models\\Admin");
-    user.parent_class = Some("App\\Models\\User".to_string());
+    user.parent_class = Some(atom("App\\Models\\User"));
 
     let mut base = make_class("App\\Models\\User");
-    base.parent_class = Some("Illuminate\\Database\\Eloquent\\Model".to_string());
+    base.parent_class = Some(atom("Illuminate\\Database\\Eloquent\\Model"));
 
     let model = make_class("Illuminate\\Database\\Eloquent\\Model");
 

@@ -38,6 +38,7 @@
 //! ```
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -49,6 +50,7 @@ use crate::virtual_members::with_active_resolved_class_cache;
 use crate::Backend;
 use crate::composer;
 use crate::config;
+use crate::types::ClassInfo;
 
 /// Severity filter for the analyse output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +150,6 @@ pub async fn run(options: AnalyseOptions) -> i32 {
     backend
         .init_single_project(root, php_version, composer_package, None)
         .await;
-
     // ── 3. Locate user files (via PSR-4) and crop to path ───────────
     let files = discover_user_files(&backend, root, options.path_filter.as_deref());
 
@@ -199,26 +200,30 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                 let backend = &backend;
                 let next_idx = &next_idx;
                 let files = &files;
-                s.spawn(move || {
-                    let mut entries: Vec<(usize, String, String)> = Vec::new();
-                    loop {
-                        let i = next_idx.fetch_add(1, Ordering::Relaxed);
-                        if i >= file_count {
-                            break;
+                std::thread::Builder::new()
+                    .name("index-worker".into())
+                    .stack_size(32 * 1024 * 1024)
+                    .spawn_scoped(s, move || {
+                        let mut entries: Vec<(usize, String, String)> = Vec::new();
+                        loop {
+                            let i = next_idx.fetch_add(1, Ordering::Relaxed);
+                            if i >= file_count {
+                                break;
+                            }
+
+                            let file_path = &files[i];
+                            let content = match std::fs::read_to_string(file_path) {
+                                Ok(c) => c,
+                                Err(_) => continue,
+                            };
+
+                            let uri = crate::util::path_to_uri(file_path);
+                            backend.update_ast(&uri, &content);
+                            entries.push((i, uri, content));
                         }
-
-                        let file_path = &files[i];
-                        let content = match std::fs::read_to_string(file_path) {
-                            Ok(c) => c,
-                            Err(_) => continue,
-                        };
-
-                        let uri = crate::util::path_to_uri(file_path);
-                        backend.update_ast(&uri, &content);
-                        entries.push((i, uri, content));
-                    }
-                    entries
-                })
+                        entries
+                    })
+                    .expect("failed to spawn index-worker thread")
             })
             .collect();
 
@@ -233,28 +238,73 @@ pub async fn run(options: AnalyseOptions) -> i32 {
         indexed
     });
 
+    // ── Phase 1.5: Eager class population ───────────────────────────
+    // Pre-populate the resolved_class_cache by resolving every known
+    // class in topological (dependency-first) order.  This ensures
+    // that when Phase 2 resolves types, all dependencies are already
+    // cached — eliminating the unbounded mutual recursion in
+    // resolve_class_fully_inner that previously caused stack overflow.
+    //
+    // We snapshot the toposorted FQN list while holding the ast_map
+    // read lock, then drop the lock before resolving.  Resolution may
+    // call find_or_load_class which takes write locks on ast_map.
+    let sorted_fqns = {
+        let ast_map = backend.ast_map.read();
+        crate::toposort::toposort_from_ast_map(&ast_map)
+    };
+    // Run eager population on a large-stack thread.  `resolve_class_fully_inner`
+    // can nest deeply when the toposort misses dependencies (stubs, dynamically
+    // loaded classes) and the recursion guard kicks in.  The default 8 MB thread
+    // stack is not enough for very large codebases.
+    std::thread::scope(|s| {
+        let backend = &backend;
+        let sorted_fqns = &sorted_fqns;
+        std::thread::Builder::new()
+            .name("eager-populate".into())
+            .stack_size(32 * 1024 * 1024)
+            .spawn_scoped(s, move || {
+                let class_loader =
+                    |name: &str| -> Option<Arc<ClassInfo>> { backend.find_or_load_class(name) };
+                crate::virtual_members::populate_from_sorted(
+                    sorted_fqns,
+                    &backend.resolved_class_cache,
+                    &class_loader,
+                );
+            })
+            .expect("failed to spawn eager-population thread");
+    });
     // ── Phase 2: Collect diagnostics (parallel) ─────────────────────
     // Call individual collectors directly (instead of the grouped
     // collect_slow_diagnostics) so we can time each one independently.
     let next_idx = AtomicUsize::new(0);
     let done_count = AtomicUsize::new(0);
 
+    // Phase 2 diagnostic threads need large stacks because the forward
+    // walker + type resolution pipeline can nest deeply on files with
+    // many class hierarchies and virtual members (see B24).
+    //
+    // `std::thread::scope` + `s.spawn()` ignores `RUST_MIN_STACK` and
+    // always uses the OS default (8 MB).  Use `std::thread::Builder`
+    // with an explicit 32 MB stack to avoid stack overflow.
     let mut all_file_diagnostics: Vec<(String, Vec<FileDiagnostic>)> = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..n_threads)
-            .map(|_| {
-                let backend = &backend;
-                let next_idx = &next_idx;
-                let done_count = &done_count;
-                let files = &files;
-                let file_data = &file_data;
-                s.spawn(move || {
+        let handles: Vec<_> =
+            (0..n_threads)
+                .map(|_| {
+                    let backend = &backend;
+                    let next_idx = &next_idx;
+                    let done_count = &done_count;
+                    let files = &files;
+                    let file_data = &file_data;
+                    std::thread::Builder::new()
+                    .name("diag-worker".into())
+                    .stack_size(32 * 1024 * 1024)
+                    .spawn_scoped(s, move || {
                     let mut results: Vec<(String, Vec<FileDiagnostic>)> = Vec::new();
                     loop {
                         let i = next_idx.fetch_add(1, Ordering::Relaxed);
                         if i >= file_count {
                             break;
                         }
-
                         let (uri, content) = match &file_data[i] {
                             Some(pair) => (&pair.0, &pair.1),
                             None => continue, // file that failed to read
@@ -272,6 +322,36 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         let _callable_guard =
                             crate::completion::call_resolution::with_callable_target_cache();
 
+                        // ── Forward-walked diagnostic scope cache ───
+                        // Walk every function/method body once with the
+                        // forward walker, recording scope snapshots at
+                        // each statement boundary.  All subsequent
+                        // `resolve_variable_types` calls from diagnostic
+                        // collectors hit the cache (O(log N) lookup)
+                        // instead of doing a full backward scan.
+                        let _scope_guard =
+                            crate::completion::variable::forward_walk::with_diagnostic_scope_cache(
+                            );
+                        let scope_t0 = Instant::now();
+                        {
+                            let file_ctx = backend.file_context(uri);
+                            let class_loader = backend.class_loader(&file_ctx);
+                            let function_loader_cl = backend.function_loader(&file_ctx);
+                            let constant_loader_cl = backend.constant_loader();
+                            let loaders = crate::completion::resolver::Loaders {
+                                function_loader: Some(&function_loader_cl),
+                                constant_loader: Some(&constant_loader_cl),
+                            };
+                            crate::completion::variable::forward_walk::build_diagnostic_scopes(
+                                content,
+                                &file_ctx.classes,
+                                &class_loader,
+                                loaders,
+                                Some(&backend.resolved_class_cache),
+                            );
+                        }
+                        let scope_elapsed = scope_t0.elapsed();
+
                         let mut raw = Vec::new();
 
                         // In debug builds, time each collector and warn
@@ -285,6 +365,8 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                             let deadline = file_start + FILE_TIMEOUT;
                             let mut timings = Vec::new();
                             let mut timed_out = false;
+                            // Record scope-build time (it ran before file_start).
+                            timings.push((scope_elapsed, "scope"));
 
                             // Fast diagnostics always run (cheap).
                             timings.push({
@@ -294,6 +376,8 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                             });
 
                             // Slow collectors: each checks the deadline.
+                            // ── Bisect: enable collectors one at a time to find
+                            //    which one causes infinite recursion (B24 debug).
                             let collectors: &[(&str, &CollectFn)] = &[
                                 (
                                     "unknown_class",
@@ -334,7 +418,8 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                                 }
                                 let t0 = Instant::now();
                                 collect_fn(backend, uri, content, &mut raw);
-                                timings.push((t0.elapsed(), name));
+                                let elapsed = t0.elapsed();
+                                timings.push((elapsed, name));
                             }
 
                             let file_elapsed = file_start.elapsed();
@@ -371,8 +456,25 @@ pub async fn run(options: AnalyseOptions) -> i32 {
 
                         #[cfg(not(debug_assertions))]
                         {
+                            let diag_t0 = Instant::now();
                             backend.collect_fast_diagnostics(uri, content, &mut raw);
+                            let fast_elapsed = diag_t0.elapsed();
+                            let slow_t0 = Instant::now();
                             backend.collect_slow_diagnostics(uri, content, &mut raw);
+                            let slow_elapsed = slow_t0.elapsed();
+                            let total = scope_elapsed + fast_elapsed + slow_elapsed;
+                            if total.as_secs() >= 2 {
+                                let display =
+                                    files[i].strip_prefix(root).unwrap_or(&files[i]).display();
+                                eprintln!(
+                                    "\n  \u{26a0} slow file ({:.1}s): {}\n    scope={:.1}s, fast={:.1}s, slow={:.1}s",
+                                    total.as_secs_f64(),
+                                    display,
+                                    scope_elapsed.as_secs_f64(),
+                                    fast_elapsed.as_secs_f64(),
+                                    slow_elapsed.as_secs_f64(),
+                                );
+                            }
                         }
 
                         let mut filtered: Vec<FileDiagnostic> = raw
@@ -415,12 +517,17 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                     }
                     results
                 })
-            })
-            .collect();
+                })
+                .collect();
 
         let mut merged: Vec<(String, Vec<FileDiagnostic>)> = Vec::new();
         for handle in handles {
-            merged.extend(handle.join().unwrap_or_default());
+            merged.extend(
+                handle
+                    .expect("diagnostic worker thread spawn failed")
+                    .join()
+                    .unwrap_or_default(),
+            );
         }
         merged
     });

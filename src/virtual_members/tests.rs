@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::atom;
 use crate::php_type::PhpType;
 use crate::test_fixtures::{make_class, make_method, make_property};
 use crate::types::{ClassLikeKind, ConstantInfo, Visibility};
@@ -42,7 +43,7 @@ fn virtual_members_not_empty_with_constant() {
         methods: Vec::new(),
         properties: Vec::new(),
         constants: vec![ConstantInfo {
-            name: "FOO".to_string(),
+            name: crate::atom::atom("FOO"),
             name_offset: 0,
             type_hint: None,
             visibility: Visibility::Public,
@@ -64,7 +65,9 @@ fn virtual_members_not_empty_with_constant() {
 #[test]
 fn merge_adds_new_methods() {
     let mut class = make_class("Foo");
-    class.methods.push(make_method("existing", Some("string")));
+    class
+        .methods
+        .push(Arc::new(make_method("existing", Some("string"))));
 
     let virtual_members = VirtualMembers {
         methods: vec![make_method("new_method", Some("int"))],
@@ -102,7 +105,9 @@ fn merge_adds_new_properties() {
 #[test]
 fn merge_does_not_overwrite_existing_method() {
     let mut class = make_class("Foo");
-    class.methods.push(make_method("doStuff", Some("string")));
+    class
+        .methods
+        .push(Arc::new(make_method("doStuff", Some("string"))));
 
     let virtual_members = VirtualMembers {
         methods: vec![make_method("doStuff", Some("int"))],
@@ -124,7 +129,9 @@ fn merge_does_not_overwrite_existing_method() {
 fn merge_allows_same_name_methods_with_different_staticness() {
     let mut class = make_class("Foo");
     // Existing instance method
-    class.methods.push(make_method("active", Some("string")));
+    class
+        .methods
+        .push(Arc::new(make_method("active", Some("string"))));
 
     // Virtual: one instance (should be blocked) and one static (should be added)
     let mut static_method = make_method("active", Some("Builder"));
@@ -167,7 +174,7 @@ fn merge_replaces_scope_attribute_method_with_virtual() {
     let mut original = make_method("active", Some("void"));
     original.has_scope_attribute = true;
     original.visibility = Visibility::Protected;
-    class.methods.push(original);
+    class.methods.push(Arc::new(original));
 
     let mut virtual_scope = make_method("active", Some("Builder<static>"));
     virtual_scope.visibility = Visibility::Public;
@@ -198,7 +205,7 @@ fn merge_does_not_replace_non_scope_attribute_method() {
     let mut class = make_class("Foo");
     let mut original = make_method("active", Some("string"));
     original.has_scope_attribute = false;
-    class.methods.push(original);
+    class.methods.push(Arc::new(original));
 
     let virtual_members = VirtualMembers {
         methods: vec![make_method("active", Some("int"))],
@@ -222,7 +229,7 @@ fn merge_replaces_scope_attribute_and_adds_static_variant() {
     let mut original = make_method("active", Some("void"));
     original.has_scope_attribute = true;
     original.visibility = Visibility::Protected;
-    class.methods.push(original);
+    class.methods.push(Arc::new(original));
 
     let mut virtual_instance = make_method("active", Some("Builder<static>"));
     virtual_instance.visibility = Visibility::Public;
@@ -272,7 +279,7 @@ fn merge_blocks_same_name_same_staticness() {
     let mut class = make_class("Foo");
     let mut existing = make_method("active", Some("string"));
     existing.is_static = true;
-    class.methods.push(existing);
+    class.methods.push(Arc::new(existing));
 
     let mut virtual_static = make_method("active", Some("int"));
     virtual_static.is_static = true;
@@ -634,7 +641,9 @@ fn merge_generic_virtual_beats_native_bare() {
 #[test]
 fn merge_handles_empty_virtual_members() {
     let mut class = make_class("Foo");
-    class.methods.push(make_method("foo", Some("void")));
+    class
+        .methods
+        .push(Arc::new(make_method("foo", Some("void"))));
     class.properties.push(make_property("bar", Some("int")));
 
     merge_virtual_members(
@@ -759,7 +768,7 @@ fn apply_providers_real_members_beat_virtual() {
     let mut class = make_class("Foo");
     class
         .methods
-        .push(make_method("realMethod", Some("string")));
+        .push(Arc::new(make_method("realMethod", Some("string"))));
 
     let provider = Box::new(TestProvider {
         methods: vec![make_method("realMethod", Some("int"))],
@@ -970,13 +979,15 @@ fn resolve_class_fully_returns_same_as_base_when_no_providers() {
     // With no providers registered, resolve_class_fully should produce
     // the same result as resolve_class_with_inheritance.
     let mut class = make_class("Child");
-    class.methods.push(make_method("childMethod", Some("void")));
-    class.parent_class = Some("Parent".to_string());
+    class
+        .methods
+        .push(Arc::new(make_method("childMethod", Some("void"))));
+    class.parent_class = Some(atom("Parent"));
 
     let mut parent = make_class("Parent");
     parent
         .methods
-        .push(make_method("parentMethod", Some("string")));
+        .push(Arc::new(make_method("parentMethod", Some("string"))));
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "Parent" {
@@ -1012,7 +1023,10 @@ fn make_cache() -> HashMap<ResolvedClassCacheKey, Arc<ClassInfo>> {
 fn evict_removes_direct_match() {
     let mut cache = make_cache();
     let cls = make_class("App\\Models\\User");
-    cache.insert(("App\\Models\\User".to_string(), Vec::new()), Arc::new(cls));
+    cache.insert(
+        ("App\\Models\\User".to_string().into(), Vec::new()),
+        Arc::new(cls),
+    );
 
     evict_fqn(&mut cache, "App\\Models\\User");
     assert!(cache.is_empty(), "direct match should be evicted");
@@ -1024,14 +1038,14 @@ fn evict_transitively_removes_child_class() {
 
     let parent = make_class("Model");
     cache.insert(
-        ("App\\Models\\Model".to_string(), Vec::new()),
+        ("App\\Models\\Model".to_string().into(), Vec::new()),
         Arc::new(parent),
     );
 
     let mut child = make_class("User");
-    child.parent_class = Some("App\\Models\\Model".to_string());
+    child.parent_class = Some(atom("App\\Models\\Model"));
     cache.insert(
-        ("App\\Models\\User".to_string(), Vec::new()),
+        ("App\\Models\\User".to_string().into(), Vec::new()),
         Arc::new(child),
     );
 
@@ -1045,7 +1059,7 @@ fn evict_transitively_removes_model_referencing_cast_class() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
     );
 
@@ -1053,7 +1067,7 @@ fn evict_transitively_removes_model_referencing_cast_class() {
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new()),
+        ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
     );
 
@@ -1071,7 +1085,7 @@ fn evict_cast_class_with_colon_argument_transitively_removes_model() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
     );
 
@@ -1080,7 +1094,7 @@ fn evict_cast_class_with_colon_argument_transitively_removes_model() {
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast:8:2".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new()),
+        ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
     );
 
@@ -1097,7 +1111,7 @@ fn evict_cast_class_matched_by_short_name() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
     );
 
@@ -1105,7 +1119,7 @@ fn evict_cast_class_matched_by_short_name() {
     // The model references the cast class by short name (same-file scenario).
     model.laravel_mut().casts_definitions = vec![("vat".to_string(), "DecimalCast".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new()),
+        ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
     );
 
@@ -1122,7 +1136,7 @@ fn evict_cast_class_canonical() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
     );
 
@@ -1131,7 +1145,7 @@ fn evict_cast_class_canonical() {
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new()),
+        ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
     );
 
@@ -1152,7 +1166,7 @@ fn evict_builtin_cast_does_not_affect_model() {
         ("created_at".to_string(), "datetime".to_string()),
     ];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new()),
+        ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
     );
 
@@ -1172,7 +1186,7 @@ fn evict_cast_class_chains_through_model_to_child() {
 
     let cast_class = make_class("DecimalCast");
     cache.insert(
-        ("App\\Casts\\DecimalCast".to_string(), Vec::new()),
+        ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
     );
 
@@ -1180,14 +1194,17 @@ fn evict_cast_class_chains_through_model_to_child() {
     model.laravel_mut().casts_definitions =
         vec![("vat".to_string(), "App\\Casts\\DecimalCast".to_string())];
     cache.insert(
-        ("App\\Models\\Setting".to_string(), Vec::new()),
+        ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
     );
 
     let mut child = make_class("AdvancedSetting");
-    child.parent_class = Some("App\\Models\\Setting".to_string());
+    child.parent_class = Some(atom("App\\Models\\Setting"));
     cache.insert(
-        ("App\\Models\\AdvancedSetting".to_string(), Vec::new()),
+        (
+            "App\\Models\\AdvancedSetting".to_string().into(),
+            Vec::new(),
+        ),
         Arc::new(child),
     );
 
@@ -1218,7 +1235,7 @@ fn resolve_class_fully_merges_transitive_interface_constants() {
     let mut unit_value = make_class("Carbon\\Constants\\UnitValue");
     unit_value.kind = ClassLikeKind::Interface;
     unit_value.constants.push(ConstantInfo {
-        name: "JANUARY".to_string(),
+        name: crate::atom::atom("JANUARY"),
         name_offset: 0,
         type_hint: Some(PhpType::parse("int")),
         visibility: Visibility::Public,
@@ -1236,25 +1253,25 @@ fn resolve_class_fully_merges_transitive_interface_constants() {
     json_serializable.kind = ClassLikeKind::Interface;
     json_serializable
         .methods
-        .push(make_method("jsonSerialize", Some("mixed")));
+        .push(Arc::new(make_method("jsonSerialize", Some("mixed"))));
 
     let mut datetime_iface = make_class("DateTimeInterface");
     datetime_iface.kind = ClassLikeKind::Interface;
     datetime_iface
         .methods
-        .push(make_method("format", Some("string")));
+        .push(Arc::new(make_method("format", Some("string"))));
 
     let mut carbon_iface = make_class("CarbonInterface");
     carbon_iface.kind = ClassLikeKind::Interface;
-    carbon_iface.parent_class = Some("DateTimeInterface".to_string());
+    carbon_iface.parent_class = Some(atom("DateTimeInterface"));
     carbon_iface.interfaces = vec![
-        "DateTimeInterface".to_string(),
-        "JsonSerializable".to_string(),
-        "Carbon\\Constants\\UnitValue".to_string(),
+        atom("DateTimeInterface"),
+        atom("JsonSerializable"),
+        atom("Carbon\\Constants\\UnitValue"),
     ];
 
     let mut carbon = make_class("Carbon");
-    carbon.interfaces = vec!["CarbonInterface".to_string()];
+    carbon.interfaces = vec![atom("CarbonInterface")];
 
     let class_loader = move |name: &str| -> Option<Arc<ClassInfo>> {
         match name {

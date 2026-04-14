@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::atom;
 use crate::php_type::PhpType;
 use crate::test_fixtures::{
     make_class, make_method, make_method_with_params, make_param, no_loader,
@@ -8,8 +9,8 @@ use std::sync::Arc;
 /// Helper: create a minimal Builder class with template params and methods.
 fn make_builder(methods: Vec<MethodInfo>) -> ClassInfo {
     let mut builder = make_class(ELOQUENT_BUILDER_FQN);
-    builder.template_params = vec!["TModel".to_string()];
-    builder.methods = methods.into();
+    builder.template_params = vec![atom("TModel")];
+    builder.methods = methods.into_iter().map(Arc::new).collect::<Vec<_>>().into();
     builder
 }
 
@@ -63,7 +64,7 @@ fn builder_forwarding_returns_empty_when_builder_not_found() {
 #[test]
 fn builder_forwarding_converts_instance_to_static() {
     let mut builder = make_builder(vec![make_method("where", Some("static"))]);
-    builder.methods.make_mut()[0].is_static = false;
+    Arc::make_mut(&mut builder.methods.make_mut()[0]).is_static = false;
 
     let user = make_class("App\\Models\\User");
 
@@ -248,7 +249,7 @@ fn builder_forwarding_skips_non_public_methods() {
         make_method("where", Some("static")),
         make_method("internalHelper", Some("void")),
     ]);
-    builder.methods.make_mut()[1].visibility = Visibility::Protected;
+    Arc::make_mut(&mut builder.methods.make_mut()[1]).visibility = Visibility::Protected;
     let user = make_class("App\\Models\\User");
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
@@ -274,7 +275,7 @@ fn builder_forwarding_skips_methods_already_on_model() {
     // The model has a static method named "myMethod" already.
     let mut existing = make_method("myMethod", Some("string"));
     existing.is_static = true;
-    user.methods.push(existing);
+    user.methods.push(Arc::new(existing));
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == ELOQUENT_BUILDER_FQN {
@@ -302,7 +303,7 @@ fn builder_forwarding_does_not_skip_instance_method_with_same_name() {
     let mut user = make_class("App\\Models\\User");
     let mut existing = make_method("where", Some("string"));
     existing.is_static = false;
-    user.methods.push(existing);
+    user.methods.push(Arc::new(existing));
 
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == ELOQUENT_BUILDER_FQN {
@@ -357,7 +358,8 @@ fn builder_forwarding_preserves_method_metadata() {
             make_param("$value", Some("mixed"), false),
         ],
     )]);
-    builder.methods.make_mut()[0].deprecation_message = Some("Use whereNew() instead".into());
+    Arc::make_mut(&mut builder.methods.make_mut()[0]).deprecation_message =
+        Some("Use whereNew() instead".into());
 
     let user = make_class("App\\Models\\User");
 

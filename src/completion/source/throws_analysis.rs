@@ -1068,7 +1068,7 @@ pub(crate) fn find_uncaught_throw_types_with_context(
         // Resolve exception type to FQN via class loader if available.
         let exc_fqn = if let Some(loader) = class_loader {
             loader(exc_name)
-                .map(|cls| cls.fqn())
+                .map(|cls| cls.fqn().to_string())
                 .unwrap_or_else(|| exc_name.to_string())
         } else {
             exc_name.to_string()
@@ -1084,7 +1084,7 @@ pub(crate) fn find_uncaught_throw_types_with_context(
                     let resolved_ct = if let Some(loader) = class_loader {
                         loader(&resolved_ct)
                             .or_else(|| loader(ct_name))
-                            .map(|cls| cls.fqn())
+                            .map(|cls| cls.fqn().to_string())
                             .unwrap_or(resolved_ct)
                     } else {
                         resolved_ct
@@ -1118,7 +1118,7 @@ pub(crate) fn find_uncaught_throw_types_with_context(
             let fqn = if let Some(loader) = class_loader {
                 loader(&resolved)
                     .or_else(|| loader(trimmed))
-                    .map(|cls| cls.fqn())
+                    .map(|cls| cls.fqn().to_string())
                     .unwrap_or(resolved)
             } else {
                 resolved
@@ -1470,8 +1470,7 @@ fn find_cross_file_propagated_throws(
                     let call_key = format!("new:{}", resolved_class);
                     if seen_calls.insert(call_key)
                         && let Some(class_info) = class_loader(&resolved_class)
-                        && let Some(ctor) =
-                            class_info.methods.iter().find(|m| m.name == "__construct")
+                        && let Some(ctor) = class_info.get_method("__construct")
                     {
                         for exc_type in &ctor.throws {
                             results.push(ThrowInfo {
@@ -1651,7 +1650,7 @@ fn collect_method_throws(
     results: &mut Vec<ThrowInfo>,
 ) {
     if let Some(class_info) = class_loader(class_name)
-        && let Some(method_info) = class_info.methods.iter().find(|m| m.name == method_name)
+        && let Some(method_info) = class_info.get_method(method_name)
     {
         for exc_type in &method_info.throws {
             results.push(ThrowInfo {

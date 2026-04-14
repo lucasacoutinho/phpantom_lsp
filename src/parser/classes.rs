@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::php_type::PhpType;
 use crate::types::TypeAliasDef;
@@ -146,6 +146,7 @@ fn parse_attribute_target_flags(text: &str) -> u8 {
 use mago_syntax::ast::*;
 
 use crate::Backend;
+use crate::atom::{Atom, AtomMap, atom};
 use crate::docblock;
 use crate::types::*;
 use crate::virtual_members::laravel::infer_relationship_from_body;
@@ -165,26 +166,26 @@ struct ClassDocblockInfo {
     /// Deprecation message from `@deprecated`, or `None` if not deprecated.
     deprecation_message: Option<String>,
     /// `@template` parameters declared on the class-like.
-    template_params: Vec<String>,
+    template_params: Vec<Atom>,
     /// Upper bounds for template parameters (`@template T of Bound`).
-    template_param_bounds: HashMap<String, PhpType>,
+    template_param_bounds: AtomMap<PhpType>,
     /// Default values for template parameters (`@template T of bool = false`).
-    template_param_defaults: HashMap<String, PhpType>,
+    template_param_defaults: AtomMap<PhpType>,
     /// Generic arguments from `@extends` / `@phpstan-extends`.
-    extends_generics: Vec<(String, Vec<PhpType>)>,
+    extends_generics: Vec<(Atom, Vec<PhpType>)>,
     /// Generic arguments from `@implements` / `@phpstan-implements`.
-    implements_generics: Vec<(String, Vec<PhpType>)>,
+    implements_generics: Vec<(Atom, Vec<PhpType>)>,
     /// Generic arguments from `@use` / `@phpstan-use`.
-    use_generics: Vec<(String, Vec<PhpType>)>,
+    use_generics: Vec<(Atom, Vec<PhpType>)>,
     /// Type aliases from `@phpstan-type` / `@psalm-type`.
-    type_aliases: HashMap<String, TypeAliasDef>,
+    type_aliases: AtomMap<TypeAliasDef>,
     /// Mixin class names from `@mixin` tags.
-    mixins: Vec<String>,
+    mixins: Vec<Atom>,
     /// Generic type arguments from `@mixin` tags.
     ///
     /// Each entry is `(MixinClassName, [TypeArg1, TypeArg2, …])`.
     /// Only populated for mixins that have generic arguments.
-    mixin_generics: Vec<(String, Vec<PhpType>)>,
+    mixin_generics: Vec<(Atom, Vec<PhpType>)>,
     /// URLs from `@link` and `@see` tags in the class-level docblock.
     links: Vec<String>,
     /// `@see` references from the class-level docblock.
@@ -214,21 +215,22 @@ fn extract_class_docblock<'a>(
     };
 
     let params_full = docblock::extract_template_params_full_from_info(&info);
-    let template_params: Vec<String> = params_full.iter().map(|(n, _, _, _)| n.clone()).collect();
-    let template_param_bounds: HashMap<String, PhpType> = params_full
+    let template_params: Vec<Atom> = params_full.iter().map(|(n, _, _, _)| atom(n)).collect();
+    let template_param_bounds: AtomMap<PhpType> = params_full
         .iter()
-        .filter_map(|(name, bound, _, _)| bound.as_ref().map(|b| (name.clone(), b.clone())))
+        .filter_map(|(name, bound, _, _)| bound.as_ref().map(|b| (atom(name), b.clone())))
         .collect();
-    let template_param_defaults: HashMap<String, PhpType> = params_full
+    let template_param_defaults: AtomMap<PhpType> = params_full
         .into_iter()
-        .filter_map(|(name, _, _, default)| default.map(|d| (name, d)))
+        .filter_map(|(name, _, _, default)| default.map(|d| (atom(&name), d)))
         .collect();
 
     let mixin_data = docblock::extract_mixin_tags_from_info(&info);
-    let mixins: Vec<String> = mixin_data.iter().map(|(name, _)| name.clone()).collect();
-    let mixin_generics: Vec<(String, Vec<PhpType>)> = mixin_data
+    let mixins: Vec<Atom> = mixin_data.iter().map(|(name, _)| atom(name)).collect();
+    let mixin_generics: Vec<(Atom, Vec<PhpType>)> = mixin_data
         .into_iter()
         .filter(|(_, args)| !args.is_empty())
+        .map(|(name, args)| (atom(&name), args))
         .collect();
 
     ClassDocblockInfo {
@@ -236,10 +238,22 @@ fn extract_class_docblock<'a>(
         template_params,
         template_param_bounds,
         template_param_defaults,
-        extends_generics: docblock::extract_generics_tag_from_info(&info, "@extends"),
-        implements_generics: docblock::extract_generics_tag_from_info(&info, "@implements"),
-        use_generics: docblock::extract_generics_tag_from_info(&info, "@use"),
-        type_aliases: docblock::extract_type_aliases_from_info(&info),
+        extends_generics: docblock::extract_generics_tag_from_info(&info, "@extends")
+            .into_iter()
+            .map(|(n, args)| (atom(&n), args))
+            .collect(),
+        implements_generics: docblock::extract_generics_tag_from_info(&info, "@implements")
+            .into_iter()
+            .map(|(n, args)| (atom(&n), args))
+            .collect(),
+        use_generics: docblock::extract_generics_tag_from_info(&info, "@use")
+            .into_iter()
+            .map(|(n, args)| (atom(&n), args))
+            .collect(),
+        type_aliases: docblock::extract_type_aliases_from_info(&info)
+            .into_iter()
+            .map(|(k, v)| (atom(&k), v))
+            .collect(),
         mixins,
         mixin_generics,
         links: docblock::extract_link_urls_from_info(&info),
@@ -290,7 +304,7 @@ fn extract_collected_by_attribute(
 /// The attribute takes priority because it is the newer Laravel API.
 fn extract_custom_collection(
     attribute_lists: &Sequence<'_, AttributeList<'_>>,
-    use_generics: &[(String, Vec<PhpType>)],
+    use_generics: &[(Atom, Vec<PhpType>)],
     methods: &[MethodInfo],
     content: &str,
 ) -> Option<PhpType> {
@@ -823,22 +837,17 @@ impl Backend {
                         continue;
                     }
 
-                    let class_name = class.name.value.to_string();
+                    let class_name = atom(class.name.value);
 
                     let parent_class = class
                         .extends
                         .as_ref()
-                        .and_then(|ext| ext.types.first().map(|ident| ident.value().to_string()));
+                        .and_then(|ext| ext.types.first().map(|ident| atom(ident.value())));
 
-                    let interfaces: Vec<String> = class
+                    let interfaces: Vec<Atom> = class
                         .implements
                         .as_ref()
-                        .map(|imp| {
-                            imp.types
-                                .iter()
-                                .map(|ident| ident.value().to_string())
-                                .collect()
-                        })
+                        .map(|imp| imp.types.iter().map(|ident| atom(ident.value())).collect())
                         .unwrap_or_default();
 
                     let doc_info = extract_class_docblock(class, doc_ctx);
@@ -857,7 +866,7 @@ impl Backend {
                         &doc_info.template_params,
                     );
 
-                    let mut use_generics = doc_info.use_generics;
+                    let mut use_generics: Vec<(Atom, Vec<PhpType>)> = doc_info.use_generics;
                     use_generics.extend(inline_use_generics);
 
                     let keyword_offset = class.class.span.start.offset;
@@ -896,7 +905,7 @@ impl Backend {
                     classes.push(ClassInfo {
                         kind: ClassLikeKind::Class,
                         name: class_name,
-                        methods: methods.into(),
+                        methods: methods.into_iter().map(Arc::new).collect::<Vec<_>>().into(),
                         properties: properties.into(),
                         constants: constants.into(),
                         start_offset,
@@ -926,6 +935,8 @@ impl Backend {
                         file_namespace: None,
                         backed_type: None,
                         attribute_targets: attr_targets,
+                        method_index: Default::default(),
+                        indexed_method_count: 0,
                         laravel: Some(Box::new(LaravelMetadata {
                             custom_collection,
                             casts_definitions,
@@ -951,25 +962,20 @@ impl Backend {
                         continue;
                     }
 
-                    let iface_name = iface.name.value.to_string();
+                    let iface_name = atom(iface.name.value);
 
                     // Interfaces can extend multiple parent interfaces.
                     // Store the first one in `parent_class` for backward
                     // compatibility with single-inheritance resolution,
                     // and all of them in `interfaces` so that transitive
                     // interface inheritance checks work correctly.
-                    let all_parents: Vec<String> = iface
+                    let all_parents: Vec<Atom> = iface
                         .extends
                         .as_ref()
-                        .map(|ext| {
-                            ext.types
-                                .iter()
-                                .map(|ident| ident.value().to_string())
-                                .collect()
-                        })
+                        .map(|ext| ext.types.iter().map(|ident| atom(ident.value())).collect())
                         .unwrap_or_default();
 
-                    let parent_class = all_parents.first().cloned();
+                    let parent_class = all_parents.first().copied();
 
                     let doc_info = extract_class_docblock(iface, doc_ctx);
 
@@ -999,7 +1005,7 @@ impl Backend {
                     classes.push(ClassInfo {
                         kind: ClassLikeKind::Interface,
                         name: iface_name,
-                        methods: methods.into(),
+                        methods: methods.into_iter().map(Arc::new).collect::<Vec<_>>().into(),
                         properties: properties.into(),
                         constants: constants.into(),
                         start_offset,
@@ -1033,6 +1039,8 @@ impl Backend {
                         file_namespace: None,
                         backed_type: None,
                         attribute_targets: 0,
+                        method_index: Default::default(),
+                        indexed_method_count: 0,
                         laravel: None,
                     });
 
@@ -1049,7 +1057,7 @@ impl Backend {
                         continue;
                     }
 
-                    let trait_name = trait_def.name.value.to_string();
+                    let trait_name = atom(trait_def.name.value);
 
                     let doc_info = extract_class_docblock(trait_def, doc_ctx);
 
@@ -1079,7 +1087,7 @@ impl Backend {
                     classes.push(ClassInfo {
                         kind: ClassLikeKind::Trait,
                         name: trait_name,
-                        methods: methods.into(),
+                        methods: methods.into_iter().map(Arc::new).collect::<Vec<_>>().into(),
                         properties: properties.into(),
                         constants: constants.into(),
                         start_offset,
@@ -1102,13 +1110,15 @@ impl Backend {
                         extends_generics: vec![],
                         implements_generics: vec![],
                         use_generics: inline_use_generics,
-                        type_aliases: HashMap::new(),
+                        type_aliases: AtomMap::default(),
                         trait_precedences,
                         trait_aliases,
                         class_docblock: doc_info.raw_docblock,
                         file_namespace: None,
                         backed_type: None,
                         attribute_targets: 0,
+                        method_index: Default::default(),
+                        indexed_method_count: 0,
                         laravel: None,
                     });
 
@@ -1129,7 +1139,7 @@ impl Backend {
                         continue;
                     }
 
-                    let enum_name = enum_def.name.value.to_string();
+                    let enum_name = atom(enum_def.name.value);
 
                     let ExtractedMembers {
                         methods,
@@ -1152,19 +1162,14 @@ impl Backend {
                     } else {
                         "\\UnitEnum"
                     };
-                    used_traits.push(implicit_interface.to_string());
+                    used_traits.push(atom(implicit_interface));
 
                     let doc_info = extract_class_docblock(enum_def, doc_ctx);
 
-                    let mut interfaces: Vec<String> = enum_def
+                    let mut interfaces: Vec<Atom> = enum_def
                         .implements
                         .as_ref()
-                        .map(|imp| {
-                            imp.types
-                                .iter()
-                                .map(|ident| ident.value().to_string())
-                                .collect()
-                        })
+                        .map(|imp| imp.types.iter().map(|ident| atom(ident.value())).collect())
                         .unwrap_or_default();
 
                     // Also add the implicit interface to the interfaces
@@ -1174,7 +1179,7 @@ impl Backend {
                     if !interfaces.iter().any(|i| {
                         i.trim_start_matches('\\') == implicit_interface.trim_start_matches('\\')
                     }) {
-                        interfaces.push(implicit_interface.to_string());
+                        interfaces.push(atom(implicit_interface));
                     }
 
                     let keyword_offset = enum_def.r#enum.span.start.offset;
@@ -1190,7 +1195,7 @@ impl Backend {
                     classes.push(ClassInfo {
                         kind: ClassLikeKind::Enum,
                         name: enum_name,
-                        methods: methods.into(),
+                        methods: methods.into_iter().map(Arc::new).collect::<Vec<_>>().into(),
                         properties: properties.into(),
                         constants: constants.into(),
                         start_offset,
@@ -1208,12 +1213,12 @@ impl Backend {
                         links: doc_info.links,
                         see_refs: doc_info.see_refs,
                         template_params: vec![],
-                        template_param_bounds: HashMap::new(),
-                        template_param_defaults: HashMap::new(),
+                        template_param_bounds: AtomMap::default(),
+                        template_param_defaults: AtomMap::default(),
                         extends_generics: vec![],
                         implements_generics: vec![],
                         use_generics: vec![],
-                        type_aliases: HashMap::new(),
+                        type_aliases: AtomMap::default(),
                         trait_precedences: vec![],
                         trait_aliases: vec![],
                         class_docblock: doc_info.raw_docblock,
@@ -1229,6 +1234,8 @@ impl Backend {
                             }
                         }),
                         attribute_targets: 0,
+                        method_index: Default::default(),
+                        indexed_method_count: 0,
                         laravel: None,
                     });
 
@@ -1267,17 +1274,12 @@ impl Backend {
         let parent_class = anon
             .extends
             .as_ref()
-            .and_then(|ext| ext.types.first().map(|ident| ident.value().to_string()));
+            .and_then(|ext| ext.types.first().map(|ident| atom(ident.value())));
 
-        let interfaces: Vec<String> = anon
+        let interfaces: Vec<Atom> = anon
             .implements
             .as_ref()
-            .map(|imp| {
-                imp.types
-                    .iter()
-                    .map(|ident| ident.value().to_string())
-                    .collect()
-            })
+            .map(|imp| imp.types.iter().map(|ident| atom(ident.value())).collect())
             .unwrap_or_default();
 
         let ExtractedMembers {
@@ -1295,12 +1297,12 @@ impl Backend {
         // Anonymous classes don't have a meaningful keyword_offset for
         // go-to-definition purposes — use 0 ("not available").
         let keyword_offset = 0;
-        let name = format!("__anonymous@{}", start_offset);
+        let name = atom(&format!("__anonymous@{}", start_offset));
 
         ClassInfo {
             kind: ClassLikeKind::Class,
             name,
-            methods: methods.into(),
+            methods: methods.into_iter().map(Arc::new).collect::<Vec<_>>().into(),
             properties: properties.into(),
             constants: constants.into(),
             start_offset,
@@ -1316,12 +1318,12 @@ impl Backend {
             deprecation_message: None,
             deprecated_replacement: None,
             template_params: vec![],
-            template_param_bounds: HashMap::new(),
-            template_param_defaults: HashMap::new(),
+            template_param_bounds: AtomMap::default(),
+            template_param_defaults: AtomMap::default(),
             extends_generics: vec![],
             implements_generics: vec![],
             use_generics: vec![],
-            type_aliases: HashMap::new(),
+            type_aliases: AtomMap::default(),
             trait_precedences,
             trait_aliases,
             links: Vec::new(),
@@ -1330,6 +1332,8 @@ impl Backend {
             file_namespace: None,
             backed_type: None,
             attribute_targets: 0,
+            method_index: Default::default(),
+            indexed_method_count: 0,
             laravel: None,
         }
     }
@@ -1743,7 +1747,7 @@ impl Backend {
     pub(crate) fn extract_class_like_members<'a>(
         members: impl Iterator<Item = &'a ClassLikeMember<'a>>,
         doc_ctx: Option<&DocblockCtx<'a>>,
-        class_template_params: &[String],
+        class_template_params: &[Atom],
     ) -> ExtractedMembers {
         /// Resolve a short class name to its FQN using the file's use-map
         /// and namespace from [`DocblockCtx`].  When no context is
@@ -1777,10 +1781,10 @@ impl Backend {
         let mut methods = Vec::new();
         let mut properties = Vec::new();
         let mut constants = Vec::new();
-        let mut used_traits = Vec::new();
+        let mut used_traits: Vec<Atom> = Vec::new();
         let mut trait_precedences = Vec::new();
         let mut trait_aliases = Vec::new();
-        let mut inline_use_generics: Vec<(String, Vec<PhpType>)> = Vec::new();
+        let mut inline_use_generics: Vec<(Atom, Vec<PhpType>)> = Vec::new();
         let mut constructor_body: Option<&MethodBody<'_>> = None;
 
         for member in members {
@@ -1804,7 +1808,7 @@ impl Backend {
                         continue;
                     }
 
-                    let name = method.name.value.to_string();
+                    let name = atom(method.name.value);
                     let name_offset = method.name.span.start.offset;
                     let php_version = doc_ctx.and_then(|ctx| ctx.php_version);
                     let mut parameters = extract_parameters(
@@ -1869,18 +1873,23 @@ impl Backend {
                         // and @param bindings for generic type substitution.
                         let tpl_params_with_bounds =
                             docblock::extract_template_params_with_bounds_from_info(info);
-                        let tpl_params: Vec<String> = tpl_params_with_bounds
+                        let tpl_params: Vec<Atom> = tpl_params_with_bounds
                             .iter()
-                            .map(|(n, _)| n.clone())
+                            .map(|(n, _)| atom(n))
                             .collect();
-                        let tpl_param_bounds: HashMap<String, PhpType> = tpl_params_with_bounds
+                        let tpl_param_bounds: AtomMap<PhpType> = tpl_params_with_bounds
                             .into_iter()
-                            .filter_map(|(n, b)| b.map(|b| (n, b)))
+                            .filter_map(|(n, b)| b.map(|b| (atom(&n), b)))
                             .collect();
-                        let tpl_bindings = if !tpl_params.is_empty() {
-                            docblock::extract_template_param_bindings_from_info(info, &tpl_params)
+                        let tpl_bindings: Vec<(Atom, Atom)> = if !tpl_params.is_empty() {
+                            let tpl_strs: Vec<String> =
+                                tpl_params.iter().map(|a| a.to_string()).collect();
+                            docblock::extract_template_param_bindings_from_info(info, &tpl_strs)
+                                .into_iter()
+                                .map(|(a, b)| (atom(&a), atom(&b)))
+                                .collect()
                         } else {
-                            Vec::new()
+                            vec![]
                         };
 
                         // For constructors, also check for bindings between
@@ -1894,17 +1903,28 @@ impl Backend {
                         //   }
                         // where `T` is declared on the class but bound via
                         // the constructor's `@param T $bar`.
-                        let (tpl_params, tpl_bindings) = if name == "__construct"
+                        let (tpl_params, tpl_bindings): (Vec<Atom>, Vec<(Atom, Atom)>) = if name
+                            == "__construct"
                             && tpl_bindings.is_empty()
                             && !class_template_params.is_empty()
                         {
+                            let class_tpl_str: Vec<String> = class_template_params
+                                .iter()
+                                .map(|a| a.to_string())
+                                .collect();
                             let class_bindings =
                                 docblock::extract_template_param_bindings_from_info(
                                     info,
-                                    class_template_params,
+                                    &class_tpl_str,
                                 );
                             if !class_bindings.is_empty() {
-                                (class_template_params.to_vec(), class_bindings)
+                                (
+                                    class_template_params.to_vec(),
+                                    class_bindings
+                                        .into_iter()
+                                        .map(|(a, b)| (atom(&a), atom(&b)))
+                                        .collect(),
+                                )
                             } else {
                                 (tpl_params, tpl_bindings)
                             }
@@ -1921,9 +1941,11 @@ impl Backend {
                         // becomes a conditional that resolves T from the
                         // call-site argument (e.g. find(User::class) → User).
                         let conditional = conditional.or_else(|| {
+                            let tpl_param_strings: Vec<String> =
+                                tpl_params.iter().map(|a| a.to_string()).collect();
                             docblock::synthesize_template_conditional_from_info(
                                 info,
-                                &tpl_params,
+                                &tpl_param_strings,
                                 effective.as_ref(),
                                 false,
                             )
@@ -1955,9 +1977,9 @@ impl Backend {
                             None,
                             depr_info.message,
                             depr_info.replacement,
-                            Vec::new(),
-                            HashMap::new(),
-                            Vec::new(),
+                            Vec::<Atom>::new(),
+                            AtomMap::<PhpType>::default(),
+                            Vec::<(Atom, Atom)>::new(),
                         )
                     };
 
@@ -1975,7 +1997,7 @@ impl Backend {
                             if param.is_promoted_property() {
                                 let raw_name = param.variable.name.to_string();
                                 let prop_name =
-                                    raw_name.strip_prefix('$').unwrap_or(&raw_name).to_string();
+                                    atom(raw_name.strip_prefix('$').unwrap_or(&raw_name));
                                 let saved_native_hint =
                                     param.hint.as_ref().map(|h| extract_hint_type(h));
                                 let prop_visibility = extract_visibility(param.modifiers.iter());
@@ -2100,7 +2122,7 @@ impl Backend {
                                 let description =
                                     docblock::extract_param_description_from_info(info, &tag_name);
                                 parameters.push(ParameterInfo {
-                                    name: tag_name,
+                                    name: atom(&tag_name),
                                     is_required: false,
                                     type_hint: Some(tag_type),
                                     native_type_hint: None,
@@ -2328,7 +2350,7 @@ impl Backend {
                             ctx.content.get(start..end).map(|s| s.to_string())
                         });
                         constants.push(ConstantInfo {
-                            name: item.name.value.to_string(),
+                            name: atom(item.name.value),
                             name_offset: item.name.span.start.offset,
                             type_hint: type_hint.clone(),
                             visibility,
@@ -2344,7 +2366,7 @@ impl Backend {
                     }
                 }
                 ClassLikeMember::EnumCase(enum_case) => {
-                    let case_name = enum_case.item.name().value.to_string();
+                    let case_name = atom(enum_case.item.name().value);
                     let case_name_offset = enum_case.item.name().span.start.offset;
                     let enum_value = if let EnumCaseItem::Backed(backed) = &enum_case.item {
                         let start = backed.value.span().start.offset as usize;
@@ -2372,7 +2394,7 @@ impl Backend {
                 }
                 ClassLikeMember::TraitUse(trait_use) => {
                     for trait_name_ident in trait_use.trait_names.iter() {
-                        used_traits.push(trait_name_ident.value().to_string());
+                        used_traits.push(atom(trait_name_ident.value()));
                     }
 
                     // Extract `@use` generics from the docblock on the
@@ -2392,7 +2414,8 @@ impl Backend {
                         )
                     {
                         let tags = docblock::extract_generics_tag(doc_text, "@use");
-                        inline_use_generics.extend(tags);
+                        inline_use_generics
+                            .extend(tags.into_iter().map(|(n, args)| (atom(&n), args)));
                     }
 
                     // Parse trait adaptation block (`{ ... }`) if present.
@@ -2402,14 +2425,12 @@ impl Backend {
                         for adaptation in spec.adaptations.iter() {
                             match adaptation {
                                 TraitUseAdaptation::Precedence(prec) => {
-                                    let trait_name =
-                                        prec.method_reference.trait_name.value().to_string();
-                                    let method_name =
-                                        prec.method_reference.method_name.value.to_string();
-                                    let insteadof: Vec<String> = prec
+                                    let trait_name = atom(prec.method_reference.trait_name.value());
+                                    let method_name = atom(prec.method_reference.method_name.value);
+                                    let insteadof: Vec<Atom> = prec
                                         .trait_names
                                         .iter()
-                                        .map(|id| id.value().to_string())
+                                        .map(|id| atom(id.value()))
                                         .collect();
                                     trait_precedences.push(TraitPrecedence {
                                         trait_name,
@@ -2421,15 +2442,14 @@ impl Backend {
                                     let (trait_name, method_name) =
                                         match &alias_adapt.method_reference {
                                             TraitUseMethodReference::Identifier(ident) => {
-                                                (None, ident.value.to_string())
+                                                (None, atom(ident.value))
                                             }
                                             TraitUseMethodReference::Absolute(abs) => (
-                                                Some(abs.trait_name.value().to_string()),
-                                                abs.method_name.value.to_string(),
+                                                Some(atom(abs.trait_name.value())),
+                                                atom(abs.method_name.value),
                                             ),
                                         };
-                                    let alias =
-                                        alias_adapt.alias.as_ref().map(|a| a.value.to_string());
+                                    let alias = alias_adapt.alias.as_ref().map(|a| atom(a.value));
                                     let visibility = alias_adapt.visibility.as_ref().map(|m| {
                                         if m.is_private() {
                                             Visibility::Private

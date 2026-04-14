@@ -1,5 +1,6 @@
 use crate::common::{create_test_backend, create_test_backend_with_function_stubs};
 use phpantom_lsp::Backend;
+use phpantom_lsp::atom::atom;
 use phpantom_lsp::php_type::PhpType;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
@@ -341,7 +342,7 @@ async fn test_user_function_takes_precedence_over_stub() {
 
     // Pre-populate global_functions with a user-defined `str_contains`.
     let custom_func = phpantom_lsp::FunctionInfo {
-        name: "str_contains".to_string(),
+        name: atom("str_contains"),
         name_offset: 0,
         parameters: vec![],
         return_type: Some(PhpType::parse("CustomReturn")),
@@ -356,7 +357,7 @@ async fn test_user_function_takes_precedence_over_stub() {
         deprecation_message: None,
         deprecated_replacement: None,
         template_params: vec![],
-        template_param_bounds: std::collections::HashMap::new(),
+        template_param_bounds: Default::default(),
         template_bindings: vec![],
         throws: vec![],
         is_polyfill: false,

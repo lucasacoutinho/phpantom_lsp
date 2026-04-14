@@ -7,7 +7,7 @@
 //!   - `@method ReturnType methodName(ParamType $param, ...)`
 //!   - `@method static ReturnType methodName(...)`
 
-use std::collections::HashMap;
+use crate::atom::AtomMap;
 
 use mago_docblock::document::TagKind;
 
@@ -198,7 +198,7 @@ pub fn extract_method_tags(docblock: &str) -> Vec<MethodInfo> {
         };
 
         results.push(MethodInfo {
-            name: method_name.to_string(),
+            name: crate::atom::atom(method_name),
             name_offset: 0,
             parameters,
             return_type,
@@ -213,7 +213,7 @@ pub fn extract_method_tags(docblock: &str) -> Vec<MethodInfo> {
             deprecation_message: None,
             deprecated_replacement: None,
             template_params: Vec::new(),
-            template_param_bounds: HashMap::new(),
+            template_param_bounds: AtomMap::default(),
             template_bindings: Vec::new(),
             has_scope_attribute: false,
             is_abstract: false,
@@ -287,7 +287,7 @@ fn parse_method_tag_params(params_str: &str) -> Vec<ParameterInfo> {
         let is_required = !has_default && !is_variadic;
 
         result.push(ParameterInfo {
-            name: param_name,
+            name: crate::atom::atom(&param_name),
             is_required,
             type_hint: parsed_type.clone(),
             native_type_hint: parsed_type,

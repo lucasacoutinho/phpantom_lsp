@@ -144,8 +144,18 @@ pub(crate) fn collect_missing_methods(
         .map(|m| m.name.to_lowercase())
         .collect();
 
-    collect_concrete_trait_methods(&class.used_traits, class_loader, &mut implemented_names, 0);
-    collect_concrete_parent_methods(&class.parent_class, class_loader, &mut implemented_names, 0);
+    collect_concrete_trait_methods_atoms(
+        &class.used_traits,
+        class_loader,
+        &mut implemented_names,
+        0,
+    );
+    collect_concrete_parent_methods_atom(
+        &class.parent_class,
+        class_loader,
+        &mut implemented_names,
+        0,
+    );
 
     let mut missing: Vec<MethodInfo> = Vec::new();
     let mut seen: Vec<String> = Vec::new();
@@ -156,7 +166,8 @@ pub(crate) fn collect_missing_methods(
         // PHP provides from(), tryFrom(), and cases() automatically
         // at runtime — they don't need to be declared in the enum body.
         if class.kind == crate::types::ClassLikeKind::Enum {
-            let stripped = iface_name.strip_prefix('\\').unwrap_or(iface_name);
+            let iface_str: &str = iface_name;
+            let stripped = iface_str.strip_prefix('\\').unwrap_or(iface_str);
             if stripped == "BackedEnum" || stripped == "UnitEnum" {
                 continue;
             }
@@ -172,7 +183,7 @@ pub(crate) fn collect_missing_methods(
     }
 
     // ── Parent chain (abstract methods) ─────────────────────────────────
-    collect_from_parent_chain(
+    collect_from_parent_chain_atom(
         &class.parent_class,
         class_loader,
         &implemented_names,
@@ -190,8 +201,8 @@ pub(crate) fn collect_missing_methods(
 ///
 /// Also collects concrete methods from traits used by each parent,
 /// since trait methods are effectively part of the class in PHP.
-fn collect_concrete_parent_methods(
-    parent_name: &Option<String>,
+fn collect_concrete_parent_methods_atom(
+    parent_name: &Option<crate::atom::Atom>,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     implemented: &mut Vec<String>,
     depth: usize,
@@ -220,9 +231,14 @@ fn collect_concrete_parent_methods(
     }
 
     // Traits used by the parent also provide concrete methods.
-    collect_concrete_trait_methods(&parent.used_traits, class_loader, implemented, depth + 1);
+    collect_concrete_trait_methods_atoms(&parent.used_traits, class_loader, implemented, depth + 1);
 
-    collect_concrete_parent_methods(&parent.parent_class, class_loader, implemented, depth + 1);
+    collect_concrete_parent_methods_atom(
+        &parent.parent_class,
+        class_loader,
+        implemented,
+        depth + 1,
+    );
 }
 
 /// Walk a list of used traits (and their sub-traits and parent classes)
@@ -230,8 +246,8 @@ fn collect_concrete_parent_methods(
 /// `implemented`.  In PHP, trait methods are effectively part of the
 /// class that uses them, so they satisfy interface and abstract-method
 /// requirements.
-fn collect_concrete_trait_methods(
-    trait_names: &[String],
+fn collect_concrete_trait_methods_atoms(
+    trait_names: &[crate::atom::Atom],
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     implemented: &mut Vec<String>,
     depth: usize,
@@ -257,7 +273,7 @@ fn collect_concrete_trait_methods(
 
         // Traits can use other traits — recurse into sub-traits.
         if !trait_info.used_traits.is_empty() {
-            collect_concrete_trait_methods(
+            collect_concrete_trait_methods_atoms(
                 &trait_info.used_traits,
                 class_loader,
                 implemented,
@@ -267,7 +283,7 @@ fn collect_concrete_trait_methods(
 
         // Traits can also extend a parent class (rare but valid in
         // the class model — e.g. stubs may model this).
-        collect_concrete_parent_methods(
+        collect_concrete_parent_methods_atom(
             &trait_info.parent_class,
             class_loader,
             implemented,
@@ -301,7 +317,7 @@ fn collect_from_interface(
             continue;
         }
         seen.push(lower);
-        missing.push(method.clone());
+        missing.push((**method).clone());
     }
 
     // Recurse into parent interfaces.
@@ -318,15 +334,15 @@ fn collect_from_interface(
 
     // Interfaces can also extend other interfaces via parent_class in
     // some parser representations.
-    if let Some(ref parent) = iface.parent_class {
-        collect_from_interface(parent, class_loader, own_methods, missing, seen, depth + 1);
+    if let Some(parent) = iface.parent_class {
+        collect_from_interface(&parent, class_loader, own_methods, missing, seen, depth + 1);
     }
 }
 
 /// Walk the parent class chain and collect abstract methods that need
 /// implementation.
-fn collect_from_parent_chain(
-    parent_name: &Option<String>,
+fn collect_from_parent_chain_atom(
+    parent_name: &Option<crate::atom::Atom>,
     class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     own_methods: &[String],
     missing: &mut Vec<MethodInfo>,
@@ -370,11 +386,11 @@ fn collect_from_parent_chain(
             continue;
         }
         seen.push(lower);
-        missing.push(method.clone());
+        missing.push((**method).clone());
     }
 
     // Continue up the chain.
-    collect_from_parent_chain(
+    collect_from_parent_chain_atom(
         &parent.parent_class,
         class_loader,
         own_methods,
@@ -646,7 +662,7 @@ mod tests {
         let method = MethodInfo {
             parameters: vec![
                 ParameterInfo {
-                    name: "$name".to_string(),
+                    name: crate::atom::atom("$name"),
                     is_required: true,
                     type_hint: Some(PhpType::parse("string")),
                     native_type_hint: Some(PhpType::parse("string")),
@@ -657,7 +673,7 @@ mod tests {
                     closure_this_type: None,
                 },
                 ParameterInfo {
-                    name: "$age".to_string(),
+                    name: crate::atom::atom("$age"),
                     is_required: false,
                     type_hint: Some(PhpType::parse("int")),
                     native_type_hint: Some(PhpType::parse("int")),
@@ -680,7 +696,7 @@ mod tests {
         let method = MethodInfo {
             parameters: vec![
                 ParameterInfo {
-                    name: "$items".to_string(),
+                    name: crate::atom::atom("$items"),
                     is_required: true,
                     type_hint: Some(PhpType::parse("string")),
                     native_type_hint: Some(PhpType::parse("string")),
@@ -691,7 +707,7 @@ mod tests {
                     closure_this_type: None,
                 },
                 ParameterInfo {
-                    name: "$out".to_string(),
+                    name: crate::atom::atom("$out"),
                     is_required: true,
                     type_hint: Some(PhpType::parse("array")),
                     native_type_hint: Some(PhpType::parse("array")),
@@ -755,7 +771,7 @@ mod tests {
     fn detect_indent_from_class_body() {
         let content = "<?php\nclass Foo {\n    public function bar() {}\n}\n";
         let class = ClassInfo {
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             start_offset: content.find('{').unwrap() as u32,
             end_offset: content.rfind('}').unwrap() as u32 + 1,
             ..Default::default()
@@ -768,7 +784,7 @@ mod tests {
     fn detect_indent_tabs() {
         let content = "<?php\nclass Foo {\n\tpublic function bar() {}\n}\n";
         let class = ClassInfo {
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             start_offset: content.find('{').unwrap() as u32,
             end_offset: content.rfind('}').unwrap() as u32 + 1,
             ..Default::default()
@@ -783,15 +799,19 @@ mod tests {
     fn collects_interface_methods() {
         let interface = ClassInfo {
             kind: ClassLikeKind::Interface,
-            name: "Renderable".to_string(),
-            methods: vec![MethodInfo::virtual_method("render", Some("string"))].into(),
+            name: crate::atom::atom("Renderable"),
+            methods: vec![Arc::new(MethodInfo::virtual_method(
+                "render",
+                Some("string"),
+            ))]
+            .into(),
             ..Default::default()
         };
 
         let class = ClassInfo {
             kind: ClassLikeKind::Class,
-            name: "Page".to_string(),
-            interfaces: vec!["Renderable".to_string()],
+            name: crate::atom::atom("Page"),
+            interfaces: vec![crate::atom::atom("Renderable")],
             methods: Default::default(),
             ..Default::default()
         };
@@ -813,16 +833,24 @@ mod tests {
     fn skips_already_implemented_methods() {
         let interface = ClassInfo {
             kind: ClassLikeKind::Interface,
-            name: "Renderable".to_string(),
-            methods: vec![MethodInfo::virtual_method("render", Some("string"))].into(),
+            name: crate::atom::atom("Renderable"),
+            methods: vec![Arc::new(MethodInfo::virtual_method(
+                "render",
+                Some("string"),
+            ))]
+            .into(),
             ..Default::default()
         };
 
         let class = ClassInfo {
             kind: ClassLikeKind::Class,
-            name: "Page".to_string(),
-            interfaces: vec!["Renderable".to_string()],
-            methods: vec![MethodInfo::virtual_method("render", Some("string"))].into(),
+            name: crate::atom::atom("Page"),
+            interfaces: vec![crate::atom::atom("Renderable")],
+            methods: vec![Arc::new(MethodInfo::virtual_method(
+                "render",
+                Some("string"),
+            ))]
+            .into(),
             ..Default::default()
         };
 
@@ -842,15 +870,15 @@ mod tests {
     fn collects_abstract_parent_methods() {
         let parent = ClassInfo {
             kind: ClassLikeKind::Class,
-            name: "AbstractBase".to_string(),
+            name: crate::atom::atom("AbstractBase"),
             is_abstract: true,
             methods: vec![
-                MethodInfo {
+                Arc::new(MethodInfo {
                     is_abstract: true,
                     ..MethodInfo::virtual_method("doWork", None)
-                },
+                }),
                 // Concrete method — should NOT be in missing list.
-                MethodInfo::virtual_method("helper", Some("void")),
+                Arc::new(MethodInfo::virtual_method("helper", Some("void"))),
             ]
             .into(),
             ..Default::default()
@@ -858,8 +886,8 @@ mod tests {
 
         let class = ClassInfo {
             kind: ClassLikeKind::Class,
-            name: "ConcreteChild".to_string(),
-            parent_class: Some("AbstractBase".to_string()),
+            name: crate::atom::atom("ConcreteChild"),
+            parent_class: Some(crate::atom::atom("AbstractBase")),
             methods: Default::default(),
             ..Default::default()
         };
@@ -881,16 +909,24 @@ mod tests {
     fn case_insensitive_method_matching() {
         let interface = ClassInfo {
             kind: ClassLikeKind::Interface,
-            name: "Renderable".to_string(),
-            methods: vec![MethodInfo::virtual_method("Render", Some("string"))].into(),
+            name: crate::atom::atom("Renderable"),
+            methods: vec![Arc::new(MethodInfo::virtual_method(
+                "Render",
+                Some("string"),
+            ))]
+            .into(),
             ..Default::default()
         };
 
         let class = ClassInfo {
             kind: ClassLikeKind::Class,
-            name: "Page".to_string(),
-            interfaces: vec!["Renderable".to_string()],
-            methods: vec![MethodInfo::virtual_method("render", Some("string"))].into(),
+            name: crate::atom::atom("Page"),
+            interfaces: vec![crate::atom::atom("Renderable")],
+            methods: vec![Arc::new(MethodInfo::virtual_method(
+                "render",
+                Some("string"),
+            ))]
+            .into(),
             ..Default::default()
         };
 
@@ -910,19 +946,19 @@ mod tests {
     fn collects_from_parent_interfaces() {
         let parent = ClassInfo {
             kind: ClassLikeKind::Class,
-            name: "AbstractBase".to_string(),
+            name: crate::atom::atom("AbstractBase"),
             is_abstract: true,
-            interfaces: vec!["Serializable".to_string()],
+            interfaces: vec![crate::atom::atom("Serializable")],
             methods: Default::default(),
             ..Default::default()
         };
 
         let serializable = ClassInfo {
             kind: ClassLikeKind::Interface,
-            name: "Serializable".to_string(),
+            name: crate::atom::atom("Serializable"),
             methods: vec![
-                MethodInfo::virtual_method("serialize", Some("string")),
-                MethodInfo::virtual_method("unserialize", None),
+                Arc::new(MethodInfo::virtual_method("serialize", Some("string"))),
+                Arc::new(MethodInfo::virtual_method("unserialize", None)),
             ]
             .into(),
             ..Default::default()
@@ -930,8 +966,8 @@ mod tests {
 
         let class = ClassInfo {
             kind: ClassLikeKind::Class,
-            name: "ConcreteChild".to_string(),
-            parent_class: Some("AbstractBase".to_string()),
+            name: crate::atom::atom("ConcreteChild"),
+            parent_class: Some(crate::atom::atom("AbstractBase")),
             methods: Default::default(),
             ..Default::default()
         };
@@ -963,7 +999,7 @@ mod tests {
 
         let content = "<?php\nclass Foo {\n    \n}\n";
         let class = ClassInfo {
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             start_offset: content.find('{').unwrap() as u32,
             end_offset: content.rfind('}').unwrap() as u32 + 1,
             ..Default::default()
@@ -984,7 +1020,7 @@ mod tests {
 
         let content = "<?php\nclass Foo {\n    \n}\n";
         let class = ClassInfo {
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             start_offset: content.find('{').unwrap() as u32,
             end_offset: content.rfind('}').unwrap() as u32 + 1,
             ..Default::default()
@@ -1016,7 +1052,7 @@ mod tests {
 
         let content = "<?php\nclass Foo {\n    \n}\n";
         let class = ClassInfo {
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             start_offset: content.find('{').unwrap() as u32,
             end_offset: content.rfind('}').unwrap() as u32 + 1,
             ..Default::default()
@@ -1035,7 +1071,7 @@ mod tests {
 
         let content = "<?php\nclass Foo {\n    \n}\n";
         let class = ClassInfo {
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             start_offset: content.find('{').unwrap() as u32,
             end_offset: content.rfind('}').unwrap() as u32 + 1,
             ..Default::default()
@@ -1050,7 +1086,7 @@ mod tests {
         let methods = vec![MethodInfo {
             parameters: vec![
                 ParameterInfo {
-                    name: "$name".to_string(),
+                    name: crate::atom::atom("$name"),
                     is_required: true,
                     type_hint: Some(PhpType::parse("string")),
                     native_type_hint: Some(PhpType::parse("string")),
@@ -1061,7 +1097,7 @@ mod tests {
                     closure_this_type: None,
                 },
                 ParameterInfo {
-                    name: "$options".to_string(),
+                    name: crate::atom::atom("$options"),
                     is_required: false,
                     type_hint: Some(PhpType::parse("array")),
                     native_type_hint: Some(PhpType::parse("array")),
@@ -1079,7 +1115,7 @@ mod tests {
 
         let content = "<?php\nclass Foo {\n    \n}\n";
         let class = ClassInfo {
-            name: "Foo".to_string(),
+            name: crate::atom::atom("Foo"),
             start_offset: content.find('{').unwrap() as u32,
             end_offset: content.rfind('}').unwrap() as u32 + 1,
             ..Default::default()

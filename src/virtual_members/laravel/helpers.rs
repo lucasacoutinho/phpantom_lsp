@@ -31,7 +31,7 @@ pub(in crate::virtual_members::laravel) fn walks_parent_chain(
     // each parent's `name` and `parent_class` fields, so keep a
     // cheap Arc handle instead of cloning the entire struct (which
     // copies hundreds of methods/properties/constants).
-    let mut current_parent = class.parent_class.clone();
+    let mut current_parent = class.parent_class;
     let mut depth = 0u32;
     while let Some(ref parent_name) = current_parent {
         depth += 1;
@@ -46,7 +46,7 @@ pub(in crate::virtual_members::laravel) fn walks_parent_chain(
                 if predicate(&parent.name) {
                     return true;
                 }
-                current_parent = parent.parent_class.clone();
+                current_parent = parent.parent_class;
             }
             None => break,
         }

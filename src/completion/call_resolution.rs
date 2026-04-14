@@ -104,7 +104,7 @@ pub(super) fn build_var_resolver<'a>(
                 ctx.class_loader,
             )
             .iter()
-            .map(|c| c.name.clone())
+            .map(|c| c.name.to_string())
             .collect()
         } else {
             vec![]
@@ -271,11 +271,7 @@ impl Backend {
                 &generic_args,
             );
 
-            if let Some(m) = effective
-                .methods
-                .iter()
-                .find(|m| m.name.eq_ignore_ascii_case(&method_lower))
-            {
+            if let Some(m) = effective.get_method_ci(&method_lower) {
                 let mut result_method = m.clone();
 
                 // Apply method-level template substitutions when
@@ -318,11 +314,7 @@ impl Backend {
             // directly may contain model-specific members (e.g.
             // Eloquent scope methods injected onto Builder<Model>)
             // that the FQN-keyed cache does not have.
-            if let Some(m) = owner
-                .methods
-                .iter()
-                .find(|m| m.name.eq_ignore_ascii_case(method_name))
-            {
+            if let Some(m) = owner.get_method_ci(method_name) {
                 let target = ResolvedCallableTarget {
                     parameters: m.parameters.clone(),
                     return_type: m.return_type.clone(),
@@ -387,10 +379,7 @@ impl Backend {
             )
         };
 
-        let m = merged
-            .methods
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(method_name))?;
+        let m = merged.get_method_ci(method_name)?;
 
         let mut result_method = m.clone();
 
@@ -479,7 +468,7 @@ impl Backend {
     ) -> Option<ResolvedCallableTarget> {
         let ci = class_loader(class_name)?;
         let merged = crate::virtual_members::resolve_class_fully_cached(&ci, class_loader, cache);
-        if let Some(ctor) = merged.methods.iter().find(|m| m.name == "__construct") {
+        if let Some(ctor) = merged.get_method("__construct") {
             Some(ResolvedCallableTarget {
                 parameters: ctor.parameters.clone(),
                 return_type: ctor.return_type.clone(),
@@ -548,6 +537,7 @@ impl Backend {
             class_loader: &class_loader,
             resolved_class_cache: Some(&self.resolved_class_cache),
             function_loader: Some(&function_loader_cl),
+            scope_var_resolver: None,
         };
 
         let parsed = SubjectExpr::parse(expr);
@@ -700,11 +690,7 @@ impl Backend {
                             ctx.class_loader,
                             ctx.resolved_class_cache,
                         );
-                        if let Some(m) = merged
-                            .methods
-                            .iter()
-                            .find(|m| m.name.eq_ignore_ascii_case(method_name))
-                        {
+                        if let Some(m) = merged.get_method_ci(method_name) {
                             if let Some(ref ret) = m.return_type {
                                 **hint_out = Some(ret.clone());
                             }
@@ -763,10 +749,7 @@ impl Backend {
                             ctx.class_loader,
                             ctx.resolved_class_cache,
                         );
-                        if let Some(m) = merged
-                            .methods
-                            .iter()
-                            .find(|m| m.name.eq_ignore_ascii_case(method_name))
+                        if let Some(m) = merged.get_method_ci(method_name)
                             && let Some(ref ret) = m.return_type
                         {
                             **hint_out = Some(ret.clone());
@@ -1007,7 +990,7 @@ impl Backend {
                     super::resolver::resolve_target_classes(var_name, AccessKind::Arrow, ctx),
                 );
                 for owner in &var_classes {
-                    if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
+                    if let Some(invoke) = owner.get_method("__invoke")
                         && let Some(ref ret) = invoke.return_type
                     {
                         let classes: Vec<Arc<ClassInfo>> =
@@ -1052,7 +1035,7 @@ impl Backend {
                 // the call returns __invoke()'s return type, not the
                 // object itself.  This handles `($this->formatter)()`.
                 for owner in &callee_classes {
-                    if let Some(invoke) = owner.methods.iter().find(|m| m.name == "__invoke")
+                    if let Some(invoke) = owner.get_method("__invoke")
                         && let Some(ref ret) = invoke.return_type
                     {
                         let classes: Vec<Arc<ClassInfo>> =
@@ -1117,14 +1100,26 @@ impl Backend {
                         text_args,
                         var_resolver,
                         mr_ctx.calling_class_name,
-                        Some(&class_info.template_param_defaults),
+                        Some(
+                            &class_info
+                                .template_param_defaults
+                                .iter()
+                                .map(|(k, v)| (k.to_string(), v.clone()))
+                                .collect::<HashMap<String, PhpType>>(),
+                        ),
                         mr_ctx.class_loader,
                     )
                 } else {
                     resolve_conditional_without_args_and_defaults(
                         cond,
                         &method.parameters,
-                        Some(&class_info.template_param_defaults),
+                        Some(
+                            &class_info
+                                .template_param_defaults
+                                .iter()
+                                .map(|(k, v)| (k.to_string(), v.clone()))
+                                .collect::<HashMap<String, PhpType>>(),
+                        ),
                     )
                 };
                 if let Some(ref parsed) = resolved_type {
@@ -1192,15 +1187,13 @@ impl Backend {
                 if ret.is_self_like() {
                     return vec![Arc::new(class_info.clone())];
                 }
-                return super::type_resolution::type_hint_to_classes_typed(
+                let resolved = super::type_resolution::type_hint_to_classes_typed(
                     ret,
                     &class_info.fqn(),
                     all_classes,
                     class_loader,
-                )
-                .into_iter()
-                .map(Arc::new)
-                .collect();
+                );
+                return resolved.into_iter().map(Arc::new).collect();
             }
             vec![]
         };
@@ -1215,7 +1208,7 @@ impl Backend {
         };
 
         // First check the class itself
-        if let Some(method) = class_info.methods.iter().find(|m| m.name == method_name) {
+        if let Some(method) = class_info.get_method(method_name) {
             let result = resolve_method(method);
             if !result.is_empty() {
                 return result;
@@ -1235,12 +1228,9 @@ impl Backend {
 
         // Look up the magic method once; used for both validation and
         // fallback below.
-        let magic_method = merged
-            .methods
-            .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(magic_name));
+        let magic_method = merged.get_method_ci(magic_name);
 
-        if let Some(method) = merged.methods.iter().find(|m| m.name == method_name) {
+        if let Some(method) = merged.get_method(method_name) {
             if method.is_virtual {
                 // ── Virtual method (from @method, @mixin, etc.) ─────
                 // At runtime these are dispatched through __call /
@@ -1448,23 +1438,14 @@ impl Backend {
         ctx: &ResolutionCtx<'_>,
     ) -> HashMap<String, PhpType> {
         // Find the method — first on the class directly, then via inheritance.
-        let method = class_info
-            .methods
-            .iter()
-            .find(|m| m.name == method_name)
-            .cloned()
-            .or_else(|| {
-                let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
-                    class_info,
-                    ctx.class_loader,
-                    ctx.resolved_class_cache,
-                );
-                merged
-                    .methods
-                    .iter()
-                    .find(|m| m.name == method_name)
-                    .cloned()
-            });
+        let method = class_info.get_method(method_name).cloned().or_else(|| {
+            let merged = crate::virtual_members::resolve_class_fully_maybe_cached(
+                class_info,
+                ctx.class_loader,
+                ctx.resolved_class_cache,
+            );
+            merged.get_method(method_name).cloned()
+        });
 
         let method = match method {
             Some(m) if !m.template_params.is_empty() => m,
@@ -1475,7 +1456,11 @@ impl Backend {
 
         for (tpl_name, param_name) in &method.template_bindings {
             // Find the parameter index for this binding.
-            let param_idx = match method.parameters.iter().position(|p| p.name == *param_name) {
+            let param_idx = match method
+                .parameters
+                .iter()
+                .position(|p| p.name == param_name.as_str())
+            {
                 Some(idx) => idx,
                 None => continue,
             };
@@ -1494,9 +1479,9 @@ impl Backend {
                     // should become `null` when no default is passed.
                     if let Some(param) = method.parameters.get(param_idx)
                         && param.default_value.as_deref().is_some_and(|d| d == "null")
-                        && !subs.contains_key(tpl_name)
+                        && !subs.contains_key(tpl_name.as_str())
                     {
-                        subs.insert(tpl_name.clone(), PhpType::null());
+                        subs.insert(tpl_name.to_string(), PhpType::null());
                     }
                     continue;
                 }
@@ -1514,7 +1499,7 @@ impl Backend {
             match binding_mode {
                 TemplateBindingMode::Direct => {
                     if let Some(resolved_type) = Self::resolve_arg_text_to_type(arg_text, ctx) {
-                        subs.insert(tpl_name.clone(), resolved_type);
+                        subs.insert(tpl_name.to_string(), resolved_type);
                     }
                 }
                 TemplateBindingMode::GenericWrapper(ref wrapper_name, tpl_position) => {
@@ -1524,10 +1509,10 @@ impl Backend {
                             && tpl_position == 0
                             && let Some(inner) = resolved_type.unwrap_class_string_inner()
                         {
-                            subs.insert(tpl_name.clone(), inner.clone());
+                            subs.insert(tpl_name.to_string(), inner.clone());
                             continue;
                         }
-                        subs.insert(tpl_name.clone(), resolved_type);
+                        subs.insert(tpl_name.to_string(), resolved_type);
                     }
                 }
                 TemplateBindingMode::CallableReturnType => {
@@ -1536,7 +1521,7 @@ impl Backend {
                     if let Some(ret_type) =
                         super::source::helpers::extract_closure_return_type_from_text(arg_text)
                     {
-                        subs.insert(tpl_name.clone(), ret_type);
+                        subs.insert(tpl_name.to_string(), ret_type);
                     }
                 }
                 TemplateBindingMode::CallableParamType(position) => {
@@ -1547,12 +1532,12 @@ impl Backend {
                             arg_text, position,
                         )
                     {
-                        subs.insert(tpl_name.clone(), param_type);
+                        subs.insert(tpl_name.to_string(), param_type);
                     }
                 }
                 TemplateBindingMode::ArrayElement => {
                     if let Some(resolved_type) = Self::resolve_arg_text_to_type(arg_text, ctx) {
-                        subs.insert(tpl_name.clone(), resolved_type);
+                        subs.insert(tpl_name.to_string(), resolved_type);
                     }
                 }
                 TemplateBindingMode::ClassStringInner => {
@@ -1563,7 +1548,7 @@ impl Backend {
                             PhpType::ClassString(Some(inner)) => *inner,
                             _ => resolved_type,
                         };
-                        subs.insert(tpl_name.clone(), unwrapped);
+                        subs.insert(tpl_name.to_string(), unwrapped);
                     }
                 }
             }
@@ -1577,14 +1562,14 @@ impl Backend {
         // template names like `TReduceReturnType` from leaking into
         // parameter and return types.
         for tpl_name in &method.template_params {
-            if !subs.contains_key(tpl_name) {
-                let fallback = method
+            let tpl_key = tpl_name.to_string();
+            subs.entry(tpl_key).or_insert_with(|| {
+                method
                     .template_param_bounds
                     .get(tpl_name)
                     .cloned()
-                    .unwrap_or_else(PhpType::mixed);
-                subs.insert(tpl_name.clone(), fallback);
-            }
+                    .unwrap_or_else(PhpType::mixed)
+            });
         }
 
         subs
@@ -1625,7 +1610,7 @@ impl Backend {
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '\\')
         {
             let resolved_name = if let Some(cls) = (ctx.class_loader)(name) {
-                cls.fqn()
+                cls.fqn().to_string()
             } else {
                 name.to_string()
             };
@@ -1651,7 +1636,7 @@ impl Backend {
             && let Some(class_name) = super::source::helpers::extract_new_expression_class(trimmed)
         {
             let resolved_name = if let Some(cls) = (ctx.class_loader)(&class_name) {
-                cls.fqn()
+                cls.fqn().to_string()
             } else {
                 class_name
             };
@@ -1660,7 +1645,9 @@ impl Backend {
 
         // $this / self / static → current class
         if is_self_or_static(trimmed) {
-            return ctx.current_class.map(|c| PhpType::Named(c.name.clone()));
+            return ctx
+                .current_class
+                .map(|c| PhpType::Named(c.name.to_string()));
         }
 
         // General expression fallback: parse the argument text as a
@@ -1719,7 +1706,7 @@ fn resolve_expression_to_type(text: &str, ctx: &ResolutionCtx<'_>) -> Option<Php
             // Try class-bearing resolution first (handles non-scalar returns).
             let classes = Backend::resolve_call_return_types_expr(callee, args_text, ctx);
             if let Some(first) = classes.first() {
-                return Some(PhpType::Named(first.fqn()));
+                return Some(PhpType::Named(first.fqn().to_string()));
             }
 
             // Fall back to raw return type for scalar returns.
@@ -1784,7 +1771,7 @@ fn resolve_static_access_type(text: &str, ctx: &ResolutionCtx<'_>) -> Option<Php
 
     // Resolve `self` / `static` / `parent` to the actual class name.
     let class_name = if is_self_or_static(class_part) {
-        ctx.current_class?.name.clone()
+        ctx.current_class?.name.to_string()
     } else if let Some(resolved) = resolve_class_keyword(class_part, ctx.current_class) {
         resolved
     } else {
@@ -1795,7 +1782,7 @@ fn resolve_static_access_type(text: &str, ctx: &ResolutionCtx<'_>) -> Option<Php
 
     // Enums: any `EnumName::Case` resolves to the enum type itself.
     if cls.kind == ClassLikeKind::Enum {
-        return Some(PhpType::Named(cls.fqn()));
+        return Some(PhpType::Named(cls.fqn().to_string()));
     }
 
     // Class constants: look up the constant and use its type hint

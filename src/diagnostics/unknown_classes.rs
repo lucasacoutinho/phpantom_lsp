@@ -76,7 +76,7 @@ impl Backend {
         // the declaring class.  Collect all alias names so we can skip them.
         let type_alias_names: Vec<String> = local_classes
             .iter()
-            .flat_map(|c| c.type_aliases.keys().cloned())
+            .flat_map(|c| c.type_aliases.keys().map(|k| k.to_string()))
             .collect();
 
         // ── Compute byte ranges of `use` statement lines ────────────────

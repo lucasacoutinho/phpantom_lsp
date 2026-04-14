@@ -619,7 +619,7 @@ function array_map(
         let mut fmap = backend.global_functions().write();
         for func in functions {
             fmap.insert(
-                func.name.clone(),
+                func.name.to_string(),
                 ("phpantom-stub-fn://array_map".to_string(), func),
             );
         }

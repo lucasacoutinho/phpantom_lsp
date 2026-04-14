@@ -159,7 +159,7 @@ impl Backend {
                 let merged = crate::inheritance::resolve_class_with_inheritance(&cls, &|name| {
                     self.find_or_load_class(name)
                 });
-                let method = merged.methods.iter().find(|m| m.name == *method_name)?;
+                let method = merged.get_method(method_name)?;
                 let positions: Vec<usize> = method
                     .parameters
                     .iter()
@@ -177,7 +177,7 @@ impl Backend {
                 let merged = crate::inheritance::resolve_class_with_inheritance(&cls, &|name| {
                     self.find_or_load_class(name)
                 });
-                let ctor = merged.methods.iter().find(|m| m.name == "__construct")?;
+                let ctor = merged.get_method("__construct")?;
                 let positions: Vec<usize> = ctor
                     .parameters
                     .iter()
@@ -195,7 +195,7 @@ impl Backend {
                 let merged = crate::inheritance::resolve_class_with_inheritance(&cls, &|name| {
                     self.find_or_load_class(name)
                 });
-                let method = merged.methods.iter().find(|m| m.name == *method_name)?;
+                let method = merged.get_method(method_name)?;
                 let positions: Vec<usize> = method
                     .parameters
                     .iter()

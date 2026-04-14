@@ -128,8 +128,8 @@ impl Backend {
         // ── 1. Walk the parent class chain ──────────────────────────────
         let mut current = class.clone();
         for _ in 0..MAX_INHERITANCE_DEPTH {
-            let parent_name = match current.parent_class.as_ref() {
-                Some(name) => name.clone(),
+            let parent_name = match current.parent_class {
+                Some(name) => name,
                 None => break,
             };
             let parent = match self.find_or_load_class(&parent_name) {
@@ -182,7 +182,7 @@ impl Backend {
     /// Recursively checks traits used by each trait, up to a depth limit.
     fn find_prototype_in_traits(
         &self,
-        trait_names: &[String],
+        trait_names: &[crate::atom::Atom],
         method_name: &str,
         current_uri: &str,
         current_content: &str,
@@ -237,11 +237,11 @@ impl Backend {
         current_content: &str,
     ) -> Option<Prototype> {
         // Collect all interface names from the class and its parent chain.
-        let mut all_iface_names: Vec<String> = class.interfaces.clone();
+        let mut all_iface_names: Vec<crate::atom::Atom> = class.interfaces.clone();
         let mut current = class.clone();
         for _ in 0..MAX_INHERITANCE_DEPTH {
-            let parent_name = match current.parent_class.as_ref() {
-                Some(name) => name.clone(),
+            let parent_name = match current.parent_class {
+                Some(name) => name,
                 None => break,
             };
             let parent = match self.find_or_load_class(&parent_name) {
@@ -250,7 +250,7 @@ impl Backend {
             };
             for iface in &parent.interfaces {
                 if !all_iface_names.contains(iface) {
-                    all_iface_names.push(iface.clone());
+                    all_iface_names.push(*iface);
                 }
             }
             current = parent;
@@ -308,9 +308,9 @@ impl Backend {
                 return Some(proto);
             }
         }
-        if let Some(ref parent_name) = iface.parent_class
+        if let Some(parent_name) = iface.parent_class
             && let Some(proto) = self.find_prototype_in_interface(
-                parent_name,
+                &parent_name,
                 method_name,
                 current_uri,
                 current_content,
@@ -350,7 +350,7 @@ impl Backend {
         let is_iface = ancestor_class.kind == ClassLikeKind::Interface || is_interface;
 
         Some(Prototype {
-            ancestor_name: ancestor_class.name.clone(),
+            ancestor_name: ancestor_class.name.to_string(),
             is_interface: is_iface,
             file_uri,
             position,

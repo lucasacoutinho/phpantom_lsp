@@ -19,6 +19,8 @@ pub(crate) mod error_format;
 mod functions;
 mod use_statements;
 
+use crate::atom::atom;
+
 use mago_span::HasSpan;
 use mago_syntax::ast::*;
 
@@ -911,7 +913,7 @@ pub(crate) fn extract_parameters(
             }
         })
         .map(|param| {
-            let name = param.variable.name.to_string();
+            let name = atom(param.variable.name);
             let is_variadic = param.ellipsis.is_some();
             let is_reference = param.ampersand.is_some();
             let has_default = param.default_value.is_some();
@@ -988,9 +990,9 @@ pub(crate) fn extract_property_info(property: &Property) -> Vec<PropertyInfo> {
             // Strip the leading `$` for property names since PHP access
             // syntax is `$this->name` not `$this->$name`.
             let name = if let Some(stripped) = raw_name.strip_prefix('$') {
-                stripped.to_string()
+                atom(stripped)
             } else {
-                raw_name
+                atom(&raw_name)
             };
 
             PropertyInfo {

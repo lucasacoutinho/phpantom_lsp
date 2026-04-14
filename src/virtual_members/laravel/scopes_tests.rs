@@ -1,4 +1,5 @@
 use super::*;
+use crate::atom::atom;
 use crate::test_fixtures::{make_class, make_method, make_method_with_params, make_param};
 use crate::types::{ParameterInfo, Visibility};
 use crate::virtual_members::laravel::ELOQUENT_MODEL_FQN;
@@ -424,13 +425,13 @@ fn builder_scope_extracts_scope_methods_as_instance() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
             let mut m = make_class("Brand");
-            m.file_namespace = Some("App\\Models".to_string());
-            m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-            m.methods.push(make_method_with_params(
+            m.file_namespace = Some(atom("App\\Models"));
+            m.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+            m.methods.push(Arc::new(make_method_with_params(
                 "scopeActive",
                 Some("void"),
                 vec![make_param("$query", Some("Builder"), true)],
-            ));
+            )));
             Some(Arc::new(m))
         } else if name == ELOQUENT_MODEL_FQN {
             Some(Arc::new(make_class(ELOQUENT_MODEL_FQN)))
@@ -451,13 +452,13 @@ fn builder_scope_substitutes_static_in_return_type() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
             let mut m = make_class("Brand");
-            m.file_namespace = Some("App\\Models".to_string());
-            m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-            m.methods.push(make_method_with_params(
+            m.file_namespace = Some(atom("App\\Models"));
+            m.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+            m.methods.push(Arc::new(make_method_with_params(
                 "scopeActive",
                 Some("void"),
                 vec![make_param("$query", Some("Builder"), true)],
-            ));
+            )));
             Some(Arc::new(m))
         } else if name == ELOQUENT_MODEL_FQN {
             Some(Arc::new(make_class(ELOQUENT_MODEL_FQN)))
@@ -481,16 +482,16 @@ fn builder_scope_strips_query_parameter() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
             let mut m = make_class("Brand");
-            m.file_namespace = Some("App\\Models".to_string());
-            m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-            m.methods.push(make_method_with_params(
+            m.file_namespace = Some(atom("App\\Models"));
+            m.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+            m.methods.push(Arc::new(make_method_with_params(
                 "scopeOfType",
                 Some("void"),
                 vec![
                     make_param("$query", Some("Builder"), true),
                     make_param("$type", Some("string"), true),
                 ],
-            ));
+            )));
             Some(Arc::new(m))
         } else if name == ELOQUENT_MODEL_FQN {
             Some(Arc::new(make_class(ELOQUENT_MODEL_FQN)))
@@ -511,13 +512,13 @@ fn builder_scope_with_custom_return_type() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
             let mut m = make_class("Brand");
-            m.file_namespace = Some("App\\Models".to_string());
-            m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-            m.methods.push(make_method_with_params(
+            m.file_namespace = Some(atom("App\\Models"));
+            m.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+            m.methods.push(Arc::new(make_method_with_params(
                 "scopeActive",
                 Some("\\App\\Builders\\BrandBuilder"),
                 vec![make_param("$query", Some("Builder"), true)],
-            ));
+            )));
             Some(Arc::new(m))
         } else if name == ELOQUENT_MODEL_FQN {
             Some(Arc::new(make_class(ELOQUENT_MODEL_FQN)))
@@ -540,11 +541,11 @@ fn builder_scope_preserves_deprecated() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
             let mut m = make_class("Brand");
-            m.file_namespace = Some("App\\Models".to_string());
-            m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
+            m.file_namespace = Some(atom("App\\Models"));
+            m.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
             let mut scope = make_method("scopeOld", Some("void"));
             scope.deprecation_message = Some("Use scopeNew() instead".into());
-            m.methods.push(scope);
+            m.methods.push(Arc::new(scope));
             Some(Arc::new(m))
         } else if name == ELOQUENT_MODEL_FQN {
             Some(Arc::new(make_class(ELOQUENT_MODEL_FQN)))
@@ -566,13 +567,13 @@ fn builder_scope_attribute_extracts_scope_methods_as_instance() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
             let mut m = make_class("Brand");
-            m.file_namespace = Some("App\\Models".to_string());
-            m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-            m.methods.push(make_scope_attr_method_with_params(
+            m.file_namespace = Some(atom("App\\Models"));
+            m.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+            m.methods.push(Arc::new(make_scope_attr_method_with_params(
                 "active",
                 Some("void"),
                 vec![make_param("$query", Some("Builder"), true)],
-            ));
+            )));
             Some(Arc::new(m))
         } else if name == ELOQUENT_MODEL_FQN {
             Some(Arc::new(make_class(ELOQUENT_MODEL_FQN)))
@@ -593,16 +594,16 @@ fn builder_scope_attribute_strips_query_parameter() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
             let mut m = make_class("Brand");
-            m.file_namespace = Some("App\\Models".to_string());
-            m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-            m.methods.push(make_scope_attr_method_with_params(
+            m.file_namespace = Some(atom("App\\Models"));
+            m.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+            m.methods.push(Arc::new(make_scope_attr_method_with_params(
                 "ofType",
                 Some("void"),
                 vec![
                     make_param("$query", Some("Builder"), true),
                     make_param("$type", Some("string"), true),
                 ],
-            ));
+            )));
             Some(Arc::new(m))
         } else if name == ELOQUENT_MODEL_FQN {
             Some(Arc::new(make_class(ELOQUENT_MODEL_FQN)))
@@ -623,13 +624,13 @@ fn builder_scope_attribute_substitutes_static_in_return_type() {
     let loader = |name: &str| -> Option<Arc<ClassInfo>> {
         if name == "App\\Models\\Brand" {
             let mut m = make_class("Brand");
-            m.file_namespace = Some("App\\Models".to_string());
-            m.parent_class = Some(ELOQUENT_MODEL_FQN.to_string());
-            m.methods.push(make_scope_attr_method_with_params(
+            m.file_namespace = Some(atom("App\\Models"));
+            m.parent_class = Some(atom(ELOQUENT_MODEL_FQN));
+            m.methods.push(Arc::new(make_scope_attr_method_with_params(
                 "active",
                 Some("void"),
                 vec![make_param("$query", Some("Builder"), true)],
-            ));
+            )));
             Some(Arc::new(m))
         } else if name == ELOQUENT_MODEL_FQN {
             Some(Arc::new(make_class(ELOQUENT_MODEL_FQN)))

@@ -83,6 +83,7 @@ impl Backend {
                     function_loader: Some(
                         &function_loader as &dyn Fn(&str) -> Option<FunctionInfo>,
                     ),
+                    scope_var_resolver: None,
                 };
 
                 let candidates = ResolvedType::into_arced_classes(
@@ -103,11 +104,11 @@ impl Backend {
                 SelfStaticParentKind::Self_
                 | SelfStaticParentKind::Static
                 | SelfStaticParentKind::This => current_class
-                    .map(|cc| vec![PhpType::Named(cc.name.clone())])
+                    .map(|cc| vec![PhpType::Named(cc.name.to_string())])
                     .unwrap_or_default(),
                 SelfStaticParentKind::Parent => current_class
                     .and_then(|cc| cc.parent_class.as_ref())
-                    .map(|p| vec![PhpType::Named(p.clone())])
+                    .map(|p| vec![PhpType::Named(p.to_string())])
                     .unwrap_or_default(),
             },
 
@@ -159,11 +160,7 @@ impl Backend {
             );
 
             if is_method_call {
-                if let Some(method) = merged
-                    .methods
-                    .iter()
-                    .find(|m| m.name.eq_ignore_ascii_case(member_name))
-                {
+                if let Some(method) = merged.get_method_ci(member_name) {
                     let default_type = PhpType::untyped();
                     let ret_type = method.return_type.as_ref().unwrap_or(&default_type);
 
@@ -279,7 +276,7 @@ fn resolve_variable_type_names(
 
     // $this resolves to the enclosing class.
     if name == "this" {
-        return current_class.map(|cc| PhpType::Named(cc.name.clone()));
+        return current_class.map(|cc| PhpType::Named(cc.name.to_string()));
     }
 
     // Try the type-string path first (preserves generics, union types).
@@ -320,7 +317,7 @@ fn resolve_variable_type_names(
 
     let class_names: Vec<String> = types
         .into_iter()
-        .map(|c| c.name.clone())
+        .map(|c| c.name.to_string())
         .filter(|n| !crate::php_type::is_scalar_name_pub(n))
         .collect();
 
