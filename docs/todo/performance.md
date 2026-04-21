@@ -15,40 +15,6 @@ within the same impact tier.
 
 ---
 
-## P1. Reference-counted `ClassInfo` (`Arc<ClassInfo>`)
-
-**Impact: High · Effort: Medium-High**
-
-**Tracked as [ER5 Phase 4c](../todo/eager-resolution.md#phase-4c-eliminate-classinfo-cloning-next).**
-
-Fresh profiling (perf, release build, example.php) confirmed this is
-the single largest remaining bottleneck: **~38% of CPU** is spent in
-`ClassInfo::clone`, `drop_in_place<ClassInfo>`, and associated
-malloc/free. The fix is to change `ResolvedType.class_info` from
-`Option<ClassInfo>` to `Option<Arc<ClassInfo>>` and propagate Arc
-sharing through `type_hint_to_classes_typed` and the variable
-resolution pipeline. See the eager-resolution doc for the full plan.
-
----
-
-## P1.5. ~~Layered class resolution (zero-copy inheritance)~~
-
-**Superseded by [ER5 Phase 4](../todo/eager-resolution.md#er5--mago-style-separated-metadata).**
-
-The original proposal was to replace the flat merged `ClassInfo` with
-a layered view (`ResolvedClass` with own/traits/parent/virtual
-layers). Profiling and comparison with Mago's architecture showed
-that the real problem is not the per-merge cost (Phase 3's
-Arc-wrapping already made individual method copies O(1)) but the
-number of times merging is invoked (251K calls during diagnostics on
-the `shared` project). The Mago-style approach (separated method
-storage with pre-populated immutable metadata) addresses both
-problems: merges become trivial (copy identifier atoms) and analysis
-never re-merges at all. See `docs/todo/eager-resolution.md` for the
-full plan.
-
----
-
 ## P3. Parallel pre-filter in `find_implementors`
 
 **Impact: Medium · Effort: Medium**
@@ -727,93 +693,125 @@ so this fast-path would apply to the majority of checks.
 
 ---
 
-## P19. Analysis time dominated by per-expression class resolution
-
-**Impact: High · Effort: High**
-
-**Tracked in [eager-resolution.md](../todo/eager-resolution.md).**
-
-### Current status (after Phase 4a + 4b)
-
-The double scope walk bug has been fixed (Phase 4b), bringing
-release-mode analysis of example.php from ~18s to ~9.5s. The
-remaining bottleneck is **ClassInfo cloning** (38% of CPU per
-perf profiling). This is addressed by Phase 4c in the
-eager-resolution doc.
-
-### Current profiling data (release build, example.php)
-
-| Phase | Wall time | Notes |
-|---|---|---|
-| Init + parse + eager populate | < 1s | negligible |
-| `build_diagnostic_scopes` | **8.9s** | forward walker |
-| Fast diagnostics | 0.0s | |
-| Slow diagnostics | 0.6s | fixed double-walk bug |
-| **Total** | **~9.5s** | target: < 3s |
-
-The 8.9s scope walk makes 8,726 calls to `resolve_rhs_expression`
-with 5,559 resolved-class cache hits and 396 misses. The time is
-dominated by allocation churn from `ClassInfo::clone` (4.2% self),
-associated malloc (7.3%), memcpy (5.7%), and free (7.8%).
-
-### Fix
-
-Phase 4c: change `ResolvedType.class_info` from `Option<ClassInfo>`
-to `Option<Arc<ClassInfo>>` and propagate Arc sharing through the
-resolution pipeline. See
-[eager-resolution.md Phase 4c](../todo/eager-resolution.md).
-
-### Success criteria
-
-- `phpantom_lsp analyze --project-root . example.php` completes in
-  under 2 seconds (release build).
-- The diagnostic/analysis pass minimises `ClassInfo` cloning to only
-  cases requiring mutation (generic substitution).
-
----
-
-## P20. Forward walker: Mago-style assignment-depth-bounded loop iteration
+## P20. Forward walker: bounded iteration and depth-cap cleanup
 
 The forward walker's two-pass loop strategy (walk body once to
 discover assignments, merge, walk again) interacts multiplicatively
-with if-branch merging. Currently a `LOOP_DEPTH` counter hard-caps
-re-walks at depth 4 and bails out entirely at depth 8. This
-prevents hangs but sacrifices accuracy on deeply nested code.
+with if-branch merging. This exponential blowup is currently
+papered over with three thread-local depth counters:
 
-Mago (`references/mago/crates/analyzer/src/statement/loop/`) solves
-this properly with bounded iteration:
+- `LOOP_DEPTH` / `MAX_LOOP_DEPTH = 6`: hard cap on loop nesting.
+  Beyond depth 2 (`MAX_TWO_PASS_LOOP_DEPTH`), loops get a single
+  pass only. Beyond depth 6, the body is skipped entirely.
+- `WALK_DEPTH` / `MAX_WALK_DEPTH = 50`: guards `walk_body_forward`
+  recursion across all block nesting (if/else, try/catch, switch).
+- `PROCESS_DEPTH` / `MAX_PROCESS_DEPTH = 80`: guards
+  `process_statement` recursion for the same nesting.
+
+All three caps silently produce incomplete type information when
+they fire. The high values of 50 and 80 (vs real PHP nesting of
+10-15) indicate they exist as safety nets for the exponential
+blowup, not for real nesting depth.
+
+### How Mago solves the loop problem
+
+Mago (`references/mago/crates/analyzer/src/statement/loop/`) uses
+assignment-depth-bounded iteration:
 
 1. **Assignment map.** Before analyzing a loop body, a cheap AST
-   walk (no type resolution) builds a map of which variables depend
-   on which other variables. The loop body is re-walked at most
-   `assignment_depth` times (typically 1–3), not proportional to
-   nesting depth.
+   walk (`assignment_map_visitor.rs`, no type resolution) builds a
+   `BTreeMap<Atom, BTreeSet<Atom>>` of which variables depend on
+   which other variables. The function `get_assignment_map_depth`
+   follows the dependency chain (using `remove` to break cycles)
+   and returns the longest chain length.
 
-2. **Fixed-point early exit.** After each re-walk, check whether any
-   variable's type actually changed. If types have stabilized, stop.
+2. **Bounded re-walking.** The loop body is re-walked at most
+   `assignment_depth` times (typically 1-3), not proportional to
+   nesting depth. Between iterations, `clean_nodes` clears cached
+   expression types so the body is re-analyzed fresh.
 
-3. **Type widening.** Integer bounds widen (e.g. `int<0,5>` →
-   `int<0,max>`) to ensure convergence in few iterations.
+3. **Fixed-point early exit.** After each re-walk, Mago checks
+   whether any variable's type actually changed (`has_changes`
+   flag). If types have stabilized, it breaks immediately
+   (`loop/mod.rs` lines 561-569).
 
-4. **Single-pass branch merging.** If/elseif/else branches are each
-   walked exactly once. Results are merged via type union into an
-   accumulator. Nesting an if inside a foreach does not multiply
-   walks.
+4. **Type widening.** Integer bounds are widened across iterations
+   (lines 430-494) to ensure convergence in few iterations.
 
-### Fix
+5. **Union merging.** Changed types are merged via
+   `combine_union_types` (lines 524-533), not by re-walking
+   branches. Nesting an if inside a foreach does not multiply walks.
 
-- Replace the `LOOP_DEPTH` hard cap with assignment-dependency-depth
-  counting.
-- Add fixed-point detection: compare scope before/after a re-walk
-  and stop when no types changed.
+Note: Mago's statement walker itself IS recursive (the `Analyzable`
+trait dispatches via match, calling `.analyze()` on sub-statements).
+There are no depth limits and no stack size overrides. The walker
+does not need them because the loop analysis avoids the exponential
+blowup that makes our walker's recursion dangerous.
+
+PHPStan's `NodeScopeResolver::processStmtNodes()` is also recursive
+with no depth counters. Phpactor's `FrameResolver` likewise.
+
+### Deliverables
+
+This is a single work item with three steps:
+
+#### Step 1: Assignment-depth-bounded loop iteration
+
+Replace the `LOOP_DEPTH` / `MAX_TWO_PASS_LOOP_DEPTH` /
+`MAX_LOOP_DEPTH` system with Mago-style bounded iteration:
+
+- Build an assignment dependency map before each loop body
+  (cheap AST walk, no type resolution).
+- Compute assignment depth from the dependency chain.
+- Re-walk the body at most `assignment_depth` times.
+- After each re-walk, compare scope before/after. Stop when no
+  types changed (fixed-point).
 - Consider type widening for integer literal types inside loops.
+
+**Success criteria:** Remove `LOOP_DEPTH`, `MAX_TWO_PASS_LOOP_DEPTH`,
+and `MAX_LOOP_DEPTH`. No test regressions. Loop-heavy files that
+previously hit the depth cap now produce correct types.
+
+#### Step 2: Verify and remove `MAX_WALK_DEPTH` / `MAX_PROCESS_DEPTH`
+
+After Step 1 eliminates the exponential blowup, the 50/80 caps
+should never fire on real code (PHP nesting rarely exceeds 15).
+
+- Run the full test suite and `analyse` on the largest available
+  project. Log when either cap fires.
+- If neither fires, remove both counters entirely.
+- If either fires on real code, investigate why (it likely indicates
+  a remaining exponential path that Step 1 missed).
+
+**Success criteria:** `WALK_DEPTH` and `PROCESS_DEPTH` counters
+removed from `forward_walk.rs`. No test regressions.
+
+#### Step 3: Verify and remove 32 MB stack threads (diagnostic workers)
+
+The `analyse.rs` Phase 2 diagnostic workers use
+`stack_size(32 * 1024 * 1024)` because the forward walker's deep
+recursion can overflow the default 8 MB stack. After Steps 1-2,
+the recursion depth is bounded by actual PHP nesting (~15 levels).
+
+- Run the full test suite and `analyse` on the largest available
+  project with default stack sizes (remove or comment out the
+  `stack_size` calls on diagnostic worker threads).
+- If no stack overflows occur, remove the `stack_size` calls.
+- Note: the eager-population and index-worker threads also use
+  32 MB stacks for class resolution depth (addressed by ER5
+  separately). Only remove the diagnostic worker stacks here.
+
+**Success criteria:** Diagnostic worker threads in `analyse.rs`
+run with default stack sizes. The remaining `stack_size` calls
+(eager-population, index workers, reference parsing) are tracked
+by ER5 and P25 respectively.
 
 ### When to implement
 
 After the forward walker stabilizes (it is less than a week old).
-The current `LOOP_DEPTH` guard is sufficient to prevent hangs; this
-item improves accuracy on deeply nested loops without risking
-exponential blowup.
+The current depth guards are sufficient to prevent hangs; this item
+improves accuracy on deeply nested loops and eliminates the safety
+nets that mask the root cause.
 
 ---
 
@@ -846,3 +844,107 @@ like:
 ⏱  63.2s  src/core/Purchase/Services/PurchaseFileService.php
   [fast=1ms cls=40ms mem=23696ms fn=12ms unres=16781ms arg=22568ms impl=0ms depr=54ms]
 ```
+
+---
+
+# Remaining anti-pattern fixes
+
+Most depth-cap and recursion-guard issues are addressed by P20
+(forward walker) and ER5 (class resolution). The items below are
+independent fixes that do not depend on either.
+
+---
+
+## P24. `IN_ARRAY_KEY_ASSIGN` re-entry guard in forward walker
+
+**Impact: Low · Effort: Low**
+
+`forward_walk.rs` line ~3861 uses a thread-local `Cell<bool>` to
+break re-entry in `process_array_key_assignment` when
+`resolve_rhs_with_scope` triggers re-evaluation of the same array
+key (e.g. `$a['k'] = f($a['k'])`). This is a symptom of the
+forward walker calling back into expression resolution which calls
+back into the forward walker.
+
+### How Mago solves this
+
+Mago's forward pass never re-enters itself. Array key assignments
+are processed by recording the LHS target, resolving the RHS type
+in isolation (using the scope snapshot from before the assignment),
+and then updating the scope. The RHS resolution reads from an
+immutable scope snapshot, so it cannot trigger a write that would
+re-enter the assignment handler.
+
+### Fix
+
+When processing `$a['k'] = expr`, snapshot the scope before the
+assignment, resolve `expr` against the snapshot (read-only), then
+apply the result to the live scope. This eliminates the re-entry
+path entirely and the `IN_ARRAY_KEY_ASSIGN` guard can be removed.
+
+---
+
+## P26. Chain resolution cache only active during diagnostics
+
+**Impact: Medium · Effort: Low**
+
+`completion/resolver.rs` lines ~41-65 define a `CHAIN_CACHE`
+thread-local that caches `resolve_target_classes` results by subject
+text. This cache is activated by `with_chain_resolution_cache` and
+is only enabled during diagnostic passes (via `analyse.rs`). During
+completion and hover, the cache is inactive and every chain prefix
+is re-resolved from scratch.
+
+This means that typing `$model->where(...)->orderBy(...)->` in a
+completion context re-resolves `$model->where(...)` even though it
+was just resolved moments ago for `$model->where(...)->orderBy(...)`.
+
+Similarly, the `DIAGNOSTIC_SCOPE` cache (forward walker scope
+snapshots, lines ~57-156) is only populated during diagnostic
+passes. Hover and completion use a separate code path
+(`resolve_variable_types` with backward scanning or forward walk
+without caching), which can produce subtly different results because
+the diagnostic path's forward walker records scope at every
+statement boundary while the completion path only walks to the
+cursor position.
+
+### What this causes
+
+1. **Completion is slower than diagnostics** for chain expressions,
+   because diagnostics benefit from the chain cache but completion
+   does not.
+2. **Hover and completion can disagree** on a variable's type when
+   the forward walker's single-cursor walk produces a different
+   scope state than the diagnostic pass's full-file walk (e.g. due
+   to branch merging order or loop depth cutoffs).
+
+### How the reference projects handle this
+
+PHPStan's `MutatingScope` stores a `$resolvedTypes` array that
+caches every expression type resolved via `getType()`. The scope is
+the same object regardless of whether the caller is a rule
+(diagnostic), a return type extension, or any other consumer. There
+is no consumer-specific mode.
+
+Phpactor has three caching layers that are all consumer-agnostic:
+(1) `NodeContextResolver` caches per AST node via `spl_object_id`.
+(2) `FrameResolver` caches the entire variable frame per scope node.
+(3) `MemonizedReflector` caches reflected classes. All three are
+active for every operation (completion, hover, go-to-definition).
+The source comment notes: "The cache should only have a lifetime of
+the current operation."
+
+### Fix
+
+1. Activate the chain resolution cache for completion and hover
+   requests, not just diagnostics. The cache is cheap (a HashMap
+   cleared per request) and the chain prefix re-resolution is the
+   dominant cost for fluent API chains.
+2. Unify the scope resolution path: when the diagnostic scope cache
+   is available (file has been analyzed), use it for hover and
+   completion as well. Fall back to cursor-targeted forward walk
+   only when no cached scopes exist.
+3. Long-term: move toward a per-request expression type cache
+   (similar to PHPStan's `$resolvedTypes` or Phpactor's
+   `spl_object_id` cache) that all consumers share, eliminating
+   the need for separate chain and scope caches.

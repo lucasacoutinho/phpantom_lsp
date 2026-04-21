@@ -23,12 +23,14 @@ within the same impact tier.
 
 ## Sprint 5 — Polish for office adoption
 
-| #   | Item                                                                                                                                                                | Impact   | Effort      |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ----------- |
-| P20 | [Forward walker: Mago-style assignment-depth-bounded loop iteration](todo/performance.md#p20-forward-walker-mago-style-assignment-depth-bounded-loop-iteration)      | High     | Medium      |
-| ER5 | [Mago-style separated metadata](todo/eager-resolution.md#er5--mago-style-separated-metadata) (pre-populated immutable codebase, O(1) method resolution)             | High     | High        |
-| P9  | [`resolved_class_cache` generic-arg specialisation](todo/performance.md#p9-resolved_class_cache-generic-arg-specialisation)                                         | Medium   | Medium      |
-| P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                  | Medium | Low         |
+| #   | Item                                                                                                                                                                | Impact      | Effort      |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------- |
+| P26 | [Chain resolution cache only active during diagnostics](todo/performance.md#p26-chain-resolution-cache-only-active-during-diagnostics)                               | Medium      | Low         |
+| P24 | [`IN_ARRAY_KEY_ASSIGN` re-entry guard in forward walker](todo/performance.md#p24-in_array_key_assign-re-entry-guard-in-forward-walker)                              | Low         | Low         |
+| P20 | [Forward walker: bounded iteration and depth-cap cleanup](todo/performance.md#p20-forward-walker-bounded-iteration-and-depth-cap-cleanup)                            | High        | Medium      |
+| ER5 | [Mago-style separated metadata](todo/eager-resolution.md#er5--mago-style-separated-metadata)                                                                        | High        | High        |
+| P9  | [`resolved_class_cache` generic-arg specialisation](todo/performance.md#p9-resolved_class_cache-generic-arg-specialisation)                                         | Medium      | Medium      |
+| P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                  | Medium      | Low         |
 | D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variable-diagnostic)                                                                                     | Medium | Medium      |
 | D12 | [Mago diagnostic proxy](todo/diagnostics.md#d12-mago-diagnostic-proxy)                                                                                              | Medium | Medium      |
 | F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints)                                    | Medium | Medium      |
@@ -58,15 +60,14 @@ within the same impact tier.
 | #   | Item                                                                                                                                                            | Impact      | Effort      |
 | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------- |
 |     | Clear [refactoring gate](todo/refactor.md)                                                                                                                      | —           | —           |
-| E5  | [Extension stub coverage audit](todo/external-stubs.md#e5-extension-stub-audit)                                                                                 | Medium      | Low         |
+| E5  | [Extension stub coverage audit](todo/external-stubs.md#e5-extension-stub-selection-stubs-extensions)                                                                                 | Medium      | Low         |
 | X1  | [Staleness detection and auto-refresh](todo/indexing.md#x1-staleness-detection-and-auto-refresh)                                                                | Medium      | Medium      |
-| E1  | [External stub packages (ide-helper, etc.)](todo/external-stubs.md#e1-external-stub-packages)                                                                   | Medium-High | Medium      |
-| E2  | [Project-level stubs as type resolution source](todo/external-stubs.md#e2-project-level-stubs-as-type-resolution-source) (depends on E1)                        | Medium      | Medium      |
+| E1  | [External stub packages (ide-helper, etc.)](todo/external-stubs.md#e1-project-level-phpstorm-stubs-for-gtd)                                                                   | Medium-High | Medium      |
+| E2  | [Project-level stubs as type resolution source](todo/external-stubs.md#e2-project-level-stubs-as-resolution-source) (depends on E1)                        | Medium      | Medium      |
 | E3  | [IDE-provided and `.phpantom.toml` stub paths](todo/external-stubs.md#e3-ide-provided-and-phpantomtoml-stub-paths) (depends on E2)                              | Low-Medium  | Low         |
-| E4  | [Stub version alignment with target PHP](todo/external-stubs.md#e4-stub-version-alignment) (depends on E1)                                                      | Medium      | Medium      |
+| E4  | [Stub version alignment with target PHP](todo/external-stubs.md#e4-embedded-stub-override-with-external-stubs) (depends on E1)                                                      | Medium      | Medium      |
 | L11 | [Relation dot-notation string and column name string completion](todo/laravel.md#l11-relation-dot-notation-string-completion-and-column-name-string-completion) | Medium-High | Medium-High |
-| P1a | `type_hint_to_classes` returns `Vec<Arc<ClassInfo>>` (memory prerequisite for X4)                                                                               | Low         | Low         |
-| X4  | [Full background indexing](todo/indexing.md#x4-full-background-indexing) (workspace symbols, fast find-references; depends on P1a)                              | Medium      | High        |
+| X4  | [Full background indexing](todo/indexing.md#x4-full-background-indexing) (workspace symbols, fast find-references)                                              | Medium      | High        |
 | L1  | [Facade completion](todo/laravel.md#l1-facade-completion)                                                                                                       | High        | High        |
 |     | **Release 1.0.0 + IDE extensions**                                                                                                                              |             |             |
 
@@ -169,8 +170,6 @@ unlikely to move the needle for most users.
 | P10  | [Redundant `parse_and_cache_file` from multiple threads](todo/performance.md#p10-redundant-parse_and_cache_file-from-multiple-threads)                                      | Medium      | Low         |
 | P11  | [Uncached base-resolution in `build_scope_methods_for_builder`](todo/performance.md#p11-uncached-base-resolution-in-build_scope_methods_for_builder)                        | Low-Medium  | Low         |
 | P3   | Parallel pre-filter in `find_implementors`                                                                                                                                  | Low-Medium  | Medium      |
-| P19  | [Analysis time dominated by per-expression class resolution](todo/performance.md#p19-analysis-time-dominated-by-per-expression-class-resolution) (root cause; fix is ER5) | High      | High        |
-| P1b  | Propagate `Arc<ClassInfo>` through variable-resolution pipeline                                                                                                             | Low         | Medium      |
 | P4   | `memmem` for block comment terminator search                                                                                                                                | Low         | Low         |
 | P5   | `memmap2` for file reads during scanning                                                                                                                                    | Low         | Low         |
 | P6   | O(n²) transitive eviction in `evict_fqn`                                                                                                                                    | Low         | Low         |

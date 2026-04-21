@@ -243,6 +243,103 @@ inside the type resolution pipeline, not by resolution logic.
 
 ---
 
+#### Phase 4e: Eliminate recursion guards in class resolution (absorbs P21, P22)
+
+**Impact: Medium-High. Effort: Medium.**
+
+Once Phase 4d (or earlier) makes the resolved codebase metadata
+immutable after population, the re-entrant resolution that currently
+requires thread-local recursion guards cannot occur. This phase
+removes those guards and the depth caps they protect:
+
+1. **`RESOLVING` set and `MAX_RESOLVE_DEPTH` (30) in
+   `virtual_members/mod.rs`.** Thread-local set of class FQNs
+   currently being resolved. When a class is already in the set,
+   re-entrant calls return a partial result (base inheritance only,
+   no virtual members). This produces non-deterministic results:
+   whichever class in a mutual dependency (e.g. Model/Builder) is
+   resolved first gets full virtual members, the other gets degraded.
+   After eager population, all classes are resolved before any
+   consumer queries them, so re-entry cannot happen.
+
+2. **`RESOLVE_DEPTH` and `MAX_RESOLVE_TARGET_DEPTH` (60) in
+   `completion/resolver.rs`.** Thread-local depth counter for
+   `resolve_target_classes_expr_inner`. Guards against mutual
+   recursion between subject resolution, call-return resolution,
+   and variable resolution. The limit of 60 (vs typical chain
+   depth of 5-10) indicates the recursion is caused by accidental
+   re-entry into class resolution, not by the problem size. Once
+   class resolution is a cache lookup, this re-entry path vanishes.
+
+3. **LSP server eager population.** The `analyse.rs` CLI already
+   runs `populate_from_sorted` before diagnostics. The LSP server's
+   Tokio threads do not. Extend eager population to run on file
+   change in the LSP server (incrementally, not full re-population)
+   so that interactive requests also benefit from pre-resolved
+   metadata.
+
+**How the reference projects avoid this problem:**
+
+- **Mago:** topologically sorts classes (`codex/src/populator/
+  sorter.rs`) using a DFS with `visited` + `visiting` sets. Cycles
+  are broken silently when `visiting.contains(&class_like)`. Each
+  class is then populated exactly once by
+  `populate_class_like_metadata_iterative` (non-recursive, assumes
+  dependencies are done). No re-entrant resolution is possible.
+
+- **PHPStan:** member lookup on `ClassReflection` delegates to
+  `PhpClassReflectionExtension`, which calls PHP's native
+  `ReflectionClass` (already resolved by the runtime). Each class
+  has a single canonical instance via `MemoizingReflectionProvider`
+  (keyed by lowercase name), so re-entrant lookups hit the same
+  cached object. Explicit cycle guards exist only for specific
+  features: `$resolvingTypeAliasImports` for `@type-import` cycles,
+  `$inferClassConstructorPropertyTypesInProcess` for constructor
+  property inference.
+
+- **Phpactor:** three independent cycle-protection layers.
+  (1) `ClassHierarchyResolver::doResolve()` passes a `$resolved`
+  map by value; if a class name is already a key, recursion stops.
+  (2) Every reflection object carries a `$visited` array through its
+  constructor; `reflectClassLike()` throws `CycleDetected` on
+  re-entry. (3) Direct self-reference guards in `parent()` and
+  `ancestors()`.
+
+**Success criteria:**
+- `RESOLVING`, `RESOLVE_DEPTH`, `MAX_RESOLVE_DEPTH`, and
+  `MAX_RESOLVE_TARGET_DEPTH` are removed from the codebase.
+- `mark_resolving` / `unmark_resolving` functions are removed.
+- No test regressions.
+- LSP server runs eager population incrementally on file change.
+
+#### Phase 4f: Remove inflated stack sizes (absorbs P25)
+
+**Impact: Medium. Effort: Low.**
+
+After Phase 4e eliminates re-entrant class resolution and P20
+eliminates exponential forward-walker blowup, the 32 MB stack
+threads in `analyse.rs` (index workers, eager population, diagnostic
+workers) and the 16 MB stack threads in `references/mod.rs` (parallel
+parsing) should no longer be necessary.
+
+- Run the full test suite and `analyse` on the largest available
+  project with default 8 MB stacks.
+- Remove each `stack_size` call that no longer causes overflow.
+- The reference parsing threads (16 MB) may still be needed for
+  pathological PHP files with extreme nesting; verify separately.
+
+Note: Mago's `build.rs` uses a 36 MB stack for prelude parsing, so
+inflated stacks are not inherently wrong for one-off build tasks.
+The problem is needing them for every runtime analysis thread.
+
+**Success criteria:**
+- All `stack_size` calls in `analyse.rs` removed.
+- `references/mod.rs` `PARSE_STACK_SIZE` reduced to 8 MB or removed.
+- No stack overflows on the full test suite or the largest available
+  project.
+
+---
+
 
 ## Success criteria
 
@@ -256,3 +353,8 @@ inside the type resolution pipeline, not by resolution logic.
 - The diagnostic/analysis pass never calls
   `resolve_class_with_inheritance`. All class metadata is
   pre-populated and immutable during analysis.
+- All thread-local recursion guards (`RESOLVING`, `RESOLVE_DEPTH`)
+  and depth caps (`MAX_RESOLVE_DEPTH`, `MAX_RESOLVE_TARGET_DEPTH`)
+  are removed (Phase 4e).
+- All inflated `stack_size` calls are removed or reduced to default
+  (Phase 4f).
