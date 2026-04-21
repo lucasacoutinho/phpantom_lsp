@@ -25,9 +25,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                                                | Impact      | Effort      |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------- |
-| ER5 | [Mago-style separated metadata](todo/eager-resolution.md#er5--mago-style-separated-metadata)                                                                        | High        | High        |
-| P9  | [`resolved_class_cache` generic-arg specialisation](todo/performance.md#p9-resolved_class_cache-generic-arg-specialisation)                                         | Medium      | Medium      |
-| P18 | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                  | Medium      | Low         |
 | D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variable-diagnostic)                                                                                     | Medium | Medium      |
 | D12 | [Mago diagnostic proxy](todo/diagnostics.md#d12-mago-diagnostic-proxy)                                                                                              | Medium | Medium      |
 | F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints)                                    | Medium | Medium      |
@@ -162,8 +159,10 @@ unlikely to move the needle for most users.
 | E6   | Stub install prompt for non-Composer projects                                                                                                                               | Low         | Low         |
 | E7   | [Stub-based framework patches](todo/external-stubs.md#e7-stub-based-framework-patches)                                                                                      | Medium      | Medium      |
 |      | **[Performance](todo/performance.md) / [Eager Resolution](todo/eager-resolution.md)**                                                                                       |             |             |
+| ER5  | [Mago-style separated metadata](todo/eager-resolution.md#er5--mago-style-separated-metadata)                                                                               | High        | High        |
 | P13  | [Tiered storage: drop per-file maps for non-open files](todo/performance.md#p13-tiered-storage-drop-per-file-maps-for-non-open-files)                                       | Medium-High | Medium-High |
 | P14  | [Eager docblock parsing into structured fields](todo/performance.md#p14-eager-docblock-parsing-into-structured-fields)                                                      | Medium      | Medium      |
+| P9   | [`resolved_class_cache` generic-arg specialisation](todo/performance.md#p9-resolved_class_cache-generic-arg-specialisation)                                                 | Medium      | Medium      |
 | P10  | [Redundant `parse_and_cache_file` from multiple threads](todo/performance.md#p10-redundant-parse_and_cache_file-from-multiple-threads)                                      | Medium      | Low         |
 | P11  | [Uncached base-resolution in `build_scope_methods_for_builder`](todo/performance.md#p11-uncached-base-resolution-in-build_scope_methods_for_builder)                        | Low-Medium  | Low         |
 | P3   | Parallel pre-filter in `find_implementors`                                                                                                                                  | Low-Medium  | Medium      |
@@ -174,6 +173,7 @@ unlikely to move the needle for most users.
 | P8   | `find_class_in_ast_map` linear fallback scan                                                                                                                                | Low         | Low         |
 | P12  | [`find_or_load_function` Phase 1.75 serial bottleneck](todo/performance.md#p12-find_or_load_function-phase-175-serial-bottleneck)                                           | Low         | Low         |
 | P17  | [`mago-names` resolution on the parse hot path](todo/performance.md#p17-mago-names-resolution-on-the-parse-hot-path)                                                        | Medium      | Low         |
+| P18  | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                          | Medium      | Low         |
 |      | **[Indexing](todo/indexing.md)**                                                                                                                                            |             |             |
 | X3   | Completion item detail on demand (`completionItem/resolve`)                                                                                                                 | Medium      | Medium      |
 | X7   | [Recency tracking](todo/indexing.md#x7-recency-tracking)                                                                                                                    | Medium      | Medium      |
