@@ -25,7 +25,7 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                                                | Impact      | Effort      |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------- |
-| D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variable-diagnostic)                                                                                     | Medium | Medium      |
+| D4  | [Unused variable diagnostic](todo/diagnostics.md#d4-unused-variabl  e-diagnostic)                                                                                     | Medium | Medium      |
 | D12 | [Mago diagnostic proxy](todo/diagnostics.md#d12-mago-diagnostic-proxy)                                                                                              | Medium | Medium      |
 | F4  | [Return type and closure parameter type inlay hints](todo/lsp-features.md#f4-return-type-and-closure-parameter-type-inlay-hints)                                    | Medium | Medium      |
 | F9  | [Namespace renaming](todo/lsp-features.md#f9-namespace-renaming)                                                                                                    | Medium | Medium      |
@@ -174,11 +174,13 @@ unlikely to move the needle for most users.
 | P12  | [`find_or_load_function` Phase 1.75 serial bottleneck](todo/performance.md#p12-find_or_load_function-phase-175-serial-bottleneck)                                           | Low         | Low         |
 | P17  | [`mago-names` resolution on the parse hot path](todo/performance.md#p17-mago-names-resolution-on-the-parse-hot-path)                                                        | Medium      | Low         |
 | P18  | [Subtype result caching](todo/performance.md#p18-subtype-result-caching) (per-request HashMap for hierarchy walks)                                                          | Medium      | Low         |
+| P19  | [Arena reuse on the parse hot path](todo/performance.md#p19-arena-reuse-on-the-parse-hot-path) (thread-local `Bump::reset()` instead of `Bump::new()`)                      | Medium      | Low         |
 |      | **[Indexing](todo/indexing.md)**                                                                                                                                            |             |             |
 | X3   | Completion item detail on demand (`completionItem/resolve`)                                                                                                                 | Medium      | Medium      |
 | X7   | [Recency tracking](todo/indexing.md#x7-recency-tracking)                                                                                                                    | Medium      | Medium      |
 | X2   | Parallel file processing — remaining work                                                                                                                                   | Low-Medium  | Medium      |
 | X5   | Granular progress reporting for indexing, GTI, and Find References                                                                                                          | Low-Medium  | Medium      |
+| X8   | [Inverted reference index for O(k) find-references](todo/indexing.md#x8-inverted-reference-index-for-ok-find-references)                                                    | Medium-High | Medium      |
 | X6   | Disk cache (evaluate later)                                                                                                                                                 | Medium      | High        |
 |      | **[Inline Completion](todo/inline-completion.md)**                                                                                                                          |             |             |
 | N1   | Template engine (type-aware snippets)                                                                                                                                       | Medium      | High        |

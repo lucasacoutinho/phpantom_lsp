@@ -540,4 +540,68 @@ the implicit signal is sufficient and no explicit tracking is needed.
    not essential; the affinity table already provides a good cold-start
    ordering.
 
+---
+
+## X8. Inverted reference index for O(k) find-references
+
+**Impact: Medium-High · Effort: Medium**
+
+Find-references currently scans every span in every file's `SymbolMap`
+— O(total\_spans\_in\_project) per request. For a 10K-file project
+with ~500 spans/file that is ~5 million comparisons, each involving a
+`resolved_names` lookup and string comparison. The result set is
+typically tiny (tens of locations), so almost all work is wasted.
+
+php-lsp builds a background reference index (Phase 3) that maps each
+symbol's FQN to its reference locations, giving O(k) lookups where
+k = number of actual references.
+
+### Data structure
+
+A new inverted index on `Backend`:
+
+```
+ref_index: HashMap<String, Vec<(String, u32, u32)>>
+```
+
+Key: target FQN (e.g. `App\Models\User`, `App\Models\User::save`).
+Value: list of `(file_uri, span_start, span_end)` tuples.
+
+### Maintenance
+
+- **Bulk build.** `ensure_workspace_indexed` already parses every
+  file and builds `SymbolMap` entries with resolved names. After that
+  loop completes, a second pass over all symbol maps populates the
+  inverted index. This is the same work find-references does today,
+  but done once instead of on every request.
+
+- **Incremental update.** `update_ast_inner` already rebuilds a
+  file's `SymbolMap`. After replacing the symbol map entry, remove
+  the old file's contributions from the inverted index and insert the
+  new ones. Since entries are keyed by FQN, this is a scan of the
+  old/new symbol map for the single changed file — negligible cost.
+
+### Query
+
+`find_class_references`, `find_member_references`, and
+`find_function_references` look up the target FQN in the inverted
+index. If the index is populated, return the stored locations
+directly (converting span offsets to LSP ranges via the file content).
+If the index is not yet built (workspace not indexed), fall back to
+the current full-scan approach.
+
+### Dependencies
+
+Benefits from X4 (full background indexing) — if the workspace is
+indexed eagerly, the inverted index is always warm. Without X4, the
+index is built lazily on first find-references and kept warm
+afterward.
+
+### When to implement
+
+After X4 ships (the index is most valuable when the workspace is
+fully indexed). Can also land independently — the lazy-build fallback
+makes it safe to ship without X4.
+
+
 
