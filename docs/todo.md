@@ -25,7 +25,6 @@ within the same impact tier.
 
 | #   | Item                                                                                                                                                                | Impact      | Effort      |
 | --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ----------- |
-| P26 | [Chain resolution cache only active during diagnostics](todo/performance.md#p26-chain-resolution-cache-only-active-during-diagnostics)                               | Medium      | Low         |
 | P24 | [`IN_ARRAY_KEY_ASSIGN` re-entry guard in forward walker](todo/performance.md#p24-in_array_key_assign-re-entry-guard-in-forward-walker)                              | Low         | Low         |
 | P20 | [Forward walker: bounded iteration and depth-cap cleanup](todo/performance.md#p20-forward-walker-bounded-iteration-and-depth-cap-cleanup)                            | High        | Medium      |
 | ER5 | [Mago-style separated metadata](todo/eager-resolution.md#er5--mago-style-separated-metadata)                                                                        | High        | High        |

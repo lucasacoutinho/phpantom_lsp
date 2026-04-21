@@ -1022,6 +1022,12 @@ impl Backend {
         f: impl FnOnce(&str) -> T,
     ) -> Option<T> {
         let content = self.get_file_content(uri)?;
+        // Activate the chain resolution cache so that shared chain prefixes
+        // (e.g. `$model->where(...)` in `$model->where(...)->orderBy(...)`)
+        // are resolved once and reused across all LSP handlers, not just
+        // diagnostics.  The guard is re-entrant safe: if a diagnostic pass
+        // already activated the cache, this is a no-op.
+        let _chain_guard = crate::completion::resolver::with_chain_resolution_cache();
         crate::util::catch_panic_unwind_safe(handler_name, uri, position, || f(&content))
     }
 

@@ -51,10 +51,10 @@ use crate::virtual_members::resolve_class_fully_maybe_cached;
 // the first method call 5 times, etc. — O(depth²) total work.
 //
 // The chain cache stores `resolve_target_classes` results keyed by the
-// raw subject text string.  It is activated at the diagnostic loop level
-// (via [`with_chain_resolution_cache`]) and consulted by
-// `resolve_target_classes` before doing any work.  When the cache is not
-// active (completion, hover, etc.) the function behaves exactly as before.
+// raw subject text string.  It is activated per-request for all LSP
+// handlers (completion, hover, definition, diagnostics, etc.) via
+// [`with_chain_resolution_cache`] and consulted by
+// `resolve_target_classes` before doing any work.
 
 thread_local! {
     /// When `Some`, `resolve_target_classes` will consult and populate

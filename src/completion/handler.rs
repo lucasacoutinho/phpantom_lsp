@@ -269,6 +269,11 @@ impl Backend {
         let content = self.get_file_content(&uri);
 
         if let Some(content) = content {
+            // Activate the chain resolution cache so that shared chain
+            // prefixes are resolved once and reused within this completion
+            // request.  The guard is re-entrant safe.
+            let _chain_guard = super::resolver::with_chain_resolution_cache();
+
             // Gather per-file context (classes, use-map, namespace) in one
             // call instead of three separate lock-and-unwrap blocks.
             let ctx = self.file_context(&uri);
