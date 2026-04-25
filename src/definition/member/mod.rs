@@ -112,6 +112,10 @@ impl Backend {
         let subject = mctx.subject;
         let access_kind = mctx.access_kind;
         let access_hint = mctx.access_hint;
+        let _probe = crate::gtd_probe::GtdProbeGuard::enter(
+            "member_definition",
+            format!("{subject} -> {member_name}"),
+        );
         // 2. Gather context needed for class resolution.
         let cursor_offset = position_to_offset(content, position);
         let ctx = self.file_context(uri);
