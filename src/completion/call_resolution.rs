@@ -1626,6 +1626,7 @@ impl Backend {
         arg_texts: &[&str],
         ctx: &ResolutionCtx<'_>,
     ) -> HashMap<String, PhpType> {
+        crate::gtd_probe::inc_build_method_template_subs();
         // Find the method — first on the class directly, then via inheritance.
         let method = class_info.get_method(method_name).cloned().or_else(|| {
             let merged = crate::virtual_members::resolve_class_fully_maybe_cached(

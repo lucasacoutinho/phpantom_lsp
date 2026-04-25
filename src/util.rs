@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use std::panic::{self, AssertUnwindSafe, UnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use tower_lsp::lsp_types::*;
 
@@ -1542,6 +1543,12 @@ impl Backend {
 
         self.ast_map.write().remove(uri);
         self.symbol_maps.write().remove(uri);
+        self.reference_index.write().remove_uri(uri);
+        // Note: reference_workspace_indexed / reference_workspace_files /
+        // reference_prefiltered_needles describe disk-walk progress, not
+        // per-file parse state. Closing one editor tab must not undo
+        // that progress; real disk changes will be invalidated by a
+        // future workspace/didChangeWatchedFiles handler.
         self.use_map.write().remove(uri);
         self.resolved_names.write().remove(uri);
         self.namespace_map.write().remove(uri);
@@ -1556,6 +1563,9 @@ impl Backend {
     }
 
     pub(crate) async fn log(&self, typ: MessageType, message: String) {
+        if self.shutdown_flag.load(Ordering::Relaxed) {
+            return;
+        }
         if let Some(client) = &self.client {
             client.log_message(typ, message).await;
         }
@@ -1572,6 +1582,13 @@ impl Backend {
     /// [`progress_end`].
     pub(crate) async fn progress_create(&self, token_name: &str) -> Option<NumberOrString> {
         use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
+
+        if self
+            .shutdown_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return None;
+        }
 
         // Per the LSP spec, servers must only use
         // window/workDoneProgress/create when the client signals
@@ -1607,6 +1624,12 @@ impl Backend {
     ) {
         use tower_lsp::lsp_types::notification::Progress;
 
+        if self
+            .shutdown_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         let Some(client) = &self.client else { return };
         client
             .send_notification::<Progress>(ProgressParams {
@@ -1636,6 +1659,12 @@ impl Backend {
     ) {
         use tower_lsp::lsp_types::notification::Progress;
 
+        if self
+            .shutdown_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         let Some(client) = &self.client else { return };
         client
             .send_notification::<Progress>(ProgressParams {
@@ -1659,6 +1688,12 @@ impl Backend {
     pub(crate) async fn progress_end(&self, token: &NumberOrString, message: Option<String>) {
         use tower_lsp::lsp_types::notification::Progress;
 
+        if self
+            .shutdown_flag
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
         let Some(client) = &self.client else { return };
         client
             .send_notification::<Progress>(ProgressParams {

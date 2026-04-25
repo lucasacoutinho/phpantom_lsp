@@ -1,4 +1,5 @@
 use crate::common::{create_psr4_workspace, create_test_backend};
+use std::fs;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -454,6 +455,122 @@ async fn test_goto_definition_method_cross_file() {
         }
         other => panic!("Expected Scalar location, got: {:?}", other),
     }
+}
+
+#[tokio::test]
+async fn test_goto_definition_survives_transient_target_open_close() {
+    let backend = create_test_backend();
+    let dir = tempfile::tempdir().expect("failed to create temp dir");
+    let target_path = dir.path().join("PseudoRandomExperimentLibrary.php");
+    let target_text = concat!(
+        "<?php\n",
+        "class Variation {\n",
+        "    public function getVariation(): string { return ''; }\n",
+        "}\n",
+        "\n",
+        "class PseudoRandomExperimentLibrary {\n",
+        "    public function getVariation($id): ?Variation { return null; }\n",
+        "}\n",
+    );
+    fs::write(&target_path, target_text).expect("failed to write target PHP file");
+    let target_uri = Url::from_file_path(&target_path).expect("target path should be file URI");
+
+    backend.class_index().write().insert(
+        "PseudoRandomExperimentLibrary".to_string(),
+        target_uri.to_string(),
+    );
+
+    let source_uri = Url::parse("file:///consumer.php").unwrap();
+    let source_text = concat!(
+        "<?php\n",
+        "class Consumer {\n",
+        "    public function run(PseudoRandomExperimentLibrary $experimentLib, $userIdentifierOverride): string {\n",
+        "        $variation = $experimentLib->getVariation($userIdentifierOverride)?->getVariation() ?? '';\n",
+        "        return $variation;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: source_uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: source_text.to_string(),
+            },
+        })
+        .await;
+
+    let goto_first_get_variation = || GotoDefinitionParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier {
+                uri: source_uri.clone(),
+            },
+            position: Position {
+                line: 3,
+                character: source_text
+                    .lines()
+                    .nth(3)
+                    .unwrap()
+                    .find("getVariation")
+                    .unwrap() as u32
+                    + 2,
+            },
+        },
+        work_done_progress_params: WorkDoneProgressParams::default(),
+        partial_result_params: PartialResultParams::default(),
+    };
+
+    let result = backend
+        .goto_definition(goto_first_get_variation())
+        .await
+        .unwrap();
+    match result.expect("first definition should resolve") {
+        GotoDefinitionResponse::Scalar(location) => {
+            assert_eq!(location.uri, target_uri);
+            assert_eq!(location.range.start.line, 6);
+        }
+        other => panic!("Expected Scalar location, got: {:?}", other),
+    }
+
+    // VS Code can open the target file as a transient preview during the
+    // navigation, then close it immediately.  Closing must not erase the
+    // cached on-disk target needed by a follow-up definition request.
+    backend
+        .did_open(DidOpenTextDocumentParams {
+            text_document: TextDocumentItem {
+                uri: target_uri.clone(),
+                language_id: "php".to_string(),
+                version: 1,
+                text: target_text.to_string(),
+            },
+        })
+        .await;
+    backend
+        .did_close(DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier {
+                uri: target_uri.clone(),
+            },
+        })
+        .await;
+
+    assert!(
+        backend
+            .class_index()
+            .read()
+            .contains_key("PseudoRandomExperimentLibrary"),
+        "transient close should keep the target class indexed"
+    );
+
+    let result = backend
+        .goto_definition(goto_first_get_variation())
+        .await
+        .unwrap();
+    assert!(
+        result.is_some(),
+        "definition should still resolve after transient target close"
+    );
 }
 
 // ─── Member Definition: Properties ──────────────────────────────────────────

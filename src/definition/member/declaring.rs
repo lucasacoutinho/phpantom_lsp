@@ -51,6 +51,7 @@ impl Backend {
         member_name: &str,
         class_loader: &dyn Fn(&str) -> Option<Arc<ClassInfo>>,
     ) -> Option<(ClassInfo, String)> {
+        crate::gtd_probe::inc_find_declaring_class();
         // Check if this class directly declares the member.
         if Self::classify_member(class, member_name, MemberAccessHint::Unknown).is_some() {
             let fqn = build_fqn(&class.name, class.file_namespace.as_deref());

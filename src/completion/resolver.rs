@@ -412,6 +412,7 @@ fn resolve_target_classes_expr_inner(
     access_kind: AccessKind,
     ctx: &ResolutionCtx<'_>,
 ) -> Vec<ResolvedType> {
+    crate::gtd_probe::inc_resolve_target_classes();
     thread_local! {
         static RESOLVE_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }

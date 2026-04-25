@@ -1391,3 +1391,132 @@ async fn test_this_method_references_excludes_unrelated() {
         lines
     );
 }
+
+#[test]
+fn test_reference_identifier_cache_round_trips_and_rejects_stale_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let src = root.join("src");
+    std::fs::create_dir(&src).unwrap();
+
+    let first = src.join("First.php");
+    let second = src.join("Second.php");
+    std::fs::write(&first, "<?php\nclass Target {}\n").unwrap();
+    std::fs::write(
+        &second,
+        "<?php\nfunction demo(Target $target): void { echo $target::class; }\n",
+    )
+    .unwrap();
+
+    let files = vec![
+        (crate::util::path_to_uri(&first), first.clone()),
+        (crate::util::path_to_uri(&second), second.clone()),
+    ];
+    let index = super::build_identifier_file_index(&files);
+    let bytes = super::encode_reference_identifier_index_cache(root, &files, &index).unwrap();
+    let decoded = super::decode_reference_identifier_index_cache(root, &files, &bytes).unwrap();
+
+    assert_eq!(decoded.get("Target"), Some(&vec![0, 1]));
+    assert_eq!(decoded.get("target"), Some(&vec![1]));
+
+    std::fs::write(&second, "<?php\nfunction changed(): void {}\n").unwrap();
+
+    assert!(super::decode_reference_identifier_index_cache(root, &files, &bytes).is_none());
+}
+
+#[test]
+fn test_reference_identifier_cache_updates_one_changed_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let src = root.join("src");
+    std::fs::create_dir(&src).unwrap();
+
+    let first = src.join("First.php");
+    let second = src.join("Second.php");
+    std::fs::write(&first, "<?php\nclass Target {}\n").unwrap();
+    let old_second = "<?php\nfunction demo(Target $target): void { OldOnly::class; }\n";
+    std::fs::write(&second, old_second).unwrap();
+
+    let files = vec![
+        (crate::util::path_to_uri(&first), first.clone()),
+        (crate::util::path_to_uri(&second), second.clone()),
+    ];
+    let backend = Backend::new_test();
+    *backend.reference_workspace_files.write() = Some(files.clone());
+    *backend.reference_identifier_index.write() = Some(super::build_identifier_file_index(&files));
+    backend
+        .reference_identifier_index_disk_loaded
+        .store(true, std::sync::atomic::Ordering::Release);
+    backend
+        .reference_identifier_index_trusted
+        .store(true, std::sync::atomic::Ordering::Release);
+    backend
+        .reference_prefiltered_needles
+        .write()
+        .insert("Target".to_string());
+
+    let new_second = b"<?php\nfunction demo(Replacement $replacement): void {}\n";
+    assert!(
+        backend.update_reference_identifier_cache_for_uri_content_with_previous(
+            &crate::util::path_to_uri(&second),
+            Some(old_second.as_bytes()),
+            new_second,
+            true,
+        )
+    );
+
+    let index = backend.reference_identifier_index.read();
+    let index = index.as_ref().unwrap();
+    assert_eq!(index.get("Target"), Some(&vec![0]));
+    assert_eq!(index.get("Replacement"), Some(&vec![1]));
+    assert_eq!(index.get("replacement"), Some(&vec![1]));
+    assert!(!index.contains_key("OldOnly"));
+    assert!(backend.reference_prefiltered_needles.read().is_empty());
+    assert!(
+        !backend
+            .reference_identifier_index_disk_loaded
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+    assert!(
+        backend
+            .reference_identifier_index_trusted
+            .load(std::sync::atomic::Ordering::Acquire)
+    );
+}
+
+#[test]
+fn test_reference_identifier_cache_open_edit_preserves_prefiltered_needles() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    let src = root.join("src");
+    std::fs::create_dir(&src).unwrap();
+
+    let file = src.join("First.php");
+    let old_text = "<?php\nclass Target {}\n";
+    std::fs::write(&file, old_text).unwrap();
+
+    let files = vec![(crate::util::path_to_uri(&file), file.clone())];
+    let backend = Backend::new_test();
+    *backend.reference_workspace_files.write() = Some(files.clone());
+    *backend.reference_identifier_index.write() = Some(super::build_identifier_file_index(&files));
+    backend
+        .reference_prefiltered_needles
+        .write()
+        .insert("Target".to_string());
+
+    assert!(
+        backend.update_reference_identifier_cache_for_uri_content_with_previous(
+            &crate::util::path_to_uri(&file),
+            Some(old_text.as_bytes()),
+            b"<?php\nclass Target { public function changed(): void {} }\n",
+            false,
+        )
+    );
+
+    assert!(
+        backend
+            .reference_prefiltered_needles
+            .read()
+            .contains("Target")
+    );
+}

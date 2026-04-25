@@ -23,10 +23,15 @@
 //! Accesses on unrelated classes that happen to have a member with the
 //! same name are excluded.
 
-use std::collections::HashSet;
-use std::path::PathBuf;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::UNIX_EPOCH;
 
+use etcetera::BaseStrategy;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::Backend;
@@ -35,8 +40,72 @@ use crate::symbol_map::{SelfStaticParentKind, SymbolKind, SymbolMap};
 use crate::types::{ClassInfo, MAX_INHERITANCE_DEPTH, ResolvedType};
 use crate::util::{
     build_fqn, collect_php_files_gitignore, find_class_at_offset, offset_to_position,
-    position_to_offset, strip_fqn_prefix,
+    position_to_offset, resolve_to_fqn, strip_fqn_prefix,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) enum ReferenceIndexKey {
+    Class(String),
+    Function(String),
+    Constant(String),
+    Member { name: String, is_static: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReferenceIndexEntry {
+    pub uri: String,
+    pub start: u32,
+    pub end: u32,
+    pub range: Range,
+    pub is_declaration: bool,
+    /// Pre-resolved subject FQN(s) for `MemberAccess` /
+    /// `MemberDeclaration` spans whose owning class is statically
+    /// known at index-build time (`$this` / `self` / `static` /
+    /// `parent` / bare class name, or the enclosing class for a
+    /// declaration). `None` means "fall back to runtime resolution"
+    /// — used for variable subjects whose type may depend on
+    /// cross-file state that has changed since this file was last
+    /// parsed.
+    pub subject_fqns: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct ReferenceIndex {
+    by_key: HashMap<ReferenceIndexKey, Vec<ReferenceIndexEntry>>,
+    by_uri: HashMap<String, Vec<(ReferenceIndexKey, ReferenceIndexEntry)>>,
+}
+
+impl ReferenceIndex {
+    pub(crate) fn remove_uri(&mut self, uri: &str) {
+        let Some(old_entries) = self.by_uri.remove(uri) else {
+            return;
+        };
+
+        for (key, old_entry) in old_entries {
+            if let Some(entries) = self.by_key.get_mut(&key) {
+                entries.retain(|entry| entry != &old_entry);
+                if entries.is_empty() {
+                    self.by_key.remove(&key);
+                }
+            }
+        }
+    }
+
+    fn insert(&mut self, key: ReferenceIndexKey, entry: ReferenceIndexEntry) {
+        self.by_key
+            .entry(key.clone())
+            .or_default()
+            .push(entry.clone());
+        self.by_uri
+            .entry(entry.uri.clone())
+            .or_default()
+            .push((key, entry));
+    }
+
+    fn entries(&self, key: &ReferenceIndexKey) -> Vec<ReferenceIndexEntry> {
+        self.by_key.get(key).cloned().unwrap_or_default()
+    }
+}
 
 impl Backend {
     /// Entry point for `textDocument/references`.
@@ -387,6 +456,218 @@ impl Backend {
             .collect()
     }
 
+    /// Rebuild the inverted reference-index entries for one parsed file.
+    ///
+    /// Called after `update_ast` has refreshed `symbol_maps`,
+    /// `resolved_names`, `use_map`, and `namespace_map` for the URI.
+    pub(crate) fn reindex_references_for_uri(&self, uri: &str, content: &str) {
+        let mut index = self.reference_index.write();
+        index.remove_uri(uri);
+
+        if !self.should_index_references_for_uri(uri) {
+            return;
+        }
+
+        let symbol_map = match self.symbol_maps.read().get(uri).cloned() {
+            Some(map) => map,
+            None => return,
+        };
+        let resolved_names = self.resolved_names.read().get(uri).cloned();
+        let namespace = self.namespace_map.read().get(uri).cloned().flatten();
+        let use_map = self.use_map.read().get(uri).cloned().unwrap_or_default();
+        let classes: Vec<Arc<ClassInfo>> =
+            self.ast_map.read().get(uri).cloned().unwrap_or_default();
+        let ctx = crate::types::FileContext {
+            classes,
+            use_map: use_map.clone(),
+            namespace: namespace.clone(),
+            resolved_names: resolved_names.clone(),
+        };
+        let line_starts = line_starts(content);
+
+        for span in &symbol_map.spans {
+            let start_position = offset_to_position_with_lines(content, &line_starts, span.start);
+            let end_position = offset_to_position_with_lines(content, &line_starts, span.end);
+            let entry = ReferenceIndexEntry {
+                uri: uri.to_string(),
+                start: span.start,
+                end: span.end,
+                range: Range {
+                    start: start_position,
+                    end: end_position,
+                },
+                is_declaration: matches!(
+                    span.kind,
+                    SymbolKind::ClassDeclaration { .. }
+                        | SymbolKind::FunctionCall {
+                            is_definition: true,
+                            ..
+                        }
+                        | SymbolKind::MemberDeclaration { .. }
+                ),
+                subject_fqns: None,
+            };
+
+            match &span.kind {
+                SymbolKind::ClassReference { name, is_fqn, .. } => {
+                    let resolved = if *is_fqn {
+                        name.clone()
+                    } else if let Some(fqn) =
+                        resolved_names.as_ref().and_then(|rn| rn.get(span.start))
+                    {
+                        fqn.to_string()
+                    } else {
+                        resolve_to_fqn(name, &use_map, &namespace)
+                    };
+                    index.insert(ReferenceIndexKey::Class(normalize_fqn(&resolved)), entry);
+                }
+                SymbolKind::ClassDeclaration { name } => {
+                    index.insert(
+                        ReferenceIndexKey::Class(build_fqn(name, namespace.as_deref())),
+                        entry,
+                    );
+                }
+                SymbolKind::SelfStaticParent(kind) => {
+                    if *kind == SelfStaticParentKind::This {
+                        continue;
+                    }
+                    if let Some(fqn) =
+                        self.resolve_keyword_to_fqn(kind, uri, &namespace, span.start)
+                    {
+                        index.insert(ReferenceIndexKey::Class(normalize_fqn(&fqn)), entry);
+                    }
+                }
+                SymbolKind::FunctionCall {
+                    name,
+                    is_definition: _,
+                } => {
+                    let resolved = if let Some(fqn) =
+                        resolved_names.as_ref().and_then(|rn| rn.get(span.start))
+                    {
+                        fqn.to_string()
+                    } else {
+                        resolve_to_fqn(name, &use_map, &namespace)
+                    };
+                    index.insert(
+                        ReferenceIndexKey::Function(normalize_fqn(&resolved)),
+                        entry.clone(),
+                    );
+                    index.insert(
+                        ReferenceIndexKey::Function(name.clone()),
+                        ReferenceIndexEntry {
+                            uri: uri.to_string(),
+                            start: span.start,
+                            end: span.end,
+                            range: entry.range,
+                            is_declaration: entry.is_declaration,
+                            subject_fqns: None,
+                        },
+                    );
+                }
+                SymbolKind::ConstantReference { name } => {
+                    index.insert(ReferenceIndexKey::Constant(name.clone()), entry);
+                }
+                SymbolKind::MemberAccess {
+                    subject_text,
+                    member_name,
+                    is_static,
+                    ..
+                } => {
+                    let subject_fqns =
+                        cacheable_member_subject_fqns(subject_text, *is_static, &ctx, span.start);
+                    let member_entry = ReferenceIndexEntry {
+                        subject_fqns,
+                        ..entry
+                    };
+                    index.insert(
+                        ReferenceIndexKey::Member {
+                            name: member_name.clone(),
+                            is_static: *is_static,
+                        },
+                        member_entry,
+                    );
+                }
+                SymbolKind::MemberDeclaration {
+                    name: member_name,
+                    is_static,
+                } => {
+                    let subject_fqns = find_class_at_offset(&ctx.classes, span.start)
+                        .map(|cc| vec![normalize_fqn(cc.fqn().as_ref())]);
+                    let member_entry = ReferenceIndexEntry {
+                        subject_fqns,
+                        ..entry
+                    };
+                    index.insert(
+                        ReferenceIndexKey::Member {
+                            name: member_name.clone(),
+                            is_static: *is_static,
+                        },
+                        member_entry,
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn should_index_references_for_uri(&self, uri: &str) -> bool {
+        if uri.starts_with("phpantom-stub://") || uri.starts_with("phpantom-stub-fn://") {
+            return false;
+        }
+
+        let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
+        !vendor_prefixes.iter().any(|p| uri.starts_with(p.as_str()))
+    }
+
+    fn reference_index_entries_prefiltered(
+        &self,
+        key: ReferenceIndexKey,
+        include_declaration: bool,
+        needles: &[&str],
+    ) -> Vec<ReferenceIndexEntry> {
+        self.ensure_reference_candidates_indexed(needles);
+        self.reference_index_entries_without_indexing(key, include_declaration)
+    }
+
+    fn reference_index_entries_without_indexing(
+        &self,
+        key: ReferenceIndexKey,
+        include_declaration: bool,
+    ) -> Vec<ReferenceIndexEntry> {
+        let entries = self.reference_index.read().entries(&key);
+        entries
+            .into_iter()
+            .filter(|entry| include_declaration || !entry.is_declaration)
+            .filter(|entry| self.should_index_references_for_uri(&entry.uri))
+            .collect()
+    }
+
+    fn locations_from_index_entries(&self, entries: &[ReferenceIndexEntry]) -> Vec<Location> {
+        let mut locations = Vec::with_capacity(entries.len());
+
+        for entry in entries {
+            let parsed_uri = match Url::parse(&entry.uri) {
+                Ok(uri) => uri,
+                Err(_) => continue,
+            };
+            push_unique_location(
+                &mut locations,
+                &parsed_uri,
+                entry.range.start,
+                entry.range.end,
+            );
+        }
+
+        locations.sort_by(|a, b| {
+            a.uri
+                .as_str()
+                .cmp(b.uri.as_str())
+                .then(a.range.start.line.cmp(&b.range.start.line))
+                .then(a.range.start.character.cmp(&b.range.start.character))
+        });
+        locations
+    }
+
     /// Find all references to a class/interface/trait/enum across all files.
     ///
     /// Matches `ClassReference` spans whose resolved FQN equals `target_fqn`,
@@ -397,6 +678,23 @@ impl Backend {
         // Normalise: strip leading backslash if present.
         let target = strip_fqn_prefix(target_fqn);
         let target_short = crate::util::short_name(target);
+
+        let class_needles = [target_short];
+        let mut entries = self.reference_index_entries_prefiltered(
+            ReferenceIndexKey::Class(target.to_string()),
+            include_declaration,
+            &class_needles,
+        );
+        if target_short != target {
+            entries.extend(self.reference_index_entries_prefiltered(
+                ReferenceIndexKey::Class(target_short.to_string()),
+                include_declaration,
+                &class_needles,
+            ));
+        }
+        if !entries.is_empty() {
+            return self.locations_from_index_entries(&entries);
+        }
 
         // Snapshot user-file symbol maps (excludes vendor and stubs).
         let snapshot = self.user_file_symbol_maps();
@@ -526,6 +824,72 @@ impl Backend {
     ) -> Vec<Location> {
         let mut locations = Vec::new();
 
+        let member_needles = [target_member];
+        let entries = self.reference_index_entries_prefiltered(
+            ReferenceIndexKey::Member {
+                name: target_member.to_string(),
+                is_static: target_is_static,
+            },
+            include_declaration,
+            &member_needles,
+        );
+        if !entries.is_empty() {
+            // The index already filtered to entries whose key matches
+            // (target_member, target_is_static), so we trust the key
+            // and skip a redundant kind/name re-check. The hot work
+            // per entry is the hierarchy filter, then materialising
+            // a Location from the cached `entry.range`.
+            //
+            // `ctx_cache` is only consulted on the variable-subject
+            // fallback path (entry.subject_fqns == None); for the
+            // cached cases ($this/self/static/parent/bare class name)
+            // the lookup never touches symbol_maps or the file
+            // contents at all.
+            let mut ctx_cache: HashMap<String, crate::types::FileContext> = HashMap::new();
+            for entry in &entries {
+                if let Some(hier) = hierarchy {
+                    let keep = match &entry.subject_fqns {
+                        Some(fqns) => {
+                            // Empty Vec is reserved for "couldn't
+                            // resolve at index time" — keep the
+                            // conservative-include semantics.
+                            fqns.is_empty() || fqns.iter().any(|fqn| hier.contains(fqn))
+                        }
+                        None => self.member_entry_subject_in_hier(entry, hier, &mut ctx_cache),
+                    };
+                    if !keep {
+                        continue;
+                    }
+                }
+
+                let Ok(parsed_uri) = Url::parse(&entry.uri) else {
+                    continue;
+                };
+                locations.push(Location {
+                    uri: parsed_uri,
+                    range: entry.range,
+                });
+            }
+
+            if include_declaration {
+                self.add_property_declaration_references(
+                    &mut locations,
+                    target_member,
+                    target_is_static,
+                    hierarchy,
+                );
+            }
+
+            locations.sort_by(|a, b| {
+                a.uri
+                    .as_str()
+                    .cmp(b.uri.as_str())
+                    .then(a.range.start.line.cmp(&b.range.start.line))
+                    .then(a.range.start.character.cmp(&b.range.start.character))
+            });
+            return locations;
+        }
+
         let snapshot = self.user_file_symbol_maps();
 
         for (file_uri, symbol_map) in &snapshot {
@@ -651,6 +1015,111 @@ impl Backend {
         locations
     }
 
+    /// Variable-subject fallback for the cached find-references path.
+    ///
+    /// Only invoked when `entry.subject_fqns` is `None` — i.e. the
+    /// subject was a typed variable whose hierarchy can't be safely
+    /// pre-resolved at index-build time. Pulls `subject_text` and
+    /// `is_static` from the canonical symbol map for that URI/span,
+    /// then runs `resolve_subject_to_fqns` against the live
+    /// `FileContext` (cached per-URI by the caller).
+    ///
+    /// Returns `true` when the entry should be kept (subject resolves
+    /// into the hierarchy, or couldn't be resolved at all — the
+    /// historical conservative-include semantics).
+    fn member_entry_subject_in_hier(
+        &self,
+        entry: &ReferenceIndexEntry,
+        hier: &HashSet<String>,
+        ctx_cache: &mut HashMap<String, crate::types::FileContext>,
+    ) -> bool {
+        let Some(content) = self.get_file_content_arc(&entry.uri) else {
+            return false;
+        };
+        let Some(symbol_map) = self.symbol_maps.read().get(&entry.uri).cloned() else {
+            return false;
+        };
+        let Some(span) = symbol_map
+            .spans
+            .iter()
+            .find(|s| s.start == entry.start && s.end == entry.end)
+        else {
+            return false;
+        };
+        let SymbolKind::MemberAccess {
+            subject_text,
+            is_static,
+            ..
+        } = &span.kind
+        else {
+            return false;
+        };
+
+        let ctx = ctx_cache
+            .entry(entry.uri.clone())
+            .or_insert_with(|| self.file_context(&entry.uri));
+        let subject_fqns =
+            self.resolve_subject_to_fqns(subject_text, *is_static, ctx, span.start, &content);
+
+        // Conservative-include: when the subject can't be resolved
+        // (e.g. complex expression), keep the reference rather than
+        // silently hiding it.
+        if subject_fqns.is_empty() {
+            return true;
+        }
+        subject_fqns.iter().any(|fqn| hier.contains(fqn))
+    }
+
+    fn add_property_declaration_references(
+        &self,
+        locations: &mut Vec<Location>,
+        target_member: &str,
+        target_is_static: bool,
+        hierarchy: Option<&HashSet<String>>,
+    ) {
+        let ast_snapshot: Vec<(String, Vec<Arc<ClassInfo>>)> = self
+            .ast_map
+            .read()
+            .iter()
+            .filter(|(uri, _)| self.should_index_references_for_uri(uri))
+            .map(|(uri, classes)| (uri.clone(), classes.clone()))
+            .collect();
+
+        for (file_uri, classes) in ast_snapshot {
+            let parsed_uri = match Url::parse(&file_uri) {
+                Ok(uri) => uri,
+                Err(_) => continue,
+            };
+            let content = match self.get_file_content_arc(&file_uri) {
+                Some(content) => content,
+                None => continue,
+            };
+
+            for class in &classes {
+                if let Some(hier) = hierarchy {
+                    let class_fqn = class.fqn().to_string();
+                    if !hier.contains(&class_fqn) {
+                        continue;
+                    }
+                }
+
+                for prop in &class.properties {
+                    let prop_name = prop.name.strip_prefix('$').unwrap_or(&prop.name);
+                    let target_name = target_member.strip_prefix('$').unwrap_or(target_member);
+                    if prop_name == target_name
+                        && prop.is_static == target_is_static
+                        && prop.name_offset != 0
+                    {
+                        let offset = prop.name_offset;
+                        let start = offset_to_position(&content, offset as usize);
+                        let end = offset_to_position(&content, offset as usize + prop.name.len());
+                        push_unique_location(locations, &parsed_uri, start, end);
+                    }
+                }
+            }
+        }
+    }
+
     /// Find all references to a function across all files.
     fn find_function_references(
         &self,
@@ -662,6 +1131,31 @@ impl Backend {
 
         // Input boundary: callers may pass FQNs with a leading `\`.
         let target = strip_fqn_prefix(target_fqn);
+        let target_short_name = crate::util::short_name(target);
+
+        let function_needles = [target_short_name, target_short];
+        let mut entries = self.reference_index_entries_prefiltered(
+            ReferenceIndexKey::Function(target.to_string()),
+            include_declaration,
+            &function_needles,
+        );
+        if target_short_name != target {
+            entries.extend(self.reference_index_entries_prefiltered(
+                ReferenceIndexKey::Function(target_short_name.to_string()),
+                include_declaration,
+                &function_needles,
+            ));
+        }
+        if target_short_name != target_short {
+            entries.extend(self.reference_index_entries_prefiltered(
+                ReferenceIndexKey::Function(target_short.to_string()),
+                include_declaration,
+                &function_needles,
+            ));
+        }
+        if !entries.is_empty() {
+            return self.locations_from_index_entries(&entries);
+        }
 
         let snapshot = self.user_file_symbol_maps();
 
@@ -746,6 +1240,16 @@ impl Backend {
         include_declaration: bool,
     ) -> Vec<Location> {
         let mut locations = Vec::new();
+
+        let constant_needles = [target_name];
+        let entries = self.reference_index_entries_prefiltered(
+            ReferenceIndexKey::Constant(target_name.to_string()),
+            include_declaration,
+            &constant_needles,
+        );
+        if !entries.is_empty() {
+            return self.locations_from_index_entries(&entries);
+        }
 
         let snapshot = self.user_file_symbol_maps();
 
@@ -1170,6 +1674,11 @@ impl Backend {
     /// `composer.json` `config.vendor-dir`, defaulting to `vendor`) is
     /// skipped during the filesystem walk.
     pub(crate) fn ensure_workspace_indexed(&self) {
+        if self.reference_workspace_indexed.load(Ordering::Acquire) {
+            return;
+        }
+
+        let started = std::time::Instant::now();
         // Collect URIs that already have symbol maps.
         let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
 
@@ -1218,17 +1727,13 @@ impl Backend {
         let workspace_root = self.workspace_root.read().clone();
 
         if let Some(root) = workspace_root {
-            let vendor_dir_paths = self.vendor_dir_paths.lock().clone();
-
             // Re-read existing URIs after phase 1 may have added more.
             let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
 
-            let php_files = collect_php_files_gitignore(&root, &vendor_dir_paths);
-
-            let phase2_work: Vec<(String, PathBuf)> = php_files
+            let phase2_work: Vec<(String, PathBuf)> = self
+                .workspace_reference_files(&root)
                 .into_iter()
-                .filter_map(|path| {
-                    let uri = crate::util::path_to_uri(&path);
+                .filter_map(|(uri, path)| {
                     if existing_uris.contains(&uri) {
                         None
                     } else {
@@ -1239,6 +1744,452 @@ impl Backend {
 
             self.parse_paths_parallel(&phase2_work);
         }
+
+        self.reference_workspace_indexed
+            .store(true, Ordering::Release);
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            files_indexed = self.symbol_maps.read().len(),
+            "find-references workspace index ready"
+        );
+    }
+
+    fn ensure_reference_candidates_indexed(&self, needles: &[&str]) {
+        if self.reference_workspace_indexed.load(Ordering::Acquire) {
+            return;
+        }
+
+        let missing_needles: Vec<String> = {
+            let seen = self.reference_prefiltered_needles.read();
+            needles
+                .iter()
+                .map(|needle| needle.trim())
+                .filter(|needle| !needle.is_empty())
+                .filter(|needle| !seen.contains(*needle))
+                .map(ToOwned::to_owned)
+                .collect()
+        };
+
+        if missing_needles.is_empty() {
+            return;
+        }
+
+        let started = std::time::Instant::now();
+        let matcher = NeedleMatcher::new(&missing_needles);
+        let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
+        let vendor_prefixes = self.vendor_uri_prefixes.lock().clone();
+
+        let index_uris: Vec<String> = self.class_index.read().values().cloned().collect();
+        let phase1: Vec<(String, String)> = index_uris
+            .iter()
+            .filter(|uri| {
+                !existing_uris.contains(*uri)
+                    && !vendor_prefixes.iter().any(|p| uri.starts_with(p.as_str()))
+                    && !uri.starts_with("phpantom-stub://")
+                    && !uri.starts_with("phpantom-stub-fn://")
+            })
+            .filter_map(|uri| {
+                let content = self.get_file_content(uri)?;
+                matcher
+                    .matches_any(&content)
+                    .then(|| (uri.clone(), content))
+            })
+            .collect();
+
+        self.parse_files_parallel(
+            phase1
+                .iter()
+                .map(|(uri, content)| (uri.as_str(), Some(content.as_str())))
+                .collect(),
+        );
+
+        let workspace_root = self.workspace_root.read().clone();
+        let mut used_identifier_index = false;
+        let mut used_ripgrep = false;
+        let mut parse_candidates_directly = false;
+        self.wait_for_reference_identifier_index(std::time::Duration::from_millis(50), 25_000);
+        if let Some(root) = workspace_root {
+            let existing_uris: HashSet<String> = self.symbol_maps.read().keys().cloned().collect();
+            let identifier_source =
+                self.identifier_candidate_reference_files(&root, &missing_needles);
+            used_identifier_index = identifier_source.is_some();
+            let disk_loaded_identifier_index = used_identifier_index
+                && self
+                    .reference_identifier_index_disk_loaded
+                    .load(Ordering::Acquire);
+            let trusted_identifier_index = disk_loaded_identifier_index
+                && self
+                    .reference_identifier_index_trusted
+                    .load(Ordering::Acquire);
+            let ripgrep_source = if used_identifier_index {
+                if disk_loaded_identifier_index && !trusted_identifier_index {
+                    self.ripgrep_candidate_reference_files(&root, &missing_needles)
+                } else {
+                    None
+                }
+            } else {
+                self.ripgrep_candidate_reference_files(&root, &missing_needles)
+            };
+            used_ripgrep = ripgrep_source.is_some();
+            let phase2_source = match (identifier_source, ripgrep_source) {
+                (Some(identifier_source), Some(ripgrep_source)) => {
+                    parse_candidates_directly = true;
+                    Self::merge_reference_file_candidates(identifier_source, ripgrep_source)
+                }
+                (Some(identifier_source), None)
+                    if !disk_loaded_identifier_index || trusted_identifier_index =>
+                {
+                    parse_candidates_directly = true;
+                    identifier_source
+                }
+                (Some(_), None) => self.workspace_reference_files(&root),
+                (None, Some(ripgrep_source)) => {
+                    parse_candidates_directly = true;
+                    ripgrep_source
+                }
+                (None, None) => self.workspace_reference_files(&root),
+            };
+            let phase2_work: Vec<(String, PathBuf)> = phase2_source
+                .into_iter()
+                .filter_map(|(uri, path)| (!existing_uris.contains(&uri)).then_some((uri, path)))
+                .collect();
+            if parse_candidates_directly {
+                self.parse_paths_parallel(&phase2_work);
+            } else {
+                self.parse_paths_parallel_prefiltered(&phase2_work, &matcher);
+            }
+        }
+
+        {
+            let mut seen = self.reference_prefiltered_needles.write();
+            for needle in &missing_needles {
+                seen.insert(needle.clone());
+            }
+        }
+
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            needles = ?missing_needles,
+            indexed_files = self.symbol_maps.read().len(),
+            used_identifier_index,
+            used_ripgrep,
+            "find-references target prefilter ready"
+        );
+    }
+
+    pub(crate) fn finish_reference_identifier_index_warmup(&self) {
+        let generation = self
+            .reference_identifier_cache_generation
+            .load(Ordering::Acquire);
+        let result = (|| {
+            if self.shutdown_flag.load(Ordering::Acquire) {
+                return None;
+            }
+
+            let root = self.workspace_root.read().clone()?;
+            let started = std::time::Instant::now();
+            let files = self.workspace_reference_files(&root);
+
+            if let Some(index) = load_reference_identifier_index_cache(&root, &files) {
+                tracing::debug!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    files = files.len(),
+                    identifiers = index.len(),
+                    "find-references identifier index loaded from disk cache"
+                );
+                self.reference_identifier_index_disk_loaded
+                    .store(true, Ordering::Release);
+                self.reference_identifier_index_trusted
+                    .store(true, Ordering::Release);
+                return Some(index);
+            }
+
+            let index = build_identifier_file_index(&files);
+            self.reference_identifier_index_disk_loaded
+                .store(false, Ordering::Release);
+            self.reference_identifier_index_trusted
+                .store(true, Ordering::Release);
+
+            tracing::debug!(
+                elapsed_ms = started.elapsed().as_millis(),
+                files = files.len(),
+                identifiers = index.len(),
+                "find-references identifier index ready"
+            );
+
+            spawn_save_reference_identifier_index_cache(root.clone(), files.clone(), index.clone());
+
+            Some(index)
+        })();
+
+        if let Some(index) = result {
+            if self
+                .reference_identifier_cache_generation
+                .load(Ordering::Acquire)
+                == generation
+            {
+                *self.reference_identifier_index.write() = Some(index);
+            } else {
+                self.reference_identifier_index_disk_loaded
+                    .store(false, Ordering::Release);
+                self.reference_identifier_index_trusted
+                    .store(false, Ordering::Release);
+            }
+        }
+        self.reference_identifier_indexing
+            .store(false, Ordering::Release);
+    }
+
+    fn wait_for_reference_identifier_index(
+        &self,
+        max_wait: std::time::Duration,
+        min_workspace_files: usize,
+    ) {
+        if self.reference_identifier_index.read().is_some()
+            || !self.reference_identifier_indexing.load(Ordering::Acquire)
+        {
+            return;
+        }
+
+        let should_wait = self
+            .reference_workspace_files
+            .read()
+            .as_ref()
+            .is_some_and(|files| files.len() >= min_workspace_files);
+        if !should_wait {
+            return;
+        }
+
+        let started = std::time::Instant::now();
+        while started.elapsed() < max_wait {
+            if self.reference_identifier_index.read().is_some()
+                || !self.reference_identifier_indexing.load(Ordering::Acquire)
+            {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    fn identifier_candidate_reference_files(
+        &self,
+        root: &std::path::Path,
+        needles: &[String],
+    ) -> Option<Vec<(String, PathBuf)>> {
+        let index = self.reference_identifier_index.read();
+        let index = index.as_ref()?;
+
+        let files = self.workspace_reference_files(root);
+        let mut file_indices = HashSet::new();
+        for needle in needles {
+            let normalized = needle.strip_prefix('$').unwrap_or(needle);
+            if let Some(indices) = index.get(normalized) {
+                file_indices.extend(indices.iter().copied());
+            }
+        }
+
+        let mut file_indices: Vec<usize> = file_indices.into_iter().collect();
+        file_indices.sort_unstable();
+
+        Some(
+            file_indices
+                .into_iter()
+                .filter_map(|idx| files.get(idx).cloned())
+                .collect(),
+        )
+    }
+
+    fn ripgrep_candidate_reference_files(
+        &self,
+        root: &std::path::Path,
+        needles: &[String],
+    ) -> Option<Vec<(String, PathBuf)>> {
+        let mut cmd = Command::new("rg");
+        cmd.current_dir(root)
+            .arg("--files-with-matches")
+            .arg("--null")
+            .arg("--fixed-strings")
+            .arg("--no-messages")
+            .arg("--glob")
+            .arg("*.php")
+            .arg("--glob")
+            .arg("!**/vendor/**");
+
+        for vendor_path in self.vendor_dir_paths.lock().iter() {
+            if let Ok(relative) = vendor_path.strip_prefix(root) {
+                let relative = relative.to_string_lossy().replace('\\', "/");
+                if !relative.is_empty() {
+                    cmd.arg("--glob").arg(format!("!{relative}/**"));
+                }
+            }
+        }
+
+        for needle in needles {
+            cmd.arg("-e").arg(needle);
+        }
+        cmd.arg(".");
+
+        let started = std::time::Instant::now();
+        let output = cmd.output().ok()?;
+        if !(output.status.success() || output.status.code() == Some(1)) {
+            return None;
+        }
+
+        let mut files = Vec::new();
+        let mut seen = HashSet::new();
+        for raw_path in output.stdout.split(|byte| *byte == 0) {
+            if raw_path.is_empty() {
+                continue;
+            }
+            let raw_path = std::str::from_utf8(raw_path).ok()?;
+            let path = root.join(raw_path);
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            files.push((crate::util::path_to_uri(&path), path));
+        }
+
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            needles = ?needles,
+            files = files.len(),
+            "find-references ripgrep candidates ready"
+        );
+
+        Some(files)
+    }
+
+    fn workspace_reference_files(&self, root: &std::path::Path) -> Vec<(String, PathBuf)> {
+        if let Some(files) = self.reference_workspace_files.read().clone() {
+            return files;
+        }
+
+        let vendor_dir_paths = self.vendor_dir_paths.lock().clone();
+        let mut files: Vec<(String, PathBuf)> =
+            collect_php_files_gitignore(root, &vendor_dir_paths)
+                .into_iter()
+                .map(|path| (crate::util::path_to_uri(&path), path))
+                .collect();
+        files.sort_unstable_by(|(_, a), (_, b)| a.cmp(b));
+
+        *self.reference_workspace_files.write() = Some(files.clone());
+        files
+    }
+
+    pub(crate) fn invalidate_reference_identifier_cache_state(&self, clear_workspace_files: bool) {
+        self.reference_identifier_cache_generation
+            .fetch_add(1, Ordering::AcqRel);
+        *self.reference_identifier_index.write() = None;
+        self.reference_identifier_index_disk_loaded
+            .store(false, Ordering::Release);
+        self.reference_identifier_index_trusted
+            .store(false, Ordering::Release);
+        self.reference_prefiltered_needles.write().clear();
+
+        if clear_workspace_files {
+            *self.reference_workspace_files.write() = None;
+            self.reference_workspace_indexed
+                .store(false, Ordering::Release);
+        }
+    }
+
+    pub(crate) fn update_reference_identifier_cache_for_uri_content(
+        &self,
+        uri: &str,
+        content: &[u8],
+    ) -> bool {
+        self.update_reference_identifier_cache_for_uri_content_with_previous(
+            uri, None, content, true,
+        )
+    }
+
+    pub(crate) fn update_reference_identifier_cache_for_uri_content_with_previous(
+        &self,
+        uri: &str,
+        previous_content: Option<&[u8]>,
+        content: &[u8],
+        clear_prefiltered_needles: bool,
+    ) -> bool {
+        let Some(files) = self.reference_workspace_files.read().clone() else {
+            return false;
+        };
+
+        let file_idx = files
+            .iter()
+            .position(|(candidate_uri, _)| candidate_uri == uri);
+        let Some(file_idx) = file_idx else {
+            return false;
+        };
+
+        let mut index = self.reference_identifier_index.write();
+        let Some(index) = index.as_mut() else {
+            return false;
+        };
+
+        if let Some(previous_content) = previous_content {
+            let mut empty_keys = Vec::new();
+            for identifier in collect_file_identifiers(previous_content) {
+                if let Some(file_indices) = index.get_mut(&identifier)
+                    && let Ok(pos) = file_indices.binary_search(&file_idx)
+                {
+                    file_indices.remove(pos);
+                    if file_indices.is_empty() {
+                        empty_keys.push(identifier);
+                    }
+                }
+            }
+            for identifier in empty_keys {
+                index.remove(&identifier);
+            }
+        } else {
+            let mut empty_keys = Vec::new();
+            for (identifier, file_indices) in index.iter_mut() {
+                if let Ok(pos) = file_indices.binary_search(&file_idx) {
+                    file_indices.remove(pos);
+                    if file_indices.is_empty() {
+                        empty_keys.push(identifier.clone());
+                    }
+                }
+            }
+            for identifier in empty_keys {
+                index.remove(&identifier);
+            }
+        }
+
+        for identifier in collect_file_identifiers(content) {
+            let file_indices = index.entry(identifier).or_default();
+            match file_indices.binary_search(&file_idx) {
+                Ok(_) => {}
+                Err(pos) => file_indices.insert(pos, file_idx),
+            }
+        }
+
+        self.reference_identifier_cache_generation
+            .fetch_add(1, Ordering::AcqRel);
+        self.reference_identifier_index_disk_loaded
+            .store(false, Ordering::Release);
+        self.reference_identifier_index_trusted
+            .store(true, Ordering::Release);
+        if clear_prefiltered_needles {
+            self.reference_prefiltered_needles.write().clear();
+        }
+        true
+    }
+
+    fn merge_reference_file_candidates(
+        left: Vec<(String, PathBuf)>,
+        right: Vec<(String, PathBuf)>,
+    ) -> Vec<(String, PathBuf)> {
+        let mut merged = Vec::with_capacity(left.len() + right.len());
+        let mut seen = HashSet::new();
+
+        for (uri, path) in left.into_iter().chain(right) {
+            if seen.insert(uri.clone()) {
+                merged.push((uri, path));
+            }
+        }
+
+        merged
     }
 
     /// Parse a batch of files in parallel using OS threads.
@@ -1355,11 +2306,542 @@ impl Backend {
             }
         });
     }
+
+    fn parse_paths_parallel_prefiltered(
+        &self,
+        files: &[(String, PathBuf)],
+        matcher: &NeedleMatcher,
+    ) {
+        if files.is_empty() || matcher.is_empty() {
+            return;
+        }
+
+        if files.len() <= 2 {
+            for (uri, path) in files {
+                if let Ok(content) = std::fs::read_to_string(path)
+                    && matcher.matches_any(&content)
+                {
+                    self.update_ast(uri, &content);
+                }
+            }
+            return;
+        }
+
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .min(files.len());
+
+        let chunks: Vec<&[(String, PathBuf)]> = {
+            let chunk_size = files.len().div_ceil(n_threads);
+            files.chunks(chunk_size).collect()
+        };
+
+        const PARSE_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+        std::thread::scope(|s| {
+            for chunk in &chunks {
+                let handle = std::thread::Builder::new()
+                    .stack_size(PARSE_STACK_SIZE)
+                    .spawn_scoped(s, move || {
+                        for (uri, path) in *chunk {
+                            if let Ok(content) = std::fs::read_to_string(path)
+                                && matcher.matches_any(&content)
+                            {
+                                self.update_ast(uri, &content);
+                            }
+                        }
+                    });
+                if let Err(e) = handle {
+                    tracing::error!("failed to spawn parse thread: {e}");
+                }
+            }
+        });
+    }
 }
 
 /// Normalise a class FQN: strip leading `\` if present.
 fn normalize_fqn(fqn: &str) -> String {
     strip_fqn_prefix(fqn).to_string()
+}
+
+/// Resolve a `MemberAccess` subject to its owning class FQN(s) using only
+/// AST-local information (no cross-file type resolution). Returns `None`
+/// for variable subjects whose type may depend on cross-file state that
+/// could become stale before dependent files are re-parsed — those must
+/// fall back to runtime resolution at query time.
+fn cacheable_member_subject_fqns(
+    subject_text: &str,
+    is_static: bool,
+    ctx: &crate::types::FileContext,
+    access_offset: u32,
+) -> Option<Vec<String>> {
+    let trimmed = subject_text.trim();
+
+    match trimmed {
+        "$this" | "self" | "static" => {
+            let cls = find_class_at_offset(&ctx.classes, access_offset)?;
+            let fqn = build_fqn(&cls.name, ctx.namespace.as_deref());
+            Some(vec![normalize_fqn(&fqn)])
+        }
+        "parent" => {
+            let cc = find_class_at_offset(&ctx.classes, access_offset)?;
+            let parent = cc.parent_class.as_ref()?;
+            let fqn = ctx.resolve_name_at(parent, access_offset);
+            Some(vec![normalize_fqn(&fqn)])
+        }
+        _ if is_static && !trimmed.starts_with('$') => {
+            let fqn = ctx.resolve_name_at(trimmed, access_offset);
+            Some(vec![normalize_fqn(&fqn)])
+        }
+        _ => None,
+    }
+}
+
+/// Pre-compiled substring matcher for the references prefilter.
+///
+/// `memchr::memmem::Finder` builds a small Boyer–Moore-style table per
+/// needle; building it once per query and reusing across the workspace
+/// walk avoids redoing that work for every file. Owned (`'static`)
+/// finders are `Send + Sync`, so a single matcher can be shared with
+/// the scoped parse threads.
+struct NeedleMatcher {
+    finders: Vec<memchr::memmem::Finder<'static>>,
+}
+
+impl NeedleMatcher {
+    fn new<I, S>(needles: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<[u8]>,
+    {
+        Self {
+            finders: needles
+                .into_iter()
+                .map(|n| memchr::memmem::Finder::new(n.as_ref()).into_owned())
+                .collect(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.finders.is_empty()
+    }
+
+    fn matches_any(&self, content: &str) -> bool {
+        let bytes = content.as_bytes();
+        self.finders.iter().any(|f| f.find(bytes).is_some())
+    }
+}
+
+fn build_identifier_file_index(files: &[(String, PathBuf)]) -> HashMap<String, Vec<usize>> {
+    if files.is_empty() {
+        return HashMap::new();
+    }
+
+    if files.len() <= 4 {
+        let mut index = HashMap::new();
+        for (idx, (_, path)) in files.iter().enumerate() {
+            if let Ok(content) = std::fs::read(path) {
+                add_file_identifiers(&mut index, idx, &content);
+            }
+        }
+        return index;
+    }
+
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(files.len());
+    let chunk_size = files.len().div_ceil(n_threads);
+
+    let mut merged: HashMap<String, Vec<usize>> = HashMap::new();
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for (chunk_idx, chunk) in files.chunks(chunk_size).enumerate() {
+            let start_idx = chunk_idx * chunk_size;
+            handles.push(s.spawn(move || {
+                let mut local = HashMap::new();
+                for (offset, (_, path)) in chunk.iter().enumerate() {
+                    if let Ok(content) = std::fs::read(path) {
+                        add_file_identifiers(&mut local, start_idx + offset, &content);
+                    }
+                }
+                local
+            }));
+        }
+
+        for handle in handles {
+            match handle.join() {
+                Ok(local) => {
+                    for (identifier, mut indices) in local {
+                        merged.entry(identifier).or_default().append(&mut indices);
+                    }
+                }
+                Err(_) => tracing::error!("failed to join reference identifier index thread"),
+            }
+        }
+    });
+
+    for indices in merged.values_mut() {
+        indices.sort_unstable();
+        indices.dedup();
+    }
+
+    merged
+}
+
+const REFERENCE_IDENTIFIER_CACHE_VERSION: u32 = 5;
+const REFERENCE_IDENTIFIER_CACHE_MAGIC: &[u8; 8] = b"PHRIFID1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReferenceIdentifierCachedFile {
+    len: u64,
+    modified_ns: u64,
+}
+
+fn load_reference_identifier_index_cache(
+    root: &Path,
+    files: &[(String, PathBuf)],
+) -> Option<HashMap<String, Vec<usize>>> {
+    let path = reference_identifier_cache_path(root)?;
+    let bytes = std::fs::read(path).ok()?;
+    decode_reference_identifier_index_cache(root, files, &bytes)
+}
+
+fn decode_reference_identifier_index_cache(
+    root: &Path,
+    files: &[(String, PathBuf)],
+    bytes: &[u8],
+) -> Option<HashMap<String, Vec<usize>>> {
+    let mut reader = ReferenceIdentifierCacheReader::new(bytes);
+
+    if reader.read_bytes(REFERENCE_IDENTIFIER_CACHE_MAGIC.len())?
+        != REFERENCE_IDENTIFIER_CACHE_MAGIC.as_slice()
+    {
+        return None;
+    }
+
+    if reader.read_u32()? != REFERENCE_IDENTIFIER_CACHE_VERSION {
+        return None;
+    }
+
+    if reader.read_string()? != root.to_string_lossy() {
+        return None;
+    }
+
+    let file_count = usize::try_from(reader.read_u32()?).ok()?;
+    if file_count != files.len() {
+        return None;
+    }
+
+    let mut cached_files = Vec::with_capacity(file_count);
+    for (_, path) in files {
+        if reader.read_string()? != reference_cache_relative_path(root, path)? {
+            return None;
+        }
+        cached_files.push(ReferenceIdentifierCachedFile {
+            len: reader.read_u64()?,
+            modified_ns: reader.read_u64()?,
+        });
+    }
+
+    if !validate_reference_identifier_cached_files(files, &cached_files) {
+        return None;
+    }
+
+    let entry_count = usize::try_from(reader.read_u32()?).ok()?;
+    let mut index = HashMap::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        let identifier = reader.read_string()?.into_owned();
+        let file_count = usize::try_from(reader.read_u32()?).ok()?;
+        let mut file_indices = Vec::with_capacity(file_count);
+        for _ in 0..file_count {
+            let file_idx = usize::try_from(reader.read_u32()?).ok()?;
+            if file_idx >= files.len() {
+                return None;
+            }
+            file_indices.push(file_idx);
+        }
+        index.insert(identifier, file_indices);
+    }
+
+    reader.is_finished().then_some(index)
+}
+
+fn save_reference_identifier_index_cache(
+    root: &Path,
+    files: &[(String, PathBuf)],
+    index: &HashMap<String, Vec<usize>>,
+) {
+    let Some(path) = reference_identifier_cache_path(root) else {
+        return;
+    };
+
+    let Some(parent) = path.parent() else {
+        return;
+    };
+
+    let Some(bytes) = encode_reference_identifier_index_cache(root, files, index) else {
+        return;
+    };
+
+    if std::fs::create_dir_all(parent).is_err() {
+        return;
+    }
+
+    let tmp_path = path.with_extension("bin.tmp");
+    if std::fs::write(&tmp_path, bytes).is_err() {
+        return;
+    }
+
+    if std::fs::rename(&tmp_path, &path).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+}
+
+fn spawn_save_reference_identifier_index_cache(
+    root: PathBuf,
+    files: Vec<(String, PathBuf)>,
+    index: HashMap<String, Vec<usize>>,
+) {
+    std::thread::Builder::new()
+        .name("phpantom-reference-cache-save".to_string())
+        .spawn(move || {
+            save_reference_identifier_index_cache(&root, &files, &index);
+        })
+        .ok();
+}
+
+fn encode_reference_identifier_index_cache(
+    root: &Path,
+    files: &[(String, PathBuf)],
+    index: &HashMap<String, Vec<usize>>,
+) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(REFERENCE_IDENTIFIER_CACHE_MAGIC);
+    write_cache_u32(&mut bytes, REFERENCE_IDENTIFIER_CACHE_VERSION);
+    write_cache_string(&mut bytes, root.to_string_lossy().as_ref())?;
+    write_cache_u32(&mut bytes, u32::try_from(files.len()).ok()?);
+
+    for (_, path) in files {
+        let cached = reference_identifier_cached_file(path)?;
+        write_cache_string(
+            &mut bytes,
+            reference_cache_relative_path(root, path)?.as_ref(),
+        )?;
+        write_cache_u64(&mut bytes, cached.len);
+        write_cache_u64(&mut bytes, cached.modified_ns);
+    }
+
+    write_cache_u32(&mut bytes, u32::try_from(index.len()).ok()?);
+    let mut entries: Vec<_> = index.iter().collect();
+    entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+    for (identifier, file_indices) in entries {
+        write_cache_string(&mut bytes, identifier)?;
+        write_cache_u32(&mut bytes, u32::try_from(file_indices.len()).ok()?);
+        for file_idx in file_indices {
+            write_cache_u32(&mut bytes, u32::try_from(*file_idx).ok()?);
+        }
+    }
+
+    Some(bytes)
+}
+
+fn write_cache_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_cache_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_cache_string(bytes: &mut Vec<u8>, value: &str) -> Option<()> {
+    write_cache_u32(bytes, u32::try_from(value.len()).ok()?);
+    bytes.extend_from_slice(value.as_bytes());
+    Some(())
+}
+
+struct ReferenceIdentifierCacheReader<'a> {
+    bytes: &'a [u8],
+    offset: usize,
+}
+
+impl<'a> ReferenceIdentifierCacheReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, offset: 0 }
+    }
+
+    fn read_bytes(&mut self, len: usize) -> Option<&'a [u8]> {
+        let end = self.offset.checked_add(len)?;
+        let bytes = self.bytes.get(self.offset..end)?;
+        self.offset = end;
+        Some(bytes)
+    }
+
+    fn read_u32(&mut self) -> Option<u32> {
+        let bytes = self.read_bytes(4)?;
+        Some(u32::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_u64(&mut self) -> Option<u64> {
+        let bytes = self.read_bytes(8)?;
+        Some(u64::from_le_bytes(bytes.try_into().ok()?))
+    }
+
+    fn read_string(&mut self) -> Option<std::borrow::Cow<'a, str>> {
+        let len = usize::try_from(self.read_u32()?).ok()?;
+        let bytes = self.read_bytes(len)?;
+        String::from_utf8_lossy(bytes).into()
+    }
+
+    fn is_finished(&self) -> bool {
+        self.offset == self.bytes.len()
+    }
+}
+
+fn reference_identifier_cache_path(root: &Path) -> Option<PathBuf> {
+    let strategy = etcetera::choose_base_strategy().ok()?;
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    root.to_string_lossy().hash(&mut hasher);
+    let root_hash = hasher.finish();
+    Some(
+        strategy
+            .cache_dir()
+            .join("phpantom_lsp")
+            .join("reference-identifiers-v5")
+            .join(format!("{root_hash:016x}.bin")),
+    )
+}
+
+fn validate_reference_identifier_cached_files(
+    files: &[(String, PathBuf)],
+    cached_files: &[ReferenceIdentifierCachedFile],
+) -> bool {
+    if files.len() != cached_files.len() {
+        return false;
+    }
+
+    if files.len() <= 128 {
+        return files
+            .iter()
+            .zip(cached_files)
+            .all(|((_, path), cached)| reference_identifier_cached_file(path) == Some(*cached));
+    }
+
+    let n_threads = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(files.len());
+    let chunk_size = files.len().div_ceil(n_threads);
+
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for (file_chunk, cached_chunk) in files
+            .chunks(chunk_size)
+            .zip(cached_files.chunks(chunk_size))
+        {
+            handles.push(s.spawn(move || {
+                file_chunk
+                    .iter()
+                    .zip(cached_chunk)
+                    .all(|((_, path), cached)| {
+                        reference_identifier_cached_file(path) == Some(*cached)
+                    })
+            }));
+        }
+
+        handles
+            .into_iter()
+            .all(|handle| handle.join().unwrap_or(false))
+    })
+}
+
+fn reference_identifier_cached_file(path: &Path) -> Option<ReferenceIdentifierCachedFile> {
+    let metadata = std::fs::metadata(path).ok()?;
+    Some(ReferenceIdentifierCachedFile {
+        len: metadata.len(),
+        modified_ns: metadata
+            .modified()
+            .ok()
+            .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| {
+                duration
+                    .as_secs()
+                    .saturating_mul(1_000_000_000)
+                    .saturating_add(u64::from(duration.subsec_nanos()))
+            })?,
+    })
+}
+
+fn reference_cache_relative_path<'a>(
+    root: &Path,
+    path: &'a Path,
+) -> Option<std::borrow::Cow<'a, str>> {
+    path.strip_prefix(root)
+        .ok()
+        .map(|path| path.to_string_lossy())
+}
+
+fn add_file_identifiers(index: &mut HashMap<String, Vec<usize>>, file_idx: usize, content: &[u8]) {
+    for identifier in collect_file_identifiers(content) {
+        index.entry(identifier).or_default().push(file_idx);
+    }
+}
+
+fn collect_file_identifiers(content: &[u8]) -> HashSet<String> {
+    let mut identifiers = HashSet::new();
+    let mut i = 0;
+
+    while i < content.len() {
+        let byte = content[i];
+        if is_identifier_start(byte) {
+            let start = i;
+            i += 1;
+            while i < content.len() && is_identifier_continue(content[i]) {
+                i += 1;
+            }
+            if let Ok(identifier) = std::str::from_utf8(&content[start..i]) {
+                identifiers.insert(identifier.to_string());
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    identifiers
+}
+
+fn is_identifier_start(byte: u8) -> bool {
+    byte == b'_' || byte.is_ascii_alphabetic() || byte >= 0x80
+}
+
+fn is_identifier_continue(byte: u8) -> bool {
+    is_identifier_start(byte) || byte.is_ascii_digit()
+}
+
+fn line_starts(content: &str) -> Vec<usize> {
+    let mut starts = vec![0];
+    for (idx, byte) in content.bytes().enumerate() {
+        if byte == b'\n' {
+            starts.push(idx + 1);
+        }
+    }
+    starts
+}
+
+fn offset_to_position_with_lines(content: &str, line_starts: &[usize], offset: u32) -> Position {
+    let offset = (offset as usize).min(content.len());
+    let line_idx = line_starts.partition_point(|start| *start <= offset) - 1;
+    let line_start = line_starts[line_idx];
+    let character = content[line_start..offset]
+        .chars()
+        .map(|ch| ch.len_utf16() as u32)
+        .sum();
+
+    Position {
+        line: line_idx as u32,
+        character,
+    }
 }
 
 /// Check whether a resolved class name matches the target FQN.

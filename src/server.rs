@@ -209,88 +209,16 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        // Parse composer.json for PSR-4 mappings if we have a workspace root
-        let workspace_root = self.workspace_root.read().clone();
-
-        if let Some(root) = workspace_root {
-            // ── Load project configuration ──────────────────────────────
-            // Read `.phpantom.toml` before anything else so that settings
-            // (e.g. PHP version override, diagnostic toggles) are active
-            // from the very first file load.
-            match crate::config::load_config(&root) {
-                Ok(cfg) => {
-                    *self.config.lock() = cfg;
-                }
-                Err(e) => {
-                    self.log(
-                        MessageType::WARNING,
-                        format!("Failed to load .phpantom.toml: {}", e),
-                    )
-                    .await;
-                }
-            }
-
-            // Parse composer.json once up front.  The result is used for
-            // PHP version detection and passed into init_single_project
-            // so the file is never re-read during startup.
-            let composer_package = composer::read_composer_package(&root);
-
-            // Detect the target PHP version.  The config file override
-            // takes precedence; otherwise fall back to composer.json.
-            let php_version = self
-                .config()
-                .php
-                .version
-                .as_deref()
-                .and_then(crate::types::PhpVersion::from_composer_constraint)
-                .unwrap_or_else(|| {
-                    composer_package
-                        .as_ref()
-                        .and_then(composer::detect_php_version_from_package)
-                        .unwrap_or_default()
-                });
-            self.set_php_version(php_version);
-
-            let has_composer_json = composer_package.is_some();
-
-            // ── Create a progress token for indexing feedback ────────
-            let progress_token = self.progress_create("phpantom/indexing").await;
-            if let Some(ref tok) = progress_token {
-                self.progress_begin(tok, "PHPantom: Indexing", Some("Starting".to_string()))
-                    .await;
-            }
-
-            if has_composer_json {
-                // ── Single-project path (root composer.json exists) ──────
-                self.init_single_project(
-                    &root,
-                    php_version,
-                    composer_package,
-                    progress_token.as_ref(),
-                )
-                .await;
-            } else {
-                // ── Monorepo / non-Composer path ────────────────────────
-                let subprojects = composer::discover_subproject_roots(&root);
-
-                if !subprojects.is_empty() {
-                    self.init_monorepo(&root, &subprojects, php_version, progress_token.as_ref())
-                        .await;
-                } else {
-                    // No subprojects found — pure non-Composer workspace.
-                    self.init_no_composer(&root, php_version, progress_token.as_ref())
-                        .await;
-                }
-            }
-
-            if let Some(ref tok) = progress_token {
-                let classmap_count = self.classmap.read().len();
-                self.progress_end(tok, Some(format!("Indexed {} classes", classmap_count)))
-                    .await;
-            }
+        if self.client.is_some() {
+            self.spawn_early_reference_identifier_warmup();
+            let init_backend = self.clone_for_diagnostic_worker();
+            tokio::spawn(async move {
+                init_backend.initialize_workspace_state().await;
+            });
         } else {
-            self.log(MessageType::INFO, "PHPantom initialized!".to_string())
-                .await;
+            // Tests and headless callers historically observe initialized()
+            // as a barrier for project indexing.
+            self.initialize_workspace_state().await;
         }
 
         // Spawn the background diagnostic worker. We build a shallow
@@ -351,6 +279,20 @@ impl LanguageServer for Backend {
                     register_options: None,
                 }])
                 .await;
+
+            let watched_files_options = DidChangeWatchedFilesRegistrationOptions {
+                watchers: vec![FileSystemWatcher {
+                    glob_pattern: GlobPattern::String("**/*.php".to_string()),
+                    kind: Some(WatchKind::Create | WatchKind::Change | WatchKind::Delete),
+                }],
+            };
+            let _ = client
+                .register_capability(vec![Registration {
+                    id: "phpantom-php-file-watchers".to_string(),
+                    method: "workspace/didChangeWatchedFiles".to_string(),
+                    register_options: serde_json::to_value(watched_files_options).ok(),
+                }])
+                .await;
         }
     }
 
@@ -400,9 +342,20 @@ impl LanguageServer for Backend {
             let text = Arc::new(change.text.clone());
 
             // Update stored content
-            self.open_files
+            let previous_text = self
+                .open_files
                 .write()
                 .insert(uri.clone(), Arc::clone(&text));
+
+            if !self.update_reference_identifier_cache_for_uri_content_with_previous(
+                &uri,
+                previous_text.as_deref().map(String::as_bytes),
+                text.as_bytes(),
+                false,
+            ) {
+                self.invalidate_reference_identifier_cache_state(false);
+                self.spawn_reference_identifier_warmup();
+            }
 
             // Re-parse and update AST map, use map, and namespace map
             let signature_changed = self.update_ast(&uri, &text);
@@ -425,15 +378,83 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
 
-        self.open_files.write().remove(&uri);
+        let previous_open_content = self.open_files.write().remove(&uri);
 
-        self.clear_file_maps(&uri);
+        // Clients such as VS Code may briefly open a definition target so
+        // they can navigate to it, then immediately close the document if it
+        // is only a transient preview.  Do not throw away the parsed on-disk
+        // state in that case, or a second definition request in the same
+        // interaction can lose the class_index/ast_map entry it just loaded.
+        //
+        // If the open buffer had unsaved edits, re-parse the disk version on
+        // close so cached state reflects what can actually be loaded later.
+        let disk_content = Url::parse(&uri)
+            .ok()
+            .and_then(|url| url.to_file_path().ok())
+            .and_then(|path| std::fs::read_to_string(path).ok());
+
+        match disk_content {
+            Some(content) => {
+                if previous_open_content.as_ref().map(|text| text.as_str())
+                    != Some(content.as_str())
+                {
+                    self.update_ast(&uri, &content);
+                }
+            }
+            None => {
+                self.clear_file_maps(&uri);
+            }
+        }
 
         // Clear diagnostics so stale warnings don't linger after the file is closed
         self.clear_diagnostics_for_file(&uri).await;
 
         self.log(MessageType::INFO, format!("Closed file: {}", uri))
             .await;
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let mut saw_php_file = false;
+        let mut saw_file_list_change = false;
+        let mut needs_reference_identifier_invalidation = false;
+
+        for change in params.changes {
+            let Ok(path) = change.uri.to_file_path() else {
+                continue;
+            };
+            if !path.extension().is_some_and(|ext| ext == "php") {
+                continue;
+            }
+
+            saw_php_file = true;
+            if matches!(
+                change.typ,
+                FileChangeType::CREATED | FileChangeType::DELETED
+            ) {
+                saw_file_list_change = true;
+                needs_reference_identifier_invalidation = true;
+            } else {
+                let uri = crate::util::path_to_uri(&path);
+                match std::fs::read(&path) {
+                    Ok(content) => {
+                        if !self.update_reference_identifier_cache_for_uri_content(&uri, &content) {
+                            needs_reference_identifier_invalidation = true;
+                        }
+                    }
+                    Err(_) => needs_reference_identifier_invalidation = true,
+                }
+            }
+
+            let uri = crate::util::path_to_uri(&path);
+            if !self.open_files.read().contains_key(&uri) {
+                self.clear_file_maps(&uri);
+            }
+        }
+
+        if saw_php_file && needs_reference_identifier_invalidation {
+            self.invalidate_reference_identifier_cache_state(saw_file_list_change);
+            self.spawn_reference_identifier_warmup();
+        }
     }
 
     async fn goto_definition(
@@ -1080,6 +1101,177 @@ impl Backend {
 
     // ── Initialization helpers ───────────────────────────────────────────
 
+    async fn initialize_workspace_state(&self) {
+        let workspace_root = self.workspace_root.read().clone();
+
+        if let Some(root) = workspace_root {
+            match crate::config::load_config(&root) {
+                Ok(cfg) => {
+                    *self.config.lock() = cfg;
+                }
+                Err(e) => {
+                    self.log(
+                        MessageType::WARNING,
+                        format!("Failed to load .phpantom.toml: {}", e),
+                    )
+                    .await;
+                }
+            }
+
+            let composer_package = composer::read_composer_package(&root);
+            let php_version = self
+                .config()
+                .php
+                .version
+                .as_deref()
+                .and_then(crate::types::PhpVersion::from_composer_constraint)
+                .unwrap_or_else(|| {
+                    composer_package
+                        .as_ref()
+                        .and_then(composer::detect_php_version_from_package)
+                        .unwrap_or_default()
+                });
+            self.set_php_version(php_version);
+
+            let has_composer_json = composer_package.is_some();
+            let progress_token = self.progress_create("phpantom/indexing").await;
+            if let Some(ref tok) = progress_token {
+                self.progress_begin(tok, "PHPantom: Indexing", Some("Starting".to_string()))
+                    .await;
+            }
+
+            if has_composer_json {
+                let vendor_dir = composer_package
+                    .as_ref()
+                    .map(composer::get_vendor_dir)
+                    .unwrap_or_else(|| "vendor".to_string());
+                self.add_vendor_dir(&root.join(vendor_dir));
+                self.spawn_reference_identifier_warmup();
+                self.init_single_project(
+                    &root,
+                    php_version,
+                    composer_package,
+                    progress_token.as_ref(),
+                )
+                .await;
+            } else {
+                let subprojects = composer::discover_subproject_roots(&root);
+                if !subprojects.is_empty() {
+                    for (sub_root, vendor_dir) in &subprojects {
+                        self.add_vendor_dir(&sub_root.join(vendor_dir));
+                    }
+                    self.spawn_reference_identifier_warmup();
+                    self.init_monorepo(&root, &subprojects, php_version, progress_token.as_ref())
+                        .await;
+                } else {
+                    self.add_vendor_dir(&root.join("vendor"));
+                    self.spawn_reference_identifier_warmup();
+                    self.init_no_composer(&root, php_version, progress_token.as_ref())
+                        .await;
+                }
+            }
+
+            if let Some(ref tok) = progress_token {
+                let classmap_count = self.classmap.read().len();
+                self.progress_end(tok, Some(format!("Indexed {} classes", classmap_count)))
+                    .await;
+            }
+
+            self.spawn_reference_identifier_warmup();
+        } else {
+            self.log(MessageType::INFO, "PHPantom initialized!".to_string())
+                .await;
+        }
+    }
+
+    fn spawn_reference_identifier_warmup(&self) {
+        self.spawn_reference_identifier_warmup_after(std::time::Duration::from_millis(750));
+    }
+
+    fn spawn_reference_identifier_warmup_after(&self, delay: std::time::Duration) {
+        if self.client.is_none()
+            || self.shutdown_flag.load(Ordering::Acquire)
+            || self.reference_identifier_index.read().is_some()
+            || self.reference_identifier_indexing.load(Ordering::Acquire)
+        {
+            return;
+        }
+
+        let ref_index_backend = self.clone_for_blocking();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if ref_index_backend.client.is_none()
+                || ref_index_backend.shutdown_flag.load(Ordering::Acquire)
+                || ref_index_backend
+                    .reference_identifier_index
+                    .read()
+                    .is_some()
+                || ref_index_backend
+                    .reference_identifier_indexing
+                    .swap(true, Ordering::AcqRel)
+            {
+                return;
+            }
+
+            tokio::task::spawn_blocking(move || {
+                ref_index_backend.finish_reference_identifier_index_warmup();
+            });
+        });
+    }
+
+    fn spawn_early_reference_identifier_warmup(&self) {
+        if self.client.is_none()
+            || self.shutdown_flag.load(Ordering::Acquire)
+            || self.reference_identifier_index.read().is_some()
+            || self.reference_identifier_indexing.load(Ordering::Acquire)
+        {
+            return;
+        }
+
+        let ref_index_backend = self.clone_for_blocking();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(750)).await;
+            if ref_index_backend.client.is_none()
+                || ref_index_backend.shutdown_flag.load(Ordering::Acquire)
+                || ref_index_backend
+                    .reference_identifier_index
+                    .read()
+                    .is_some()
+                || ref_index_backend
+                    .reference_identifier_indexing
+                    .swap(true, Ordering::AcqRel)
+            {
+                return;
+            }
+
+            tokio::task::spawn_blocking(move || {
+                ref_index_backend.seed_reference_vendor_dirs();
+                ref_index_backend.finish_reference_identifier_index_warmup();
+            });
+        });
+    }
+
+    fn seed_reference_vendor_dirs(&self) {
+        let Some(root) = self.workspace_root.read().clone() else {
+            return;
+        };
+
+        if let Some(pkg) = composer::read_composer_package(&root) {
+            self.add_vendor_dir(&root.join(composer::get_vendor_dir(&pkg)));
+            return;
+        }
+
+        let subprojects = composer::discover_subproject_roots(&root);
+        if subprojects.is_empty() {
+            self.add_vendor_dir(&root.join("vendor"));
+            return;
+        }
+
+        for (sub_root, vendor_dir) in subprojects {
+            self.add_vendor_dir(&sub_root.join(vendor_dir));
+        }
+    }
+
     /// Initialize a single-project workspace (root `composer.json` exists).
     ///
     /// This is the standard fast path: read PSR-4 mappings, build the
@@ -1459,7 +1651,10 @@ impl Backend {
         // Store the absolute path for filesystem-level skip logic.
         {
             let mut paths = self.vendor_dir_paths.lock();
-            paths.push(vendor_path.to_path_buf());
+            let vendor_path = vendor_path.to_path_buf();
+            if !paths.contains(&vendor_path) {
+                paths.push(vendor_path);
+            }
         }
         // Store the URI prefix for URI-level skip logic (diagnostics,
         // find references, rename).
@@ -1470,7 +1665,9 @@ impl Backend {
         };
         {
             let mut prefixes = self.vendor_uri_prefixes.lock();
-            prefixes.push(prefix);
+            if !prefixes.contains(&prefix) {
+                prefixes.push(prefix);
+            }
         }
     }
 

@@ -82,7 +82,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 
 use parking_lot::{Mutex, RwLock};
 use tower_lsp::Client;
@@ -111,6 +111,7 @@ mod document_symbols;
 pub mod fix;
 mod folding;
 mod formatting;
+mod gtd_probe;
 mod highlight;
 mod hover;
 pub(crate) mod inheritance;
@@ -201,6 +202,16 @@ pub struct Backend {
     /// variables, function calls, etc.).  Consulted by `resolve_definition`
     /// to replace character-level backward-walking with a binary search.
     pub(crate) symbol_maps: Arc<RwLock<HashMap<String, Arc<symbol_map::SymbolMap>>>>,
+    /// Inverted index from reference target to matching source spans.
+    ///
+    /// Maintained alongside `symbol_maps` by `update_ast`. Find References
+    /// uses this to avoid scanning every span in every user file on each
+    /// request.
+    pub(crate) reference_index: Arc<RwLock<references::ReferenceIndex>>,
+    /// Target tokens that have already been used for a references prefilter
+    /// pass. This avoids re-walking a large parent workspace for repeated
+    /// searches on the same class/member/function name.
+    pub(crate) reference_prefiltered_needles: Arc<RwLock<HashSet<String>>>,
     /// Per-file parse errors from the Mago parser.
     ///
     /// Each entry is `(message, start_byte_offset, end_byte_offset)`.
@@ -212,6 +223,30 @@ pub struct Backend {
     pub(crate) client: Option<Client>,
     /// The root directory of the workspace (set during `initialize`).
     pub(crate) workspace_root: Arc<RwLock<Option<PathBuf>>>,
+    /// Set after Find References has walked and parsed the whole workspace
+    /// once. Subsequent requests can query the inverted index without
+    /// re-walking the parent directory.
+    pub(crate) reference_workspace_indexed: Arc<AtomicBool>,
+    /// Cached list of PHP files under the workspace root for references.
+    ///
+    /// Built on the first references request and reused by target-prefilter
+    /// and full-index passes so a large parent workspace is not walked for
+    /// every distinct symbol.
+    pub(crate) reference_workspace_files: Arc<RwLock<Option<Vec<(String, PathBuf)>>>>,
+    /// Identifier → workspace-file indices for Find References prefiltering.
+    ///
+    /// Built in the background from raw PHP bytes. This lets large
+    /// workspaces jump from a target token to candidate files without
+    /// reading every file for every distinct reference query.
+    pub(crate) reference_identifier_index: Arc<RwLock<Option<HashMap<String, Vec<usize>>>>>,
+    /// Guards the background identifier-index build from duplicate starts.
+    pub(crate) reference_identifier_indexing: Arc<AtomicBool>,
+    /// True when the identifier index came from disk.
+    pub(crate) reference_identifier_index_disk_loaded: Arc<AtomicBool>,
+    /// True when a disk-loaded identifier index passed file-signature validation.
+    pub(crate) reference_identifier_index_trusted: Arc<AtomicBool>,
+    /// Incremented whenever reference identifier cache state is invalidated.
+    pub(crate) reference_identifier_cache_generation: Arc<AtomicU64>,
     /// PSR-4 autoload mappings parsed from `composer.json`.
     pub(crate) psr4_mappings: Arc<RwLock<Vec<composer::Psr4Mapping>>>,
     /// Maps a file URI to its `use` statement mappings (short name → fully qualified name).
@@ -593,9 +628,18 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            reference_index: Arc::new(RwLock::new(references::ReferenceIndex::default())),
+            reference_prefiltered_needles: Arc::new(RwLock::new(HashSet::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
+            reference_workspace_indexed: Arc::new(AtomicBool::new(false)),
+            reference_workspace_files: Arc::new(RwLock::new(None)),
+            reference_identifier_index: Arc::new(RwLock::new(None)),
+            reference_identifier_indexing: Arc::new(AtomicBool::new(false)),
+            reference_identifier_index_disk_loaded: Arc::new(AtomicBool::new(false)),
+            reference_identifier_index_trusted: Arc::new(AtomicBool::new(false)),
+            reference_identifier_cache_generation: Arc::new(AtomicU64::new(0)),
             vendor_uri_prefixes: Mutex::new(Vec::new()),
             vendor_dir_paths: Mutex::new(Vec::new()),
             psr4_mappings: Arc::new(RwLock::new(Vec::new())),
@@ -659,9 +703,18 @@ impl Backend {
             open_files: Arc::new(RwLock::new(HashMap::new())),
             ast_map: Arc::new(RwLock::new(HashMap::new())),
             symbol_maps: Arc::new(RwLock::new(HashMap::new())),
+            reference_index: Arc::new(RwLock::new(references::ReferenceIndex::default())),
+            reference_prefiltered_needles: Arc::new(RwLock::new(HashSet::new())),
             parse_errors: Arc::new(RwLock::new(HashMap::new())),
             client: None,
             workspace_root: Arc::new(RwLock::new(None)),
+            reference_workspace_indexed: Arc::new(AtomicBool::new(false)),
+            reference_workspace_files: Arc::new(RwLock::new(None)),
+            reference_identifier_index: Arc::new(RwLock::new(None)),
+            reference_identifier_indexing: Arc::new(AtomicBool::new(false)),
+            reference_identifier_index_disk_loaded: Arc::new(AtomicBool::new(false)),
+            reference_identifier_index_trusted: Arc::new(AtomicBool::new(false)),
+            reference_identifier_cache_generation: Arc::new(AtomicU64::new(0)),
             vendor_uri_prefixes: Mutex::new(Vec::new()),
             vendor_dir_paths: Mutex::new(Vec::new()),
             psr4_mappings: Arc::new(RwLock::new(Vec::new())),
@@ -948,11 +1001,26 @@ impl Backend {
             open_files: Arc::clone(&self.open_files),
             ast_map: Arc::clone(&self.ast_map),
             symbol_maps: Arc::clone(&self.symbol_maps),
+            reference_index: Arc::clone(&self.reference_index),
+            reference_prefiltered_needles: Arc::clone(&self.reference_prefiltered_needles),
             parse_errors: Arc::clone(&self.parse_errors),
             // RwLock fields are shared by Arc::clone — the diagnostic
             // worker reads them concurrently with the main Backend.
             client: self.client.clone(),
             workspace_root: Arc::clone(&self.workspace_root),
+            reference_workspace_indexed: Arc::clone(&self.reference_workspace_indexed),
+            reference_workspace_files: Arc::clone(&self.reference_workspace_files),
+            reference_identifier_index: Arc::clone(&self.reference_identifier_index),
+            reference_identifier_indexing: Arc::clone(&self.reference_identifier_indexing),
+            reference_identifier_index_disk_loaded: Arc::clone(
+                &self.reference_identifier_index_disk_loaded,
+            ),
+            reference_identifier_index_trusted: Arc::clone(
+                &self.reference_identifier_index_trusted,
+            ),
+            reference_identifier_cache_generation: Arc::clone(
+                &self.reference_identifier_cache_generation,
+            ),
             psr4_mappings: Arc::clone(&self.psr4_mappings),
             use_map: Arc::clone(&self.use_map),
             resolved_names: Arc::clone(&self.resolved_names),

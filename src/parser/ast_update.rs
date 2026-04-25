@@ -493,7 +493,10 @@ impl Backend {
         self.resolved_names
             .write()
             .insert(uri_string.clone(), Arc::new(owned_resolved));
-        self.namespace_map.write().insert(uri_string, namespace);
+        self.namespace_map
+            .write()
+            .insert(uri_string.clone(), namespace);
+        self.reindex_references_for_uri(&uri_string, content);
 
         // Selectively invalidate the resolved-class cache with
         // signature-level granularity.
