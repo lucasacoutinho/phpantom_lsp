@@ -239,7 +239,6 @@ mod document_symbols;
 pub mod fix;
 mod folding;
 mod formatting;
-mod gtd_probe;
 mod highlight;
 mod hover;
 mod indexing;

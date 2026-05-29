@@ -278,7 +278,6 @@ fn resolve_target_classes_expr_inner(
     receiver: Option<Vec<ResolvedType>>,
     ctx: &ResolutionCtx<'_>,
 ) -> Vec<ResolvedType> {
-    crate::gtd_probe::inc_resolve_target_classes();
     let current_class = ctx.current_class;
     let all_classes = ctx.all_classes;
     let class_loader = ctx.class_loader;
