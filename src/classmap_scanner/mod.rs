@@ -83,6 +83,7 @@ pub use discovery::{
     scan_directories, scan_drupal_directories, scan_psr4_directories,
     scan_psr4_directories_with_skip, scan_vendor_packages, scan_vendor_packages_with_skip,
     scan_workspace_fallback, scan_workspace_fallback_full,
+    scan_workspace_fallback_full_include_ignored,
 };
 pub use lexer::{find_classes, find_symbols};
 

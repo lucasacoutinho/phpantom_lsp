@@ -70,10 +70,20 @@ where
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        #[allow(deprecated)]
+        let legacy_root_path = params.root_path.as_ref().map(PathBuf::from);
         let workspace_root = params
             .root_uri
             .as_ref()
-            .and_then(|uri| uri.to_file_path().ok());
+            .and_then(|uri| uri.to_file_path().ok())
+            .or_else(|| {
+                params.workspace_folders.as_ref().and_then(|folders| {
+                    folders
+                        .iter()
+                        .find_map(|folder| folder.uri.to_file_path().ok())
+                })
+            })
+            .or(legacy_root_path);
 
         if let Some(root) = workspace_root {
             *self.workspace.workspace_root.write() = Some(root);
@@ -360,7 +370,14 @@ impl LanguageServer for Backend {
                     .await;
             } else {
                 // ── Monorepo / non-Composer path ────────────────────────
-                let subprojects = composer::discover_subproject_roots(&root);
+                let subprojects = if matches!(
+                    self.config().indexing.strategy(),
+                    IndexingStrategy::SelfScan | IndexingStrategy::Full
+                ) {
+                    composer::discover_subproject_roots_include_ignored(&root)
+                } else {
+                    composer::discover_subproject_roots(&root)
+                };
 
                 if !subprojects.is_empty() {
                     self.init_monorepo(&root, &subprojects, php_version, Some(&progress))

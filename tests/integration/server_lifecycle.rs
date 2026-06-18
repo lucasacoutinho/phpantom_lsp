@@ -1,4 +1,5 @@
 use crate::common::create_test_backend;
+use std::fs;
 use tower_lsp::LanguageServer;
 use tower_lsp::lsp_types::*;
 
@@ -26,6 +27,118 @@ async fn test_initialize_capabilities() {
     assert!(
         caps.completion_provider.is_some(),
         "Completion provider should be enabled"
+    );
+}
+
+#[tokio::test]
+async fn test_initialize_uses_workspace_folder_root_for_monorepo_indexing() {
+    let backend = create_test_backend();
+    let dir = tempfile::tempdir().unwrap();
+    let subproject = dir.path().join("laminas-demo");
+    let src = subproject.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(
+        subproject.join("composer.json"),
+        r#"{"autoload":{"psr-4":{"Laminas\\Demo\\":"src/"}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        src.join("Widget.php"),
+        "<?php\nnamespace Laminas\\Demo;\nclass Widget {}\n",
+    )
+    .unwrap();
+
+    let root_uri = Url::from_directory_path(dir.path()).unwrap();
+    let params = InitializeParams {
+        root_uri: None,
+        workspace_folders: Some(vec![WorkspaceFolder {
+            uri: root_uri,
+            name: "laminas".to_string(),
+        }]),
+        ..InitializeParams::default()
+    };
+
+    backend.initialize(params).await.unwrap();
+    backend.initialized(InitializedParams {}).await;
+
+    assert_eq!(
+        backend.workspace_root().read().as_deref(),
+        Some(dir.path()),
+        "workspace root should come from workspaceFolders when rootUri is absent"
+    );
+    assert!(
+        backend
+            .fqn_uri_index()
+            .read()
+            .contains_key("Laminas\\Demo\\Widget"),
+        "monorepo subproject class should be indexed from workspaceFolders root"
+    );
+}
+
+#[tokio::test]
+async fn test_initialize_self_strategy_indexes_gitignored_monorepo_sources() {
+    let backend = create_test_backend();
+    let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join(".git")).unwrap();
+    fs::write(
+        dir.path().join(".phpantom.toml"),
+        "[indexing]\nstrategy = \"self\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.path().join(".gitignore"),
+        "ignored-package/\nlegacy-code/\n",
+    )
+    .unwrap();
+
+    let package = dir.path().join("ignored-package");
+    let package_src = package.join("src");
+    fs::create_dir_all(&package_src).unwrap();
+    fs::write(
+        package.join("composer.json"),
+        r#"{"autoload":{"psr-4":{"Ignored\\Package\\":"src/"}}}"#,
+    )
+    .unwrap();
+    fs::write(
+        package_src.join("Widget.php"),
+        "<?php\nnamespace Ignored\\Package;\nclass Widget {}\n",
+    )
+    .unwrap();
+
+    let legacy = dir.path().join("legacy-code");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(
+        legacy.join("Legacy.php"),
+        "<?php\nclass GitignoredLegacy {}\nfunction gitignored_legacy_helper(): void {}\n",
+    )
+    .unwrap();
+
+    let root_uri = Url::from_directory_path(dir.path()).unwrap();
+    let params = InitializeParams {
+        root_uri: Some(root_uri),
+        ..InitializeParams::default()
+    };
+
+    backend.initialize(params).await.unwrap();
+    backend.initialized(InitializedParams {}).await;
+
+    let class_index = backend.fqn_uri_index().read();
+    assert!(
+        class_index.contains_key("Ignored\\Package\\Widget"),
+        "gitignored Composer subproject class should be indexed with self strategy"
+    );
+    assert!(
+        class_index.contains_key("GitignoredLegacy"),
+        "gitignored non-Composer source should be indexed with self strategy"
+    );
+    drop(class_index);
+
+    assert!(
+        backend
+            .autoload_function_index()
+            .read()
+            .contains_key("gitignored_legacy_helper"),
+        "gitignored functions should be indexed with self strategy"
     );
 }
 

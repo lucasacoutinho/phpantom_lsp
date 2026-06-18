@@ -12,6 +12,7 @@ use tower_lsp::lsp_types::*;
 use super::classify_class_origin;
 use crate::Backend;
 use crate::classmap_scanner;
+use crate::classmap_scanner::WorkspaceScanResult;
 use crate::composer;
 use crate::config::IndexingStrategy;
 
@@ -114,8 +115,9 @@ impl Backend {
                 if let Some(p) = progress {
                     p.begin_phase(0.0, 0.3, "Scanning workspace files");
                 }
-                let mut scan =
-                    classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs, progress);
+                let mut scan = classmap_scanner::scan_workspace_fallback_full_include_ignored(
+                    root, &skip_dirs, progress,
+                );
 
                 // Merge vendor packages (excluded from the workspace
                 // walk above, scanned separately here).
@@ -342,6 +344,16 @@ impl Backend {
         )
         .await;
 
+        let strategy = self.config().indexing.strategy();
+        if matches!(
+            strategy,
+            IndexingStrategy::SelfScan | IndexingStrategy::Full
+        ) {
+            self.init_monorepo_self_scan(root, subprojects, php_version, progress)
+                .await;
+            return;
+        }
+
         // Collect subproject root paths for the skip set.
         let mut skip_dirs: HashSet<PathBuf> = HashSet::new();
         let sub_count = subprojects.len();
@@ -425,12 +437,15 @@ impl Backend {
             for (fqn, path) in psr0_cm {
                 sub_cm.entry(fqn).or_insert(path);
             }
-            let sub_skip: HashSet<PathBuf> = sub_cm.values().cloned().collect();
-            if let Some(p) = progress {
-                p.set_scope(sub_mid, sub_hi, "Building class index");
-            }
-            let scan =
-                self.build_self_scan_composer(sub_root, vendor_dir, None, &sub_skip, progress);
+            let scan = if strategy == IndexingStrategy::None {
+                WorkspaceScanResult::default()
+            } else {
+                let sub_skip: HashSet<PathBuf> = sub_cm.values().cloned().collect();
+                if let Some(p) = progress {
+                    p.set_scope(sub_mid, sub_hi, "Building class index");
+                }
+                self.build_self_scan_composer(sub_root, vendor_dir, None, &sub_skip, progress)
+            };
             self.populate_autoload_indices(&scan);
             {
                 let mut idx = self.symbols.fqn_uri_index.write();
@@ -463,12 +478,14 @@ impl Backend {
             p.set_scope(80, 85, "Scanning loose PHP files");
         }
 
-        let scan = classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs, progress);
-        self.populate_autoload_indices(&scan);
-        {
-            let mut idx = self.symbols.fqn_uri_index.write();
-            for (fqcn, path) in scan.classmap {
-                idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
+        if strategy != IndexingStrategy::None {
+            let scan = classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs, progress);
+            self.populate_autoload_indices(&scan);
+            {
+                let mut idx = self.symbols.fqn_uri_index.write();
+                for (fqcn, path) in scan.classmap {
+                    idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
+                }
             }
         }
 
@@ -480,6 +497,89 @@ impl Backend {
             MessageType::INFO,
             format!(
                 "PHPantom v{}: PHP {}, {} symbols from {} subprojects, stubs {}",
+                self.version,
+                php_version,
+                symbol_count,
+                subprojects.len(),
+                crate::stubs::STUBS_VERSION
+            ),
+        )
+        .await;
+    }
+
+    async fn init_monorepo_self_scan(
+        &self,
+        root: &std::path::Path,
+        subprojects: &[(PathBuf, String)],
+        php_version: crate::types::PhpVersion,
+        progress: Option<&crate::progress::ScanProgress>,
+    ) {
+        let mut skip_dirs: HashSet<PathBuf> = HashSet::new();
+        skip_dirs.insert(root.join("vendor"));
+        let mut any_laravel = false;
+
+        for (sub_idx, (sub_root, vendor_dir)) in subprojects.iter().enumerate() {
+            if let Some(p) = progress {
+                let sub_count = subprojects.len().max(1);
+                let lo = 10 + (sub_idx as u32 * 60) / sub_count as u32;
+                let hi = 10 + ((sub_idx as u32 + 1) * 60) / sub_count as u32;
+                p.set_scope(lo, hi, "Reading Composer metadata");
+            }
+
+            if !any_laravel
+                && let Some(pkg) = composer::read_composer_package(sub_root)
+                && composer::is_laravel_project(&pkg)
+            {
+                any_laravel = true;
+            }
+
+            let (mappings, _) = composer::parse_composer_json(sub_root);
+            let abs_mappings = mappings.into_iter().map(|m| composer::Psr4Mapping {
+                prefix: m.prefix,
+                base_path: composer::normalise_path(&sub_root.join(&m.base_path).to_string_lossy()),
+            });
+            self.workspace.psr4_mappings.write().extend(abs_mappings);
+
+            let vendor_path = sub_root.join(vendor_dir);
+            skip_dirs.insert(vendor_path.clone());
+            self.add_vendor_dir(&vendor_path);
+            self.scan_autoload_files(sub_root, vendor_dir, progress);
+
+            let vendor_scan = classmap_scanner::scan_vendor_packages(sub_root, vendor_dir);
+            self.populate_autoload_indices(&vendor_scan);
+            let mut idx = self.symbols.fqn_uri_index.write();
+            for (fqcn, path) in vendor_scan.classmap {
+                idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
+            }
+        }
+
+        self.resolved_class_cache.write().set_laravel(any_laravel);
+        self.workspace
+            .psr4_mappings
+            .write()
+            .sort_by_key(|m| std::cmp::Reverse(m.prefix.len()));
+
+        if let Some(p) = progress {
+            p.set_scope(70, 85, "Scanning workspace PHP files");
+        }
+        let scan = classmap_scanner::scan_workspace_fallback_full_include_ignored(
+            root, &skip_dirs, progress,
+        );
+        self.populate_autoload_indices(&scan);
+        {
+            let mut idx = self.symbols.fqn_uri_index.write();
+            for (fqcn, path) in scan.classmap {
+                idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
+            }
+        }
+
+        let symbol_count = self.symbols.fqn_uri_index.read().len()
+            + self.symbols.autoload_function_index.read().len()
+            + self.symbols.autoload_constant_index.read().len();
+        self.log(
+            MessageType::INFO,
+            format!(
+                "PHPantom v{}: PHP {}, {} symbols from workspace self-scan plus {} Composer project(s), stubs {}",
                 self.version,
                 php_version,
                 symbol_count,
@@ -513,7 +613,17 @@ impl Backend {
         self.resolved_class_cache.write().set_laravel(false);
 
         let skip_dirs = HashSet::new();
-        let scan = classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs, progress);
+        let scan = match self.config().indexing.strategy() {
+            IndexingStrategy::None => WorkspaceScanResult::default(),
+            IndexingStrategy::SelfScan | IndexingStrategy::Full => {
+                classmap_scanner::scan_workspace_fallback_full_include_ignored(
+                    root, &skip_dirs, progress,
+                )
+            }
+            IndexingStrategy::Composer => {
+                classmap_scanner::scan_workspace_fallback_full(root, &skip_dirs, progress)
+            }
+        };
         self.populate_autoload_indices(&scan);
 
         let symbol_count = scan.classmap.len();

@@ -10,7 +10,8 @@ use std::path::PathBuf;
 
 use phpantom_lsp::classmap_scanner::scan_workspace_fallback_full;
 use phpantom_lsp::composer::{
-    discover_subproject_roots, parse_autoload_classmap, parse_autoload_files, parse_composer_json,
+    discover_subproject_roots, discover_subproject_roots_include_ignored, parse_autoload_classmap,
+    parse_autoload_files, parse_composer_json,
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -147,6 +148,23 @@ fn discover_skips_hidden_directories() {
         "hidden directories should be skipped: {:?}",
         roots
     );
+}
+
+#[test]
+fn discover_include_ignored_finds_gitignored_subproject() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "ignored-project/\n").unwrap();
+
+    let ignored = dir.path().join("ignored-project");
+    std::fs::create_dir_all(&ignored).unwrap();
+    std::fs::write(ignored.join("composer.json"), "{}").unwrap();
+
+    assert!(discover_subproject_roots(dir.path()).is_empty());
+
+    let roots = discover_subproject_roots_include_ignored(dir.path());
+    assert_eq!(roots.len(), 1);
+    assert_eq!(roots[0].0, ignored);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

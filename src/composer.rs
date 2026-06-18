@@ -1002,21 +1002,39 @@ pub fn detect_phar_references(content: &str, file_dir: &Path) -> Vec<PathBuf> {
 ///
 /// returns `[(monorepo/project-a, "vendor"), (monorepo/packages/project-b, "vendor")]`.
 pub fn discover_subproject_roots(workspace_root: &Path) -> Vec<(PathBuf, String)> {
+    discover_subproject_roots_with_options(workspace_root, true)
+}
+
+/// Discover Composer subprojects without applying `.gitignore`, global
+/// gitignore, or `.ignore` rules.
+///
+/// Used by explicit whole-workspace scans so ignored project directories still
+/// contribute their Composer vendor-dir metadata. Hidden directories remain
+/// skipped.
+pub fn discover_subproject_roots_include_ignored(workspace_root: &Path) -> Vec<(PathBuf, String)> {
+    discover_subproject_roots_with_options(workspace_root, false)
+}
+
+fn discover_subproject_roots_with_options(
+    workspace_root: &Path,
+    respect_ignore_files: bool,
+) -> Vec<(PathBuf, String)> {
     use ignore::WalkBuilder;
     use std::collections::HashSet;
 
     let mut candidates: Vec<PathBuf> = Vec::new();
 
-    let walker = WalkBuilder::new(workspace_root)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
+    let mut builder = WalkBuilder::new(workspace_root);
+    builder
+        .git_ignore(respect_ignore_files)
+        .git_global(respect_ignore_files)
+        .git_exclude(respect_ignore_files)
         .hidden(true)
-        .parents(true)
-        .ignore(true)
+        .parents(respect_ignore_files)
+        .ignore(respect_ignore_files)
         // Sort to get deterministic output
-        .sort_by_file_name(|a, b| a.cmp(b))
-        .build();
+        .sort_by_file_name(|a, b| a.cmp(b));
+    let walker = builder.build();
 
     for entry in walker.flatten() {
         let path = entry.path();

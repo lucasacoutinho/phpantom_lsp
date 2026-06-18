@@ -879,9 +879,35 @@ pub fn scan_workspace_fallback_full(
     skip_dirs: &HashSet<PathBuf>,
     progress: Option<&ScanProgress>,
 ) -> WorkspaceScanResult {
+    scan_workspace_fallback_full_with_options(workspace_root, skip_dirs, progress, true, false)
+}
+
+/// Scan the workspace without applying `.gitignore`, global gitignore, or
+/// `.ignore` rules. Hidden directories and directories named `vendor` remain
+/// excluded.
+pub fn scan_workspace_fallback_full_include_ignored(
+    workspace_root: &Path,
+    skip_dirs: &HashSet<PathBuf>,
+    progress: Option<&ScanProgress>,
+) -> WorkspaceScanResult {
+    scan_workspace_fallback_full_with_options(workspace_root, skip_dirs, progress, false, true)
+}
+
+fn scan_workspace_fallback_full_with_options(
+    workspace_root: &Path,
+    skip_dirs: &HashSet<PathBuf>,
+    progress: Option<&ScanProgress>,
+    respect_ignore_files: bool,
+    skip_vendor_dirs_by_name: bool,
+) -> WorkspaceScanResult {
     // Phase 1: collect file paths
     let skip_paths = HashSet::new();
-    let opts = WalkOptions::new(skip_dirs.iter().cloned().collect(), &skip_paths);
+    let opts = WalkOptions {
+        skip_dirs: std::sync::Arc::new(skip_dirs.iter().cloned().collect()),
+        skip_paths: &skip_paths,
+        respect_ignore_files,
+        skip_vendor_dirs_by_name,
+    };
     let php_files: Vec<(PathBuf, crate::ClassCompletionOrigin)> =
         walk_roots(&[workspace_root.to_path_buf()], &opts)
             .into_iter()
@@ -1011,6 +1037,10 @@ struct WalkOptions<'a> {
     /// Absolute file paths to leave out of the result, typically the ones
     /// Composer's generated classmap already covers.
     skip_paths: &'a HashSet<PathBuf>,
+    /// Whether repository and global ignore files participate in the walk.
+    respect_ignore_files: bool,
+    /// Whether any directory named `vendor` must be excluded.
+    skip_vendor_dirs_by_name: bool,
 }
 
 impl<'a> WalkOptions<'a> {
@@ -1018,6 +1048,8 @@ impl<'a> WalkOptions<'a> {
         Self {
             skip_dirs: std::sync::Arc::new(skip_dirs),
             skip_paths,
+            respect_ignore_files: true,
+            skip_vendor_dirs_by_name: false,
         }
     }
 }
@@ -1076,17 +1108,24 @@ fn walk_roots(roots: &[PathBuf], opts: &WalkOptions) -> Vec<Vec<PathBuf>> {
     };
 
     let skip_dirs = std::sync::Arc::clone(&opts.skip_dirs);
+    let respect_ignore_files = opts.respect_ignore_files;
+    let skip_vendor_dirs_by_name = opts.skip_vendor_dirs_by_name;
     builder
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
+        .git_ignore(respect_ignore_files)
+        .git_global(respect_ignore_files)
+        .git_exclude(respect_ignore_files)
         .hidden(true)
-        .parents(true)
-        .ignore(true)
+        .parents(respect_ignore_files)
+        .ignore(respect_ignore_files)
         .threads(thread_count())
         .filter_entry(move |entry| {
-            !(entry.file_type().is_some_and(|ft| ft.is_dir())
-                && skip_dirs.iter().any(|dir| dir == entry.path()))
+            if !entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                return true;
+            }
+            if skip_dirs.iter().any(|dir| dir == entry.path()) {
+                return false;
+            }
+            !(skip_vendor_dirs_by_name && entry.file_name() == "vendor")
         });
 
     let (tx, rx) = std::sync::mpsc::channel::<(usize, PathBuf)>();

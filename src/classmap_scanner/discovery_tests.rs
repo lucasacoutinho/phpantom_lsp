@@ -453,6 +453,38 @@ fn scan_workspace_fallback_full_skips_hidden_dirs() {
     );
 }
 
+#[test]
+fn scan_workspace_fallback_full_include_ignored_finds_source_but_skips_vendor() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    std::fs::write(dir.path().join(".gitignore"), "ignored/\nvendor/\n").unwrap();
+
+    let ignored = dir.path().join("ignored");
+    std::fs::create_dir_all(&ignored).unwrap();
+    std::fs::write(
+        ignored.join("Legacy.php"),
+        "<?php\nclass IgnoredLegacy {}\nfunction ignoredLegacyFunc(): void {}",
+    )
+    .unwrap();
+
+    let vendor = dir.path().join("vendor");
+    std::fs::create_dir_all(&vendor).unwrap();
+    std::fs::write(
+        vendor.join("Vendor.php"),
+        "<?php\nclass VendorShouldStaySkipped {}",
+    )
+    .unwrap();
+
+    let skip = std::collections::HashSet::new();
+    let default_scan = scan_workspace_fallback_full(dir.path(), &skip, None);
+    assert!(!default_scan.classmap.contains_key("IgnoredLegacy"));
+
+    let forced_scan = scan_workspace_fallback_full_include_ignored(dir.path(), &skip, None);
+    assert!(forced_scan.classmap.contains_key("IgnoredLegacy"));
+    assert!(forced_scan.function_index.contains_key("ignoredLegacyFunc"));
+    assert!(!forced_scan.classmap.contains_key("VendorShouldStaySkipped"));
+}
+
 // ── is_drupal_php_file ──────────────────────────────────────────
 
 #[test]
