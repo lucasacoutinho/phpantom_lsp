@@ -842,6 +842,12 @@ impl Backend {
                 .map(|cls| (cls.fqn().to_string(), Arc::clone(cls)))
                 .collect();
 
+            self.update_composer_project_file_classes(
+                uri,
+                &old_fqns,
+                new_entries.iter().map(|(fqn, _)| fqn.clone()),
+            );
+
             self.symbols.with_class_declarations(|decls| {
                 // The method store and the reverse-inheritance index are
                 // keyed by fqn, so they must be repopulated from whichever

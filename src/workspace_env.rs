@@ -15,6 +15,7 @@ use parking_lot::{Mutex, RwLock};
 
 use crate::ClassCompletionOrigin;
 use crate::composer;
+use crate::composer_environment::ComposerProjectIndex;
 use crate::config;
 use crate::types::PhpVersion;
 
@@ -32,6 +33,8 @@ pub(crate) struct WorkspaceEnv {
     /// Canonical vendor package roots paired with completion provenance.
     pub(crate) vendor_package_origin_roots:
         Arc<RwLock<Vec<(PathBuf, ClassCompletionOrigin, String)>>>,
+    /// Per-project class indexes that isolate duplicate Composer vendor FQNs.
+    pub(crate) composer_project_indexes: Arc<RwLock<Vec<ComposerProjectIndex>>>,
     /// The target PHP version used for version-aware stub filtering.
     pub(crate) php_version: Mutex<PhpVersion>,
     /// Per-project configuration loaded from `.phpantom.toml`.
@@ -46,6 +49,7 @@ impl WorkspaceEnv {
             vendor_uri_prefixes: Mutex::new(Vec::new()),
             vendor_dir_paths: Mutex::new(Vec::new()),
             vendor_package_origin_roots: Arc::new(RwLock::new(Vec::new())),
+            composer_project_indexes: Arc::new(RwLock::new(Vec::new())),
             php_version: Mutex::new(PhpVersion::default()),
             config: Mutex::new(config::Config::default()),
         }
@@ -60,6 +64,7 @@ impl Clone for WorkspaceEnv {
             vendor_uri_prefixes: Mutex::new(self.vendor_uri_prefixes.lock().clone()),
             vendor_dir_paths: Mutex::new(self.vendor_dir_paths.lock().clone()),
             vendor_package_origin_roots: Arc::clone(&self.vendor_package_origin_roots),
+            composer_project_indexes: Arc::clone(&self.composer_project_indexes),
             php_version: Mutex::new(*self.php_version.lock()),
             config: Mutex::new(self.config.lock().clone()),
         }

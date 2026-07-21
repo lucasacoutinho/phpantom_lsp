@@ -184,12 +184,16 @@ impl Backend {
                 } else {
                     ctx.resolve_name_at(name, span_start)
                 };
-                self.find_class_references(&fqn, include_declaration)
+                let target_uri = self.class_uri_for_context(&fqn, uri);
+                if target_uri.is_none() && self.has_composer_project_context(uri) {
+                    return Vec::new();
+                }
+                self.find_class_references_scoped(&fqn, target_uri.as_deref(), include_declaration)
             }
             SymbolKind::ClassDeclaration { name } => {
                 let ctx = self.file_context(uri);
                 let fqn = build_fqn(name, ctx.namespace.as_deref());
-                self.find_class_references(&fqn, include_declaration)
+                self.find_class_references_scoped(&fqn, Some(uri), include_declaration)
             }
             SymbolKind::MemberAccess {
                 subject_text,
@@ -328,7 +332,18 @@ impl Backend {
                     _ => current_class.map(|cc| build_fqn(&cc.name, ctx.namespace.as_deref())),
                 };
                 if let Some(fqn) = fqn {
-                    self.find_class_references(&fqn, include_declaration)
+                    let target_uri = match ssp_kind {
+                        SelfStaticParentKind::Parent => self.class_uri_for_context(&fqn, uri),
+                        _ => Some(uri.to_string()),
+                    };
+                    if target_uri.is_none() && self.has_composer_project_context(uri) {
+                        return Vec::new();
+                    }
+                    self.find_class_references_scoped(
+                        &fqn,
+                        target_uri.as_deref(),
+                        include_declaration,
+                    )
                 } else {
                     Vec::new()
                 }

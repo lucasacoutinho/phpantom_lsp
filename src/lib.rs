@@ -230,6 +230,7 @@ mod code_actions;
 mod code_lens;
 pub mod completion;
 pub mod composer;
+mod composer_environment;
 pub mod config;
 mod definition;
 pub mod diagnostics;
@@ -1605,8 +1606,11 @@ impl Backend {
         let mut path_set: HashSet<PathBuf> = HashSet::new();
         for (uri_str, path, _) in changes {
             uri_set.insert(uri_str.clone());
-            uri_set.insert(crate::util::path_to_uri(path));
+            let canonical_uri = crate::util::path_to_uri(path);
+            uri_set.insert(canonical_uri.clone());
             path_set.insert(path.clone());
+            self.remove_composer_project_file_classes(uri_str);
+            self.remove_composer_project_file_classes(&canonical_uri);
         }
 
         // Drop every class declaration sourced from a changed file in one
@@ -1693,6 +1697,7 @@ impl Backend {
             }
 
             let classes = crate::classmap_scanner::scan_file(path);
+            self.update_composer_project_file_classes(uri_str, &[], classes.iter().cloned());
             self.symbols.with_class_declarations(|decls| {
                 for fqn in classes {
                     decls.note_discovered(&fqn, uri_str.clone());

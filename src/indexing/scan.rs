@@ -96,6 +96,14 @@ impl Backend {
             // `scan_vendor_packages_with_skip` already did; no need to
             // re-read and re-parse the file a second time here.
             let vendor_package_roots = std::mem::take(&mut vendor_scan.package_roots);
+            self.replace_composer_project_vendor_classes(
+                root,
+                &vendor_path,
+                vendor_scan
+                    .classmap
+                    .iter()
+                    .map(|(fqn, path)| (fqn.clone(), path.clone())),
+            );
             {
                 let vendor_uri_prefixes = vendor_uri_prefixes_for_path(&vendor_path);
 

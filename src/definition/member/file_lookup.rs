@@ -138,7 +138,7 @@ impl Backend {
             // Fallback: the target file may have been closed (didClose
             // clears uri_classes_index) or was never opened.  Check fqn_uri_index
             // which survives close.
-            self.symbols.fqn_uri_index.read().get(class_name).cloned()
+            self.class_uri_for_context(class_name, current_uri)
         })
         .or_else(|| {
             // Last resort: resolve the class via PSR-4 mappings to get

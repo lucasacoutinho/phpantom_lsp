@@ -720,7 +720,7 @@ impl Backend {
         // previously navigated-to vendor files) live in
         // fqn_uri_index (FQN → URI) and uri_classes_index (URI → [ClassInfo]).
         for fqn in &candidates {
-            let target_uri = self.symbols.fqn_uri_index.read().get(fqn.as_str()).cloned();
+            let target_uri = self.class_uri_for_context(fqn, uri);
             if let Some(ref target_uri) = target_uri
                 && let Some(location) =
                     self.find_definition_in_uri_classes_index_cross_file(fqn, target_uri)
@@ -1056,7 +1056,14 @@ impl Backend {
             .cloned()
         {
             cached
-        } else if let Some(cls) = self.symbols.fqn_class_index.read().get(fqn) {
+        } else if self
+            .symbols
+            .fqn_uri_index
+            .read()
+            .get(fqn)
+            .is_some_and(|primary_uri| self.class_uris_match(primary_uri, target_uri))
+            && let Some(cls) = self.symbols.fqn_class_index.read().get(fqn)
+        {
             vec![Arc::clone(cls)]
         } else {
             let file_path = Url::parse(target_uri)
@@ -1233,7 +1240,7 @@ impl Backend {
         {
             let candidates = [fqn.as_str(), parent_name.as_str()];
             for candidate in &candidates {
-                if let Some(file_uri) = self.symbols.fqn_uri_index.read().get(candidate).cloned()
+                if let Some(file_uri) = self.class_uri_for_context(candidate, uri)
                     && let Some(file_path) = Url::parse(&file_uri)
                         .ok()
                         .and_then(|u| u.to_file_path().ok())

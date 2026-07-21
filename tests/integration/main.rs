@@ -97,6 +97,7 @@ mod completion_type_hints;
 mod completion_unset;
 mod completion_variable_names;
 mod completion_variables;
+mod composer_environments;
 mod crash_sandbox;
 mod definition_blade;
 mod definition_classes;

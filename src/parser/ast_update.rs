@@ -941,6 +941,14 @@ impl Backend {
             }
         }
 
+        for update in &prepared {
+            self.update_composer_project_file_classes(
+                &update.uri,
+                &update.old_fqns,
+                update.new_fqns.iter().cloned(),
+            );
+        }
+
         // Names this batch took over from a file that previously won them.
         // Their entries in the fqn-keyed derived indexes below belong to the
         // old owner and have to be cleared; every other name this batch

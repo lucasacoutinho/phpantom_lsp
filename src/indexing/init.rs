@@ -65,6 +65,7 @@ impl Backend {
         // without re-reading composer.json on every request.
         let vendor_path = root.join(&vendor_dir);
         self.add_vendor_dir(&vendor_path);
+        self.register_composer_project(root, &vendor_path);
 
         // Include PSR-4 mappings from path-repository packages (local
         // packages symlinked into vendor/, e.g. internachi/modular modules).
@@ -212,6 +213,7 @@ impl Backend {
 
         let class_entries: Vec<(String, PathBuf)> = classmap.into_iter().collect();
         let symbol_count = class_entries.len();
+        self.index_composer_project_classes(root, class_entries.iter().cloned());
         {
             let mut idx = self.symbols.fqn_uri_index.write();
             let mut origins = self.symbols.fqn_origin_index.write();
@@ -247,8 +249,11 @@ impl Backend {
                 + drupal_result.function_index.len()
                 + drupal_result.constant_index.len();
             {
+                let class_entries: Vec<(String, PathBuf)> =
+                    drupal_result.classmap.into_iter().collect();
+                self.index_composer_project_classes(root, class_entries.iter().cloned());
                 let mut idx = self.symbols.fqn_uri_index.write();
-                for (fqn, path) in drupal_result.classmap {
+                for (fqn, path) in class_entries {
                     idx.or_insert_with(fqn, || crate::util::path_to_uri(&path));
                 }
             }
@@ -279,6 +284,12 @@ impl Backend {
         let psr0_cm = composer::parse_autoload_namespaces(root, &vendor_dir);
         if !psr0_cm.is_empty() {
             let count = psr0_cm.len();
+            self.index_composer_project_classes(
+                root,
+                psr0_cm
+                    .iter()
+                    .map(|(fqn, path)| (fqn.clone(), path.clone())),
+            );
             let mut idx = self.symbols.fqn_uri_index.write();
             for (fqn, path) in psr0_cm {
                 idx.or_insert_with(fqn, || crate::util::path_to_uri(&path));
@@ -423,6 +434,7 @@ impl Backend {
             // ── Vendor dir tracking ─────────────────────────────────
             let vendor_path = sub_root.join(vendor_dir);
             self.add_vendor_dir(&vendor_path);
+            self.register_composer_project(sub_root, &vendor_path);
 
             // ── Autoload files ──────────────────────────────────────
             self.scan_autoload_files(sub_root, vendor_dir, progress);
@@ -447,12 +459,12 @@ impl Backend {
                 self.build_self_scan_composer(sub_root, vendor_dir, None, &sub_skip, progress)
             };
             self.populate_autoload_indices(&scan);
+            let mut project_entries: Vec<(String, PathBuf)> = sub_cm.into_iter().collect();
+            project_entries.extend(scan.classmap);
+            self.index_composer_project_classes(sub_root, project_entries.iter().cloned());
             {
                 let mut idx = self.symbols.fqn_uri_index.write();
-                for (fqcn, path) in sub_cm {
-                    idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
-                }
-                for (fqcn, path) in scan.classmap {
+                for (fqcn, path) in project_entries {
                     idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
                 }
             }
@@ -543,12 +555,15 @@ impl Backend {
             let vendor_path = sub_root.join(vendor_dir);
             skip_dirs.insert(vendor_path.clone());
             self.add_vendor_dir(&vendor_path);
+            self.register_composer_project(sub_root, &vendor_path);
             self.scan_autoload_files(sub_root, vendor_dir, progress);
 
             let vendor_scan = classmap_scanner::scan_vendor_packages(sub_root, vendor_dir);
             self.populate_autoload_indices(&vendor_scan);
+            let class_entries: Vec<(String, PathBuf)> = vendor_scan.classmap.into_iter().collect();
+            self.index_composer_project_classes(sub_root, class_entries.iter().cloned());
             let mut idx = self.symbols.fqn_uri_index.write();
-            for (fqcn, path) in vendor_scan.classmap {
+            for (fqcn, path) in class_entries {
                 idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
             }
         }
@@ -566,9 +581,13 @@ impl Backend {
             root, &skip_dirs, progress,
         );
         self.populate_autoload_indices(&scan);
+        let class_entries: Vec<(String, PathBuf)> = scan.classmap.into_iter().collect();
+        for (fqn, path) in &class_entries {
+            self.index_class_in_owning_composer_project(fqn.clone(), path);
+        }
         {
             let mut idx = self.symbols.fqn_uri_index.write();
-            for (fqcn, path) in scan.classmap {
+            for (fqcn, path) in class_entries {
                 idx.or_insert_with(fqcn, || crate::util::path_to_uri(&path));
             }
         }

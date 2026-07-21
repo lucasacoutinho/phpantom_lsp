@@ -21,9 +21,19 @@ impl Backend {
     ///
     /// Matches `ClassReference` spans whose resolved FQN equals `target_fqn`,
     /// and optionally `ClassDeclaration` spans at the declaration site.
+    #[cfg(test)]
     pub(super) fn find_class_references(
         &self,
         target_fqn: &str,
+        include_declaration: bool,
+    ) -> Vec<Location> {
+        self.find_class_references_scoped(target_fqn, None, include_declaration)
+    }
+
+    pub(super) fn find_class_references_scoped(
+        &self,
+        target_fqn: &str,
+        target_uri: Option<&str>,
         include_declaration: bool,
     ) -> Vec<Location> {
         let mut locations = Vec::new();
@@ -136,7 +146,21 @@ impl Backend {
                     _ => false,
                 };
 
-                if matched {
+                if !matched {
+                    continue;
+                }
+
+                let same_environment =
+                    target_uri.is_none_or(|target_uri| match &span.kind {
+                        SymbolKind::ClassDeclaration { .. } => {
+                            self.class_uris_match(file_uri, target_uri)
+                        }
+                        _ => self.class_uri_for_context(target, file_uri).is_some_and(
+                            |resolved_uri| self.class_uris_match(&resolved_uri, target_uri),
+                        ),
+                    });
+
+                if same_environment {
                     if file_content.is_none() {
                         file_content = self.reference_file_content_arc(file_uri);
                     }
