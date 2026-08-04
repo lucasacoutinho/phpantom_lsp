@@ -280,7 +280,46 @@ pub(crate) fn path_to_uri(path: &Path) -> String {
         .unwrap_or_else(|()| format!("file://{}", effective.display()))
 }
 
-/// Recursively collect all `.php` files under a directory, respecting
+/// Number of threads used for latency-bound workspace directory walks.
+pub(crate) fn workspace_walk_threads() -> usize {
+    const OVERSUBSCRIPTION: usize = 4;
+    const MIN_THREADS: usize = 16;
+    const MAX_THREADS: usize = 32;
+
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    (cores * OVERSUBSCRIPTION).clamp(MIN_THREADS, MAX_THREADS)
+}
+
+/// Run a configured workspace walker in parallel and return sorted PHP files.
+pub(crate) fn collect_php_files_parallel(builder: &mut ignore::WalkBuilder) -> Vec<PathBuf> {
+    use ignore::WalkState;
+
+    let found = parking_lot::Mutex::new(Vec::new());
+    builder
+        .threads(workspace_walk_threads())
+        .build_parallel()
+        .run(|| {
+            Box::new(|result| {
+                if let Ok(entry) = result {
+                    let path = entry.path();
+                    if path.extension().is_some_and(|ext| ext == "php")
+                        && entry.file_type().is_some_and(|ft| ft.is_file())
+                    {
+                        found.lock().push(path.to_path_buf());
+                    }
+                }
+                WalkState::Continue
+            })
+        });
+
+    let mut result = found.into_inner();
+    result.sort_unstable();
+    result
+}
+
+/// Recursively collect all `.php` files under one or more directories, respecting
 /// `.gitignore` rules and skipping hidden directories (`.git`,
 /// `.idea`, etc.).
 ///
@@ -288,8 +327,8 @@ pub(crate) fn path_to_uri(path: &Path) -> String {
 /// traversal.  This is consistent with the other workspace walkers
 /// (`scan_workspace_fallback_full`, `crate::references::collect_php_files_gitignore`).
 ///
-/// Used by Go-to-implementation (Phase 5) which walks PSR-4 source
-/// directories.
+/// Used by Go-to-implementation (Phase 5), which walks every PSR-4 source
+/// directory in one traversal so parallel-walker setup is paid once.
 ///
 /// `vendor_dir_paths` contains absolute paths of all known vendor
 /// directories (one per subproject in monorepo mode).  Any directory
@@ -298,13 +337,22 @@ pub(crate) fn path_to_uri(path: &Path) -> String {
 ///
 /// Silently skips directories and files that cannot be read (e.g.
 /// permission errors, broken symlinks).
-pub(crate) fn collect_php_files(dir: &Path, vendor_dir_paths: &[PathBuf]) -> Vec<PathBuf> {
+pub(crate) fn collect_php_files_multi_root(
+    roots: &[PathBuf],
+    vendor_dir_paths: &[PathBuf],
+) -> Vec<PathBuf> {
     use ignore::WalkBuilder;
 
-    let mut result = Vec::new();
+    let Some((first, rest)) = roots.split_first() else {
+        return Vec::new();
+    };
     let vendor_paths: Vec<PathBuf> = vendor_dir_paths.to_vec();
 
-    let walker = WalkBuilder::new(dir)
+    let mut builder = WalkBuilder::new(first);
+    for root in rest {
+        builder.add(root);
+    }
+    builder
         .git_ignore(true)
         .git_global(true)
         .git_exclude(true)
@@ -320,17 +368,11 @@ pub(crate) fn collect_php_files(dir: &Path, vendor_dir_paths: &[PathBuf]) -> Vec
                 }
             }
             true
-        })
-        .build();
+        });
 
-    for entry in walker.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "php") {
-            result.push(path.to_path_buf());
-        }
-    }
-
-    result
+    let mut files = collect_php_files_parallel(&mut builder);
+    files.dedup();
+    files
 }
 
 /// Extract the short (unqualified) class name from a potentially
@@ -611,5 +653,19 @@ mod tests {
     fn unescape_string_literal_rejects_unquoted_input() {
         assert_eq!(unescape_php_string_literal("bare"), None);
         assert_eq!(unescape_php_string_literal("'unterminated"), None);
+    }
+
+    #[test]
+    fn multi_root_php_walk_is_sorted_and_deduplicated() {
+        let dir = tempfile::tempdir().unwrap();
+        let nested = dir.path().join("src");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(dir.path().join("B.php"), "<?php").unwrap();
+        std::fs::write(nested.join("A.php"), "<?php").unwrap();
+
+        let found = collect_php_files_multi_root(&[dir.path().to_path_buf(), nested.clone()], &[]);
+        let mut expected = vec![nested.join("A.php"), dir.path().join("B.php")];
+        expected.sort_unstable();
+        assert_eq!(found, expected);
     }
 }

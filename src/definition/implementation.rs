@@ -44,7 +44,7 @@ use crate::symbol_map::{SelfStaticParentKind, SymbolKind};
 use crate::text_position::position_to_offset;
 use crate::type_engine::resolver::ResolutionCtx;
 use crate::types::{ClassInfo, ClassLikeKind, FileContext, MAX_INHERITANCE_DEPTH, ResolvedType};
-use crate::util::{collect_php_files, short_name};
+use crate::util::{collect_php_files_multi_root, short_name};
 
 impl Backend {
     /// Entry point for `textDocument/implementation`.
@@ -919,51 +919,49 @@ impl Backend {
 
             let loaded_uris_p5: HashSet<String> = self.parsed_uris.read().iter().cloned().collect();
 
-            for dir in &psr4_dirs {
-                let php_files = collect_php_files(dir, &vendor_dir_paths);
+            let php_files = collect_php_files_multi_root(&psr4_dirs, &vendor_dir_paths);
+            if let Some(p) = progress {
+                p.add_total(php_files.len() as u64);
+            }
+            for php_file in php_files {
                 if let Some(p) = progress {
-                    p.add_total(php_files.len() as u64);
+                    p.add_done(1);
                 }
-                for php_file in php_files {
-                    if let Some(p) = progress {
-                        p.add_done(1);
-                    }
-                    // Skip files already covered by the class index (Phase 3).
-                    if index_paths.contains(&php_file) {
-                        continue;
-                    }
+                // Skip files already covered by the class index (Phase 3).
+                if index_paths.contains(&php_file) {
+                    continue;
+                }
 
-                    let uri = crate::util::path_to_uri(&php_file);
-                    if loaded_uris_p5.contains(&uri) {
-                        continue;
-                    }
+                let uri = crate::util::path_to_uri(&php_file);
+                if loaded_uris_p5.contains(&uri) {
+                    continue;
+                }
 
-                    let raw = match std::fs::read_to_string(&php_file) {
-                        Ok(r) => r,
-                        Err(_) => continue,
-                    };
-                    if !raw.contains(target_short) {
-                        continue;
-                    }
+                let raw = match std::fs::read_to_string(&php_file) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                if !raw.contains(target_short) {
+                    continue;
+                }
 
-                    if let Some(classes) = self.parse_and_cache_file(&php_file) {
-                        for cls in &classes {
-                            let cls_fqn =
-                                crate::util::build_fqn(&cls.name, cls.file_namespace.as_deref());
-                            if seen_fqns.contains(&cls_fqn) {
-                                continue;
-                            }
-                            if self.class_implements_or_extends(
-                                cls,
-                                target_short,
-                                target_fqn,
-                                class_loader,
-                                include_abstract,
-                                direct_only,
-                            ) {
-                                seen_fqns.insert(cls_fqn);
-                                result.push(ClassInfo::clone(cls));
-                            }
+                if let Some(classes) = self.parse_and_cache_file(&php_file) {
+                    for cls in &classes {
+                        let cls_fqn =
+                            crate::util::build_fqn(&cls.name, cls.file_namespace.as_deref());
+                        if seen_fqns.contains(&cls_fqn) {
+                            continue;
+                        }
+                        if self.class_implements_or_extends(
+                            cls,
+                            target_short,
+                            target_fqn,
+                            class_loader,
+                            include_abstract,
+                            direct_only,
+                        ) {
+                            seen_fqns.insert(cls_fqn);
+                            result.push(ClassInfo::clone(cls));
                         }
                     }
                 }

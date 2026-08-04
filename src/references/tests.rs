@@ -2818,3 +2818,236 @@ async fn test_member_references_through_property_receivers() {
         );
     }
 }
+// ── Disk-walk cache ─────────────────────────────────────────────────
+
+/// Build a one-file workspace and index it, returning the backend and dir.
+///
+/// Declares watcher support, since the cache is only enabled for clients that
+/// can tell the server when files appear or disappear.
+fn indexed_workspace() -> (Backend, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("First.php"),
+        "<?php\nnamespace App;\nclass First {}\n",
+    )
+    .unwrap();
+
+    let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), Vec::new());
+    backend
+        .supports_watched_file_registration
+        .store(true, Ordering::Release);
+    backend.ensure_workspace_indexed();
+    (backend, dir)
+}
+
+/// Number of PHP files in the cached walk result, or `None` when the cache
+/// has been invalidated.
+fn cached_walk_len(backend: &Backend) -> Option<usize> {
+    backend
+        .workspace_php_files
+        .lock()
+        .as_ref()
+        .map(|files| files.len())
+}
+
+/// A watched-file notification for `path`.
+fn watched_change(path: &std::path::Path, typ: FileChangeType) -> DidChangeWatchedFilesParams {
+    DidChangeWatchedFilesParams {
+        changes: vec![FileEvent {
+            uri: Url::from_file_path(path).unwrap(),
+            typ,
+        }],
+    }
+}
+
+#[test]
+fn indexing_caches_the_disk_walk_result() {
+    let (backend, _dir) = indexed_workspace();
+
+    assert_eq!(
+        cached_walk_len(&backend),
+        Some(1),
+        "the first index pass should publish its walk result"
+    );
+}
+
+#[test]
+fn second_index_pass_reuses_the_cached_walk() {
+    let (backend, dir) = indexed_workspace();
+
+    // A file created behind the server's back — no watcher notification.
+    std::fs::write(
+        dir.path().join("Sneaky.php"),
+        "<?php\nnamespace App;\nclass Sneaky {}\n",
+    )
+    .unwrap();
+
+    backend.ensure_workspace_indexed();
+
+    // Still 1: the pass served the cache instead of re-reading the disk.
+    // This is the whole point — re-walking cost ~50s on a network mount.
+    assert_eq!(
+        cached_walk_len(&backend),
+        Some(1),
+        "an index pass must not re-walk while the cache is valid"
+    );
+}
+
+#[test]
+fn created_php_file_invalidates_the_walk_cache() {
+    let (backend, dir) = indexed_workspace();
+    let created = dir.path().join("Second.php");
+    std::fs::write(&created, "<?php\nnamespace App;\nclass Second {}\n").unwrap();
+
+    backend.apply_watched_file_changes(
+        &watched_change(&created, FileChangeType::CREATED),
+        dir.path(),
+    );
+
+    assert_eq!(
+        cached_walk_len(&backend),
+        None,
+        "a created PHP file changes which files exist, so the cache must drop"
+    );
+
+    // And the next pass picks the new file up.
+    backend.ensure_workspace_indexed();
+    assert_eq!(cached_walk_len(&backend), Some(2));
+    assert!(
+        backend
+            .symbols
+            .fqn_uri_index
+            .read()
+            .contains_key("App\\Second"),
+        "the newly-created class should now be indexed"
+    );
+}
+
+#[test]
+fn deleted_php_file_invalidates_the_walk_cache() {
+    let (backend, dir) = indexed_workspace();
+    let removed = dir.path().join("First.php");
+    std::fs::remove_file(&removed).unwrap();
+
+    backend.apply_watched_file_changes(
+        &watched_change(&removed, FileChangeType::DELETED),
+        dir.path(),
+    );
+
+    assert_eq!(
+        cached_walk_len(&backend),
+        None,
+        "a deleted PHP file changes which files exist, so the cache must drop"
+    );
+}
+
+#[test]
+fn changed_php_file_keeps_the_walk_cache() {
+    let (backend, dir) = indexed_workspace();
+    let changed = dir.path().join("First.php");
+    std::fs::write(
+        &changed,
+        "<?php\nnamespace App;\nclass First { public $x; }\n",
+    )
+    .unwrap();
+
+    backend.apply_watched_file_changes(
+        &watched_change(&changed, FileChangeType::CHANGED),
+        dir.path(),
+    );
+
+    // Editing a file that already exists cannot change the file list, so
+    // paying for a fresh walk here would be pure waste.
+    assert_eq!(
+        cached_walk_len(&backend),
+        Some(1),
+        "a content change must not invalidate the walk cache"
+    );
+}
+
+#[test]
+fn changed_non_php_file_keeps_the_walk_cache() {
+    let (backend, dir) = indexed_workspace();
+    let readme = dir.path().join("README.md");
+    std::fs::write(&readme, "# docs\n").unwrap();
+
+    backend.apply_watched_file_changes(
+        &watched_change(&readme, FileChangeType::CREATED),
+        dir.path(),
+    );
+
+    assert_eq!(
+        cached_walk_len(&backend),
+        Some(1),
+        "only PHP files affect the PHP file list"
+    );
+}
+
+#[test]
+fn without_watcher_support_every_pass_rewalks() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("First.php"),
+        "<?php\nnamespace App;\nclass First {}\n",
+    )
+    .unwrap();
+
+    // A client that cannot register file watchers never reports creations, so
+    // caching the walk would hide new files for the whole session. Such clients
+    // must keep paying for the walk instead of going stale.
+    let backend = Backend::new_test_with_workspace(dir.path().to_path_buf(), Vec::new());
+    backend.ensure_workspace_indexed();
+    assert_eq!(
+        cached_walk_len(&backend),
+        None,
+        "nothing may be cached without a way to invalidate it"
+    );
+
+    std::fs::write(
+        dir.path().join("Second.php"),
+        "<?php\nnamespace App;\nclass Second {}\n",
+    )
+    .unwrap();
+    backend.ensure_workspace_indexed();
+
+    assert!(
+        backend
+            .symbols
+            .fqn_uri_index
+            .read()
+            .contains_key("App\\Second"),
+        "a re-walk must still discover files created without notification"
+    );
+}
+
+#[test]
+fn include_ignored_walk_keeps_source_and_prunes_dependency_trees() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    std::fs::write(
+        dir.path().join(".gitignore"),
+        "ignored/\nvendor/\nnode_modules/\n",
+    )
+    .unwrap();
+    for (subdir, file) in [
+        ("ignored", "Ignored.php"),
+        ("vendor", "Vendored.php"),
+        ("node_modules/package", "Dependency.php"),
+    ] {
+        let path = dir.path().join(subdir);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join(file), "<?php").unwrap();
+    }
+
+    let ignored = super::collect_php_files_gitignore(dir.path(), &[]);
+    assert!(ignored.is_empty());
+
+    let included = super::collect_php_files_include_ignored(dir.path(), &[]);
+    assert_eq!(
+        included
+            .iter()
+            .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect::<Vec<_>>(),
+        vec!["Ignored.php"]
+    );
+}

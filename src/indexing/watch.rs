@@ -35,6 +35,19 @@ impl Backend {
         params: &DidChangeWatchedFilesParams,
         root: &std::path::Path,
     ) -> bool {
+        // Creation and deletion change the cached workspace file list. Do
+        // this before the reindex filters below, which intentionally skip
+        // some open or not-yet-parsed files.
+        if params.changes.iter().any(|change| {
+            change.uri.path().ends_with(".php")
+                && matches!(
+                    change.typ,
+                    FileChangeType::CREATED | FileChangeType::DELETED
+                )
+        }) {
+            self.invalidate_workspace_php_files();
+        }
+
         let mut composer_changed = false;
         let mut schema_full_rebuild = false;
         let mut migration_changes: Vec<(PathBuf, FileChangeType)> = Vec::new();

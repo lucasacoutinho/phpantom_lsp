@@ -10,6 +10,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use tower_lsp::lsp_types::Url;
@@ -186,6 +187,50 @@ impl Backend {
         }
     }
 
+    /// Return the workspace's PHP file list, walking only when no valid cached
+    /// result exists. The cache is enabled only when the client can report
+    /// watched-file creations and deletions.
+    fn workspace_php_files_cached(&self, root: &Path) -> Arc<Vec<PathBuf>> {
+        let cacheable = self
+            .supports_watched_file_registration
+            .load(Ordering::Acquire);
+        if cacheable && let Some(cached) = self.workspace_php_files.lock().clone() {
+            tracing::debug!(
+                "ensure_workspace_indexed: reusing cached disk walk ({} PHP files)",
+                cached.len()
+            );
+            return cached;
+        }
+
+        let vendor_dir_paths = self.workspace.vendor_dir_paths.lock().clone();
+        let walk_start = std::time::Instant::now();
+        let php_files = match self.config().indexing.strategy() {
+            crate::config::IndexingStrategy::SelfScan | crate::config::IndexingStrategy::Full => {
+                crate::references::collect_php_files_include_ignored(root, &vendor_dir_paths)
+            }
+            crate::config::IndexingStrategy::Composer | crate::config::IndexingStrategy::None => {
+                crate::references::collect_php_files_gitignore(root, &vendor_dir_paths)
+            }
+        };
+        tracing::info!(
+            "ensure_workspace_indexed: Phase 2 disk walk found {} PHP files in {:?}",
+            php_files.len(),
+            walk_start.elapsed()
+        );
+
+        let php_files = Arc::new(php_files);
+        if cacheable {
+            *self.workspace_php_files.lock() = Some(Arc::clone(&php_files));
+        }
+        php_files
+    }
+
+    /// Invalidate the cached workspace file list after a watched PHP file is
+    /// created or deleted.
+    pub(crate) fn invalidate_workspace_php_files(&self) {
+        *self.workspace_php_files.lock() = None;
+    }
+
     pub(crate) fn ensure_workspace_indexed_with_progress(
         &self,
         progress: Option<&(dyn Fn(u32, String) + Sync)>,
@@ -221,33 +266,23 @@ impl Backend {
 
         // ── Phase 2: workspace directory scan ───────────────────────────
         //
-        // Even after the initial scan, repeat the walk so newly-created PHP
-        // files that are not open in the editor can still be discovered.
-        // The existing-URI filter below keeps this cheap by parsing only files
-        // that are not already in `symbol_maps`.
+        // The file list is cached only when watcher notifications can
+        // invalidate it. The existing-URI filter below keeps parsing cheap by
+        // handling only files not already present in `symbol_maps`.
         let workspace_root = self.workspace.workspace_root.read().clone();
         let phase1_uri_set: HashSet<&str> = phase1_uris.iter().map(|uri| uri.as_str()).collect();
         let phase2_work = if let Some(root) = workspace_root.clone() {
-            let vendor_dir_paths = self.workspace.vendor_dir_paths.lock().clone();
-
             self.report_workspace_index_progress(progress, 3, "Scanning workspace files");
-            let walk_start = std::time::Instant::now();
-            let php_files =
-                crate::references::collect_php_files_gitignore(&root, &vendor_dir_paths);
-            tracing::info!(
-                "ensure_workspace_indexed: Phase 2 disk walk found {} PHP files in {:?}",
-                php_files.len(),
-                walk_start.elapsed()
-            );
+            let php_files = self.workspace_php_files_cached(&root);
 
             php_files
-                .into_iter()
+                .iter()
                 .filter_map(|path| {
-                    let uri = crate::util::path_to_uri(&path);
+                    let uri = crate::util::path_to_uri(path);
                     if existing_uris.contains(&uri) || phase1_uri_set.contains(uri.as_str()) {
                         None
                     } else {
-                        Some((uri, path))
+                        Some((uri, path.clone()))
                     }
                 })
                 .collect()

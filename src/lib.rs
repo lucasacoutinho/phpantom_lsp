@@ -840,10 +840,34 @@ pub struct Backend {
     /// Whether the workspace directory has been fully scanned for PHP files.
     ///
     /// Set to `true` after the first Phase 2 walk in `ensure_workspace_indexed`.
-    /// Subsequent calls still re-walk the directory to discover newly created
-    /// files, but the flag lets us log the difference between initial and
-    /// refresh scans.
+    /// Read by `reference_candidate_uris_for_keys` and `find_implementors` to
+    /// tell "the index has nothing for this key" apart from "the index is not
+    /// built yet".  Which files exist on disk is tracked separately, by
+    /// `workspace_php_files`.
     pub(crate) workspace_indexed: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the client can register file watchers, and so will tell us when
+    /// a file is created or deleted on disk.
+    ///
+    /// Gates `workspace_php_files`: that cache stays valid until a watcher
+    /// event reports the file list changed, so a client that never sends those
+    /// events would leave a newly-created file invisible for the whole session.
+    /// Such clients keep the older, slower behaviour of re-walking on every
+    /// indexing pass — correctness first, speed only where it is safe.
+    pub(crate) supports_watched_file_registration: Arc<std::sync::atomic::AtomicBool>,
+    /// Cached file list from the Phase 2 workspace disk walk.
+    ///
+    /// The walk answers one question — which `.php` files exist under the
+    /// workspace root — and that answer only changes when a PHP file is
+    /// created or deleted. `didChangeWatchedFiles` already reports exactly
+    /// those events, so the walk is run once and the result reused until an
+    /// event invalidates it (see `invalidate_workspace_php_files`).
+    ///
+    /// This matters far more than it looks: on a workspace mounted over NFS,
+    /// re-walking cost ~50s of pure network latency, and it ran on every
+    /// request that needed the index — twice per Find References, since both
+    /// `user_file_symbol_maps` and `user_file_symbol_maps_for_reference_keys`
+    /// ensure the index. Held behind `Arc` so clones are free for callers.
+    pub(crate) workspace_php_files: Arc<Mutex<Option<Arc<Vec<std::path::PathBuf>>>>>,
     /// Serializes whole-workspace indexing so a foreground request does not
     /// duplicate the background full-index parse.
     pub(crate) workspace_index_lock: Arc<Mutex<()>>,
@@ -1069,6 +1093,8 @@ impl Backend {
             blade_injected_vars: Arc::new(RwLock::new(HashMap::new())),
             typed_receiver_view_spans_cache: Arc::new(RwLock::new(HashMap::new())),
             workspace_indexed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            supports_watched_file_registration: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            workspace_php_files: Arc::new(Mutex::new(None)),
             workspace_index_lock: Arc::new(Mutex::new(())),
             full_index_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_index_status: Arc::new(Mutex::new(None)),
@@ -1168,6 +1194,8 @@ impl Backend {
             blade_injected_vars: Arc::new(RwLock::new(HashMap::new())),
             typed_receiver_view_spans_cache: Arc::new(RwLock::new(HashMap::new())),
             workspace_indexed: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            supports_watched_file_registration: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            workspace_php_files: Arc::new(Mutex::new(None)),
             workspace_index_lock: Arc::new(Mutex::new(())),
             full_index_in_progress: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             workspace_index_status: Arc::new(Mutex::new(None)),
@@ -1807,6 +1835,13 @@ impl Backend {
             blade_injected_vars: Arc::clone(&self.blade_injected_vars),
             typed_receiver_view_spans_cache: Arc::clone(&self.typed_receiver_view_spans_cache),
             workspace_indexed: Arc::clone(&self.workspace_indexed),
+            // Shared, not per-clone: the walk result describes the workspace,
+            // so a per-request clone must see (and be able to invalidate) the
+            // same cache the shared backend uses.
+            supports_watched_file_registration: Arc::clone(
+                &self.supports_watched_file_registration,
+            ),
+            workspace_php_files: Arc::clone(&self.workspace_php_files),
             workspace_index_lock: Arc::clone(&self.workspace_index_lock),
             full_index_in_progress: Arc::clone(&self.full_index_in_progress),
             workspace_index_status: Arc::clone(&self.workspace_index_status),

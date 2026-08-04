@@ -297,22 +297,40 @@ pub(crate) fn collect_php_files_gitignore(
     root: &Path,
     vendor_dir_paths: &[PathBuf],
 ) -> Vec<PathBuf> {
+    collect_php_files_with_options(root, vendor_dir_paths, true)
+}
+
+/// Collect workspace PHP source without applying ignore files. Explicit
+/// `self` and `full` indexing use this path so gitignored local packages are
+/// still indexed, while dependency trees remain excluded.
+pub(crate) fn collect_php_files_include_ignored(
+    root: &Path,
+    vendor_dir_paths: &[PathBuf],
+) -> Vec<PathBuf> {
+    collect_php_files_with_options(root, vendor_dir_paths, false)
+}
+
+fn collect_php_files_with_options(
+    root: &Path,
+    vendor_dir_paths: &[PathBuf],
+    respect_ignore_files: bool,
+) -> Vec<PathBuf> {
     use ignore::WalkBuilder;
 
-    let mut result = Vec::new();
     let vendor_paths_owned: Vec<PathBuf> = vendor_dir_paths.to_vec();
 
-    let walker = WalkBuilder::new(root)
+    let mut builder = WalkBuilder::new(root);
+    builder
         // Respect .gitignore, .git/info/exclude, global gitignore
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
+        .git_ignore(respect_ignore_files)
+        .git_global(respect_ignore_files)
+        .git_exclude(respect_ignore_files)
         // Skip hidden files/dirs (.git, .idea, etc.)
         .hidden(true)
         // Read parent .gitignore files
-        .parents(true)
+        .parents(respect_ignore_files)
         // Also respect .ignore files (ripgrep convention)
-        .ignore(true)
+        .ignore(respect_ignore_files)
         // Follow symlinked dirs only when configured
         .follow_links(crate::config::follow_symlinks())
         // Always skip vendor directories, even if not gitignored
@@ -322,19 +340,19 @@ pub(crate) fn collect_php_files_gitignore(
                 if vendor_paths_owned.iter().any(|vp| vp == path) {
                     return false;
                 }
+                if !respect_ignore_files
+                    && matches!(
+                        path.file_name().and_then(|name| name.to_str()),
+                        Some("vendor") | Some("node_modules")
+                    )
+                {
+                    return false;
+                }
             }
             true
-        })
-        .build();
+        });
 
-    for entry in walker.flatten() {
-        let path = entry.path();
-        if path.is_file() && path.extension().is_some_and(|ext| ext == "php") {
-            result.push(path.to_path_buf());
-        }
-    }
-
-    result
+    crate::util::collect_php_files_parallel(&mut builder)
 }
 
 /// Push a location only if it is not already present (deduplication).

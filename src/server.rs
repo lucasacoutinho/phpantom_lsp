@@ -179,6 +179,18 @@ impl LanguageServer for Backend {
             Ordering::Release,
         );
 
+        // The workspace disk-walk cache is safe only when the client can
+        // report PHP file creations and deletions that invalidate it.
+        let client_supports_watched_file_registration = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|ws| ws.did_change_watched_files.as_ref())
+            .and_then(|watched| watched.dynamic_registration)
+            .unwrap_or(false);
+        self.supports_watched_file_registration
+            .store(client_supports_watched_file_registration, Ordering::Release);
+
         Ok(InitializeResult {
             offset_encoding: None,
             capabilities: ServerCapabilities {
