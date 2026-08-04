@@ -311,6 +311,7 @@ pub(crate) fn collect_php_files(dir: &Path, vendor_dir_paths: &[PathBuf]) -> Vec
         .hidden(true)
         .parents(true)
         .ignore(true)
+        .follow_links(crate::config::follow_symlinks())
         .filter_entry(move |entry| {
             if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                 let path = entry.path();

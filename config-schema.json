@@ -83,6 +83,11 @@
             "none"
           ],
           "default": "full"
+        },
+        "follow-symlinks": {
+          "type": "boolean",
+          "description": "Follow symbolic links when walking the workspace during indexing and discovery. Enables Composer subprojects and source directories that are symlinks (e.g. into a network mount) to be discovered and indexed. Defaults to false.",
+          "default": false
         }
       }
     },

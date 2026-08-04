@@ -747,6 +747,7 @@ pub(crate) fn discover_user_files(
             .hidden(true)
             .parents(true)
             .ignore(true)
+            .follow_links(crate::config::follow_symlinks())
             .filter_entry(move |entry| {
                 if entry.file_type().is_some_and(|ft| ft.is_dir())
                     && !skip_vendor.is_empty()

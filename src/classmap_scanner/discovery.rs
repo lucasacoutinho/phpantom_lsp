@@ -879,7 +879,14 @@ pub fn scan_workspace_fallback_full(
     skip_dirs: &HashSet<PathBuf>,
     progress: Option<&ScanProgress>,
 ) -> WorkspaceScanResult {
-    scan_workspace_fallback_full_with_options(workspace_root, skip_dirs, progress, true, false)
+    scan_workspace_fallback_full_with_options(
+        workspace_root,
+        skip_dirs,
+        true,
+        false,
+        crate::config::follow_symlinks(),
+        progress,
+    )
 }
 
 /// Scan the workspace without applying `.gitignore`, global gitignore, or
@@ -890,15 +897,23 @@ pub fn scan_workspace_fallback_full_include_ignored(
     skip_dirs: &HashSet<PathBuf>,
     progress: Option<&ScanProgress>,
 ) -> WorkspaceScanResult {
-    scan_workspace_fallback_full_with_options(workspace_root, skip_dirs, progress, false, true)
+    scan_workspace_fallback_full_with_options(
+        workspace_root,
+        skip_dirs,
+        false,
+        true,
+        crate::config::follow_symlinks(),
+        progress,
+    )
 }
 
 fn scan_workspace_fallback_full_with_options(
     workspace_root: &Path,
     skip_dirs: &HashSet<PathBuf>,
-    progress: Option<&ScanProgress>,
     respect_ignore_files: bool,
     skip_vendor_dirs_by_name: bool,
+    follow_symlinks: bool,
+    progress: Option<&ScanProgress>,
 ) -> WorkspaceScanResult {
     // Phase 1: collect file paths
     let skip_paths = HashSet::new();
@@ -907,6 +922,7 @@ fn scan_workspace_fallback_full_with_options(
         skip_paths: &skip_paths,
         respect_ignore_files,
         skip_vendor_dirs_by_name,
+        follow_symlinks,
     };
     let php_files: Vec<(PathBuf, crate::ClassCompletionOrigin)> =
         walk_roots(&[workspace_root.to_path_buf()], &opts)
@@ -969,6 +985,7 @@ pub fn scan_drupal_directories(
             .hidden(true) // still skip .git, .idea, etc.
             .parents(true)
             .ignore(false)
+            .follow_links(crate::config::follow_symlinks())
             .filter_entry(|entry| {
                 if entry.file_type().is_some_and(|ft| ft.is_dir()) {
                     let name = entry.file_name().to_str().unwrap_or("");
@@ -1041,6 +1058,8 @@ struct WalkOptions<'a> {
     respect_ignore_files: bool,
     /// Whether any directory named `vendor` must be excluded.
     skip_vendor_dirs_by_name: bool,
+    /// Whether symbolic-link directory targets participate in the walk.
+    follow_symlinks: bool,
 }
 
 impl<'a> WalkOptions<'a> {
@@ -1050,6 +1069,7 @@ impl<'a> WalkOptions<'a> {
             skip_paths,
             respect_ignore_files: true,
             skip_vendor_dirs_by_name: false,
+            follow_symlinks: crate::config::follow_symlinks(),
         }
     }
 }
@@ -1110,6 +1130,7 @@ fn walk_roots(roots: &[PathBuf], opts: &WalkOptions) -> Vec<Vec<PathBuf>> {
     let skip_dirs = std::sync::Arc::clone(&opts.skip_dirs);
     let respect_ignore_files = opts.respect_ignore_files;
     let skip_vendor_dirs_by_name = opts.skip_vendor_dirs_by_name;
+    let follow_symlinks = opts.follow_symlinks;
     builder
         .git_ignore(respect_ignore_files)
         .git_global(respect_ignore_files)
@@ -1117,6 +1138,7 @@ fn walk_roots(roots: &[PathBuf], opts: &WalkOptions) -> Vec<Vec<PathBuf>> {
         .hidden(true)
         .parents(respect_ignore_files)
         .ignore(respect_ignore_files)
+        .follow_links(follow_symlinks)
         .threads(thread_count())
         .filter_entry(move |entry| {
             if !entry.file_type().is_some_and(|ft| ft.is_dir()) {

@@ -453,6 +453,35 @@ fn scan_workspace_fallback_full_skips_hidden_dirs() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn scan_workspace_fallback_full_follows_symlinked_dirs_when_enabled() {
+    let target = tempfile::tempdir().unwrap();
+    let linked = target.path().join("linked");
+    std::fs::create_dir_all(&linked).unwrap();
+    std::fs::write(linked.join("Repo.php"), "<?php\nclass LinkedRepo {}").unwrap();
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("app.php"), "<?php\nclass App {}").unwrap();
+    std::os::unix::fs::symlink(&linked, dir.path().join("linked")).unwrap();
+
+    let skip = std::collections::HashSet::new();
+
+    // Default: the walker does not descend into symlinked directories.
+    let result =
+        scan_workspace_fallback_full_with_options(dir.path(), &skip, true, false, false, None);
+    assert!(result.classmap.contains_key("App"));
+    assert!(
+        !result.classmap.contains_key("LinkedRepo"),
+        "symlinked dirs should be skipped by default"
+    );
+
+    // With follow-symlinks enabled, classes behind the symlink are indexed.
+    let result =
+        scan_workspace_fallback_full_with_options(dir.path(), &skip, true, false, true, None);
+    assert!(result.classmap.contains_key("LinkedRepo"));
+}
+
 #[test]
 fn scan_workspace_fallback_full_include_ignored_finds_source_but_skips_vendor() {
     let dir = tempfile::tempdir().unwrap();

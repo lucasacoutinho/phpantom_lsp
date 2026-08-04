@@ -313,6 +313,8 @@ pub(crate) fn collect_php_files_gitignore(
         .parents(true)
         // Also respect .ignore files (ripgrep convention)
         .ignore(true)
+        // Follow symlinked dirs only when configured
+        .follow_links(crate::config::follow_symlinks())
         // Always skip vendor directories, even if not gitignored
         .filter_entry(move |entry| {
             if entry.file_type().is_some_and(|ft| ft.is_dir()) {

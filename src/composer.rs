@@ -984,7 +984,9 @@ pub fn detect_phar_references(content: &str, file_dir: &Path) -> Vec<PathBuf> {
 /// The walk respects `.gitignore` at every level, so vendor directories
 /// that are gitignored (the common case in monorepos) are automatically
 /// skipped along with any other noise the user has excluded.  Hidden
-/// directories (starting with `.`) are also skipped.
+/// directories (starting with `.`) are also skipped. Symlinked
+/// directories are not descended into unless `indexing.follow-symlinks`
+/// is enabled in `.phpantom.toml`.
 ///
 /// This enables monorepo support: a workspace like
 ///
@@ -1002,7 +1004,7 @@ pub fn detect_phar_references(content: &str, file_dir: &Path) -> Vec<PathBuf> {
 ///
 /// returns `[(monorepo/project-a, "vendor"), (monorepo/packages/project-b, "vendor")]`.
 pub fn discover_subproject_roots(workspace_root: &Path) -> Vec<(PathBuf, String)> {
-    discover_subproject_roots_with_options(workspace_root, true)
+    discover_subproject_roots_with_options(workspace_root, true, crate::config::follow_symlinks())
 }
 
 /// Discover Composer subprojects without applying `.gitignore`, global
@@ -1012,12 +1014,13 @@ pub fn discover_subproject_roots(workspace_root: &Path) -> Vec<(PathBuf, String)
 /// contribute their Composer vendor-dir metadata. Hidden directories remain
 /// skipped.
 pub fn discover_subproject_roots_include_ignored(workspace_root: &Path) -> Vec<(PathBuf, String)> {
-    discover_subproject_roots_with_options(workspace_root, false)
+    discover_subproject_roots_with_options(workspace_root, false, crate::config::follow_symlinks())
 }
 
 fn discover_subproject_roots_with_options(
     workspace_root: &Path,
     respect_ignore_files: bool,
+    follow_symlinks: bool,
 ) -> Vec<(PathBuf, String)> {
     use ignore::WalkBuilder;
     use std::collections::HashSet;
@@ -1032,6 +1035,12 @@ fn discover_subproject_roots_with_options(
         .hidden(true)
         .parents(respect_ignore_files)
         .ignore(respect_ignore_files)
+        .follow_links(follow_symlinks)
+        .filter_entry(move |entry| {
+            respect_ignore_files
+                || !entry.file_type().is_some_and(|kind| kind.is_dir())
+                || entry.path().file_name().and_then(|name| name.to_str()) != Some("vendor")
+        })
         // Sort to get deterministic output
         .sort_by_file_name(|a, b| a.cmp(b));
     let walker = builder.build();
@@ -1444,6 +1453,51 @@ mod tests {
         std::fs::write(&autoloaded, "<?php").unwrap();
 
         assert!(discover_global_sibling_files(&[autoloaded]).is_empty());
+    }
+
+    /// Build a workspace with one real subproject and one symlinked
+    /// subproject whose target lives outside the workspace root.
+    /// Returns the workspace and target tempdir guards.
+    #[cfg(unix)]
+    fn workspace_with_symlinked_subproject() -> (tempfile::TempDir, tempfile::TempDir) {
+        let target = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(target.path().join("linked-project")).unwrap();
+        std::fs::write(target.path().join("linked-project/composer.json"), "{}").unwrap();
+
+        let ws = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(ws.path().join("real-project")).unwrap();
+        std::fs::write(ws.path().join("real-project/composer.json"), "{}").unwrap();
+        std::os::unix::fs::symlink(
+            target.path().join("linked-project"),
+            ws.path().join("linked-project"),
+        )
+        .unwrap();
+        (ws, target)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_skips_symlinked_subprojects_by_default() {
+        let (ws, _target) = workspace_with_symlinked_subproject();
+        let roots = discover_subproject_roots_with_options(ws.path(), false, false);
+        let names: Vec<_> = roots
+            .iter()
+            .filter_map(|(p, _)| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect();
+        assert_eq!(names, vec!["real-project"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn discover_follows_symlinked_subprojects_when_enabled() {
+        let (ws, _target) = workspace_with_symlinked_subproject();
+        let roots = discover_subproject_roots_with_options(ws.path(), false, true);
+        let mut names: Vec<_> = roots
+            .iter()
+            .filter_map(|(p, _)| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect();
+        names.sort();
+        assert_eq!(names, vec!["linked-project", "real-project"]);
     }
 
     #[test]

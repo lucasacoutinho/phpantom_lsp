@@ -487,11 +487,25 @@ pub struct IndexingConfig {
     ///   if present, still resolves on demand, but never falls back to
     ///   self-scan.
     pub strategy: Option<IndexingStrategy>,
+
+    /// Follow symbolic links when walking the workspace.
+    ///
+    /// Off by default: symlinked directories inside the workspace are
+    /// not descended into, so a symlinked Composer subproject stays
+    /// invisible to discovery and self-scan.  Enable when workspace
+    /// members are symlinks (e.g. into a network mount).
+    #[serde(rename = "follow-symlinks")]
+    pub follow_symlinks: Option<bool>,
 }
 
 impl IndexingConfig {
     pub fn strategy(&self) -> IndexingStrategy {
         self.strategy.unwrap_or_default()
+    }
+
+    /// Whether workspace walkers should follow symbolic links.
+    pub fn follow_symlinks(&self) -> bool {
+        self.follow_symlinks.unwrap_or(false)
     }
 }
 
@@ -652,7 +666,29 @@ pub fn load_config(workspace_root: &Path) -> Result<Config, ConfigError> {
         source: e,
     })?;
 
+    FOLLOW_SYMLINKS.store(
+        config.indexing.follow_symlinks(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
     Ok(config)
+}
+
+/// Process-wide copy of `indexing.follow-symlinks`, captured by
+/// [`load_config`].
+///
+/// The workspace walkers (`ignore::WalkBuilder` call sites in
+/// `composer`, `classmap_scanner`, `util`, and `analyse`) are free
+/// functions many call-frames away from the server's `Config`;
+/// threading the flag through every chain would churn dozens of
+/// signatures for a value that is fixed once at startup, so they read
+/// this instead.
+static FOLLOW_SYMLINKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether workspace walkers should follow symbolic links (the loaded
+/// config's `indexing.follow-symlinks`; `false` before any config load).
+pub(crate) fn follow_symlinks() -> bool {
+    FOLLOW_SYMLINKS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Errors that can occur when loading the config file.
@@ -1209,6 +1245,24 @@ paths = ["database/schema", "extra/schema.sql"]
         std::fs::write(&path, "[indexing]\n").unwrap();
         let config = load_config(dir.path()).unwrap();
         assert_eq!(config.indexing.strategy(), IndexingStrategy::Full);
+    }
+
+    #[test]
+    fn parses_indexing_follow_symlinks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[indexing]\nfollow-symlinks = true\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert!(config.indexing.follow_symlinks());
+    }
+
+    #[test]
+    fn indexing_follow_symlinks_defaults_to_false() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CONFIG_FILE_NAME);
+        std::fs::write(&path, "[indexing]\n").unwrap();
+        let config = load_config(dir.path()).unwrap();
+        assert!(!config.indexing.follow_symlinks());
     }
 
     #[test]
