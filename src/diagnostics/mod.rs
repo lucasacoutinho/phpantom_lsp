@@ -316,6 +316,13 @@ impl Backend {
         out: &mut Vec<Diagnostic>,
         mut observe: Option<SlowDiagnosticObserver<'_>>,
     ) {
+        // Resolve classes in the Composer environment that owns this
+        // file for the whole pass, so sibling projects defining the
+        // same FQN don't leak definitions into each other's member
+        // checks.  Must be first: build_diagnostic_scopes below
+        // already resolves classes.
+        let _analysis_ctx = crate::composer_environment::with_analysis_context(uri_str);
+
         // Activate the chain resolution cache so that all slow
         // diagnostic collectors share cached intermediate chain
         // prefix results (e.g. `$model->where(...)` resolved once

@@ -318,16 +318,17 @@ pub(crate) fn resolve_class_base_cached(
     };
 
     let key: ResolvedClassCacheKey = (class.fqn(), vec![BASE_RESOLUTION_MARKER.to_string()]);
+    let fingerprint = raw_class_fingerprint(class);
 
     {
         let map = cache.read();
-        if let Some(cached) = map.get(&key) {
+        if let Some(cached) = map.get_validated(&key, fingerprint) {
             return Arc::clone(cached);
         }
     }
 
     let result = Arc::new(resolve_class_with_inheritance(class, class_loader));
-    cache.write().insert(key, Arc::clone(&result));
+    cache.write().insert(key, Arc::clone(&result), fingerprint);
     result
 }
 
@@ -363,10 +364,11 @@ pub fn resolve_class_fully_with_generics(
     // Check the cache for (FQN, generic_args).
     let fqn = class.fqn();
     let cache_key: ResolvedClassCacheKey = (fqn, generic_arg_strings.to_vec());
+    let fingerprint = raw_class_fingerprint(class);
 
     if let Some(c) = cache {
         let map = c.read();
-        if let Some(cached) = map.get(&cache_key) {
+        if let Some(cached) = map.get_validated(&cache_key, fingerprint) {
             return Arc::clone(cached);
         }
     }
@@ -400,7 +402,8 @@ pub fn resolve_class_fully_with_generics(
     }
 
     if let Some(c) = cache {
-        c.write().insert(cache_key, Arc::clone(&result));
+        c.write()
+            .insert(cache_key, Arc::clone(&result), fingerprint);
     }
 
     let elapsed = started.elapsed();
@@ -442,6 +445,27 @@ pub fn resolve_class_fully_with_type_args(
         &generic_arg_strings,
         generic_args,
     )
+}
+
+/// Cheap identity fingerprint of a raw (unresolved) class.
+///
+/// Sibling projects in a monorepo can declare the same FQN with different
+/// members. Declaration offsets and structural counts distinguish those
+/// copies; byte-identical copies may collide, but their base resolutions are
+/// identical as well.
+fn raw_class_fingerprint(class: &ClassInfo) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    class.name.hash(&mut hasher);
+    class.file_namespace.hash(&mut hasher);
+    class.start_offset.hash(&mut hasher);
+    class.end_offset.hash(&mut hasher);
+    class.parent_class.hash(&mut hasher);
+    class.methods.len().hash(&mut hasher);
+    class.properties.len().hash(&mut hasher);
+    class.constants.len().hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Shared implementation behind the `resolve_class_fully*` entry points.
@@ -518,11 +542,12 @@ fn resolve_class_fully_inner(
         Some(raw) => raw,
         None => class,
     };
+    let fingerprint = raw_class_fingerprint(effective_class);
 
     // ── Cache lookup ────────────────────────────────────────────────
     {
         let map = cache.read();
-        if let Some(cached) = map.get(&cache_key) {
+        if let Some(cached) = map.get_validated(&cache_key, fingerprint) {
             return Arc::clone(cached);
         }
     }
@@ -757,7 +782,6 @@ fn resolve_class_fully_inner(
             // applies `iface_subs` to the members it copies, so it is the
             // right input for the substituted case too.
             let resolved_iface = resolve_class_fully_inner(&iface, class_loader, Some(cache));
-
             merge_interface_members_into(
                 &mut merged,
                 ClassInfo::clone(&resolved_iface),
@@ -796,7 +820,9 @@ fn resolve_class_fully_inner(
     // ── Cache store ─────────────────────────────────────────────────
     merged.rebuild_method_index();
     let result = Arc::new(merged);
-    cache.write().insert(cache_key, Arc::clone(&result));
+    cache
+        .write()
+        .insert(cache_key, Arc::clone(&result), fingerprint);
 
     result
 }

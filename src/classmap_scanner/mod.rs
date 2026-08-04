@@ -163,6 +163,11 @@ pub struct ScanResult {
 pub struct WorkspaceScanResult {
     /// FQN → file path for classes, interfaces, traits, and enums.
     pub classmap: HashMap<String, PathBuf>,
+    /// Every class-like declaration seen during the scan, prior to FQN
+    /// deduplication. Unlike `classmap` (one winning path per FQN), this
+    /// preserves same-FQN definitions from sibling projects so each
+    /// Composer environment can be populated with its own copy.
+    pub(crate) class_declarations: Vec<(String, PathBuf)>,
     /// FQN → completion origin tier for classes, interfaces, traits, and
     /// enums. Populated from the package a file was collected under, so
     /// no second pass over the classmap is needed to classify origins.

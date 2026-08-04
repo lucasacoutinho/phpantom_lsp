@@ -1431,6 +1431,7 @@ fn evict_removes_direct_match() {
     cache.insert(
         ("App\\Models\\User".to_string().into(), Vec::new()),
         Arc::new(cls),
+        0,
     );
 
     evict_fqn(&mut cache, "App\\Models\\User");
@@ -1445,6 +1446,7 @@ fn evict_transitively_removes_child_class() {
     cache.insert(
         ("App\\Models\\Model".to_string().into(), Vec::new()),
         Arc::new(parent),
+        0,
     );
 
     let mut child = make_class("User");
@@ -1452,6 +1454,7 @@ fn evict_transitively_removes_child_class() {
     cache.insert(
         ("App\\Models\\User".to_string().into(), Vec::new()),
         Arc::new(child),
+        0,
     );
 
     evict_fqn(&mut cache, "App\\Models\\Model");
@@ -1466,6 +1469,7 @@ fn evict_transitively_removes_model_referencing_cast_class() {
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
+        0,
     );
 
     let mut model = make_class("Setting");
@@ -1474,6 +1478,7 @@ fn evict_transitively_removes_model_referencing_cast_class() {
     cache.insert(
         ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
+        0,
     );
 
     // Evict the cast class — the model should be transitively evicted.
@@ -1492,6 +1497,7 @@ fn evict_cast_class_with_colon_argument_transitively_removes_model() {
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
+        0,
     );
 
     let mut model = make_class("Setting");
@@ -1501,6 +1507,7 @@ fn evict_cast_class_with_colon_argument_transitively_removes_model() {
     cache.insert(
         ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
+        0,
     );
 
     evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
@@ -1518,6 +1525,7 @@ fn evict_cast_class_matched_by_short_name() {
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
+        0,
     );
 
     let mut model = make_class("Setting");
@@ -1526,6 +1534,7 @@ fn evict_cast_class_matched_by_short_name() {
     cache.insert(
         ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
+        0,
     );
 
     evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
@@ -1543,6 +1552,7 @@ fn evict_cast_class_canonical() {
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
+        0,
     );
 
     let mut model = make_class("Setting");
@@ -1552,6 +1562,7 @@ fn evict_cast_class_canonical() {
     cache.insert(
         ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
+        0,
     );
 
     evict_fqn(&mut cache, "App\\Casts\\DecimalCast");
@@ -1573,6 +1584,7 @@ fn evict_builtin_cast_does_not_affect_model() {
     cache.insert(
         ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
+        0,
     );
 
     // Evicting a random class should not affect the model since
@@ -1593,6 +1605,7 @@ fn evict_cast_class_chains_through_model_to_child() {
     cache.insert(
         ("App\\Casts\\DecimalCast".to_string().into(), Vec::new()),
         Arc::new(cast_class),
+        0,
     );
 
     let mut model = make_class("Setting");
@@ -1601,6 +1614,7 @@ fn evict_cast_class_chains_through_model_to_child() {
     cache.insert(
         ("App\\Models\\Setting".to_string().into(), Vec::new()),
         Arc::new(model),
+        0,
     );
 
     let mut child = make_class("AdvancedSetting");
@@ -1611,6 +1625,7 @@ fn evict_cast_class_chains_through_model_to_child() {
             Vec::new(),
         ),
         Arc::new(child),
+        0,
     );
 
     // Evicting the cast class should evict the model (via casts_definitions),
@@ -1631,6 +1646,7 @@ fn evict_removes_all_generic_variants_of_fqn() {
     cache.insert(
         ("App\\Support\\Collection".to_string().into(), Vec::new()),
         Arc::new(cls.clone()),
+        0,
     );
     cache.insert(
         (
@@ -1638,6 +1654,7 @@ fn evict_removes_all_generic_variants_of_fqn() {
             vec!["App\\Models\\User".to_string()],
         ),
         Arc::new(cls),
+        0,
     );
 
     let evicted = evict_fqn(&mut cache, "App\\Support\\Collection");
@@ -1657,6 +1674,7 @@ fn evict_returns_empty_when_nothing_matches() {
     cache.insert(
         ("App\\Models\\User".to_string().into(), Vec::new()),
         Arc::new(child),
+        0,
     );
 
     // An FQN that is neither cached nor depended upon yields no eviction.
@@ -1673,6 +1691,7 @@ fn reverse_index_is_cleaned_up_after_eviction() {
     cache.insert(
         ("App\\Models\\Model".to_string().into(), Vec::new()),
         Arc::new(parent),
+        0,
     );
 
     let mut child = make_class("User");
@@ -1680,6 +1699,7 @@ fn reverse_index_is_cleaned_up_after_eviction() {
     cache.insert(
         ("App\\Models\\User".to_string().into(), Vec::new()),
         Arc::new(child),
+        0,
     );
 
     // Evict the parent; both entries go.
@@ -1692,6 +1712,7 @@ fn reverse_index_is_cleaned_up_after_eviction() {
     cache.insert(
         ("App\\Models\\Model".to_string().into(), Vec::new()),
         Arc::new(standalone),
+        0,
     );
     let evicted = evict_fqn(&mut cache, "App\\Models\\User");
     assert!(

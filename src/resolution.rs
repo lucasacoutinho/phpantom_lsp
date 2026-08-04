@@ -209,16 +209,24 @@ impl Backend {
         // behind locks the whole worker pool shares.  Read the generation
         // first so that a change landing mid-search retires the answer.
         let generation = self.symbols.class_lookup_generation();
-        let mut loaded = match class_loader_memo::probe(self.symbols.id(), generation, ty) {
-            Some(memoised) => memoised?,
-            None => {
-                let found = ty
-                    .base_name()
-                    .and_then(|base| self.find_or_load_class_inner(base));
-                class_loader_memo::store(self.symbols.id(), generation, ty, &found);
-                found?
-            }
-        };
+        let analysis_context = crate::composer_environment::analysis_context_id();
+        let mut loaded =
+            match class_loader_memo::probe(self.symbols.id(), generation, analysis_context, ty) {
+                Some(memoised) => memoised?,
+                None => {
+                    let found = ty
+                        .base_name()
+                        .and_then(|base| self.find_or_load_class_inner(base));
+                    class_loader_memo::store(
+                        self.symbols.id(),
+                        generation,
+                        analysis_context,
+                        ty,
+                        &found,
+                    );
+                    found?
+                }
+            };
         // The refinements below stay outside the memo: each depends on an
         // index of its own (the configured auth model, registered macros,
         // many-to-many targets) that keeps changing as files are indexed.
@@ -364,6 +372,52 @@ impl Backend {
             .contains(class_name)
         {
             return None;
+        }
+
+        // ── Composer environment of the analyzed file ───────────
+        // Sibling projects may define the same FQN with different
+        // members (e.g. legacy apps sharing global helper class
+        // names). The global indexes below keep a single winner per
+        // FQN, so member checks in the losing project would run
+        // against the wrong definition. When a per-file analysis is
+        // active, prefer the definition owned by that file's Composer
+        // environment; fall through to the global phases when the
+        // environment cannot supply the class (stubs, PSR-4, files
+        // outside any project).
+        if let Some(file_uri) = self.contextual_class_uri(class_name) {
+            // Match the full FQN, not just the short name: one file can
+            // declare the same short name under several namespaces
+            // (fixture corpora do this pervasively).
+            let matches_fqn = |c: &&Arc<ClassInfo>| {
+                c.name.eq_ignore_ascii_case(last_segment)
+                    && match (c.file_namespace.as_deref(), expected_ns) {
+                        (Some(ns), Some(expected)) => ns.eq_ignore_ascii_case(expected),
+                        (None, None) => true,
+                        _ => false,
+                    }
+            };
+            let cached = self
+                .symbols
+                .uri_classes_index
+                .read()
+                .get(&file_uri)
+                .cloned();
+            if let Some(classes) = cached {
+                // The file is already parsed — possibly from newer
+                // in-memory didOpen content. Never re-read the disk
+                // copy over it; if the cached parse lacks the class,
+                // fall through to the global phases instead.
+                if let Some(cls) = classes.iter().find(matches_fqn) {
+                    return Some(Arc::clone(cls));
+                }
+            } else if let Some(file_path) = Url::parse(&file_uri)
+                .ok()
+                .and_then(|u| u.to_file_path().ok())
+                && let Some(classes) = self.parse_and_cache_file(&file_path)
+                && let Some(cls) = classes.iter().find(matches_fqn)
+            {
+                return Some(Arc::clone(cls));
+            }
         }
 
         // ── Phase 0: Search all already-parsed files ────────────

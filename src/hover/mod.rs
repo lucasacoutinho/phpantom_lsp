@@ -87,6 +87,9 @@ impl Backend {
     /// resolved to a meaningful description, or `None` when resolution
     /// fails or the cursor is not on a navigable symbol.
     pub fn handle_hover(&self, uri: &str, content: &str, position: Position) -> Option<Hover> {
+        // Resolve classes in this file's Composer environment for the
+        // whole hover pass (see `with_analysis_context`).
+        let _analysis_ctx = crate::composer_environment::with_analysis_context(uri);
         let _resolver_guard = crate::type_engine::call_resolution::activate_type_engine_caches();
         let offset = crate::text_position::position_to_offset(content, position);
 

@@ -49,6 +49,10 @@ pub type ResolvedClassCacheKey = (Atom, Vec<String>);
 pub struct ResolvedCacheInner {
     /// Resolved classes keyed by FQN + concrete generic args.
     map: HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>,
+    /// Fingerprint of the raw (unresolved) class each entry was built
+    /// from. Sibling projects can define the same FQN with different
+    /// members, so a cache hit is valid only for the matching raw class.
+    fingerprints: HashMap<ResolvedClassCacheKey, u64>,
     /// FQN → all cache keys (generic-arg variants) stored under it.
     fqn_keys: HashMap<String, HashSet<ResolvedClassCacheKey>>,
     /// Dependency string → cache keys whose class directly depends on it.
@@ -157,6 +161,7 @@ impl Default for ResolvedCacheInner {
     fn default() -> Self {
         ResolvedCacheInner {
             map: HashMap::new(),
+            fingerprints: HashMap::new(),
             fqn_keys: HashMap::new(),
             reverse_deps: HashMap::new(),
             is_laravel: true,
@@ -170,8 +175,16 @@ impl Default for ResolvedCacheInner {
 }
 
 impl ResolvedCacheInner {
-    /// Look up a resolved class by its `(FQN, generic args)` key.
-    pub fn get(&self, key: &ResolvedClassCacheKey) -> Option<&Arc<ClassInfo>> {
+    /// Look up a resolved class only when it was built from the same raw
+    /// class definition as the current request.
+    pub fn get_validated(
+        &self,
+        key: &ResolvedClassCacheKey,
+        fingerprint: u64,
+    ) -> Option<&Arc<ClassInfo>> {
+        if self.fingerprints.get(key) != Some(&fingerprint) {
+            return None;
+        }
         self.map.get(key)
     }
 
@@ -184,6 +197,7 @@ impl ResolvedCacheInner {
         &self,
     ) -> (
         &HashMap<ResolvedClassCacheKey, Arc<ClassInfo>>,
+        &HashMap<ResolvedClassCacheKey, u64>,
         &HashMap<String, HashSet<ResolvedClassCacheKey>>,
         &HashMap<String, HashSet<ResolvedClassCacheKey>>,
         usize,
@@ -202,7 +216,13 @@ impl ResolvedCacheInner {
             self.substituted_properties.capacity(),
             std::mem::size_of::<((usize, u128), SubstitutedPropertyEntry)>(),
         );
-        (&self.map, &self.fqn_keys, &self.reverse_deps, substituted)
+        (
+            &self.map,
+            &self.fingerprints,
+            &self.fqn_keys,
+            &self.reverse_deps,
+            substituted,
+        )
     }
 
     /// Whether a key is present in the cache.
@@ -282,7 +302,7 @@ impl ResolvedCacheInner {
 
     /// Insert a resolved class, updating the FQN and reverse-dependency
     /// indices so eviction stays cheap.
-    pub fn insert(&mut self, key: ResolvedClassCacheKey, value: Arc<ClassInfo>) {
+    pub fn insert(&mut self, key: ResolvedClassCacheKey, value: Arc<ClassInfo>, fingerprint: u64) {
         // When replacing an existing entry, drop its old reverse-dep edges
         // first so a changed dependency set does not leave stale edges.
         if let Some(old_deps) = self.map.get(&key).map(|c| dependency_keys(c)) {
@@ -299,6 +319,7 @@ impl ResolvedCacheInner {
                 .insert(key.clone());
         }
         self.fqn_keys.entry(fqn).or_default().insert(key.clone());
+        self.fingerprints.insert(key.clone(), fingerprint);
         self.map.insert(key, value);
     }
 
@@ -309,6 +330,7 @@ impl ResolvedCacheInner {
     /// contents being invalidated.
     pub fn clear(&mut self) {
         self.map.clear();
+        self.fingerprints.clear();
         self.fqn_keys.clear();
         self.reverse_deps.clear();
         self.substituted_methods.clear();
@@ -417,6 +439,7 @@ impl ResolvedCacheInner {
             None => return false,
         };
         for key in keys {
+            self.fingerprints.remove(&key);
             if let Some(value) = self.map.remove(&key) {
                 for dep in dependency_keys(&value) {
                     self.unlink_reverse_edge(&dep, &key);

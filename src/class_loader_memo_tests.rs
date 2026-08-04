@@ -22,59 +22,59 @@ fn owner() -> u64 {
 
 #[test]
 fn probe_misses_before_anything_is_stored() {
-    assert!(probe(owner(), 0, &named("App\\User")).is_none());
+    assert!(probe(owner(), 0, 0, &named("App\\User")).is_none());
 }
 
 #[test]
 fn stored_answer_is_returned() {
     let (owner, ty, cls) = (owner(), named("App\\User"), class("User"));
-    store(owner, 7, &ty, &Some(Arc::clone(&cls)));
+    store(owner, 7, 0, &ty, &Some(Arc::clone(&cls)));
 
-    let hit = probe(owner, 7, &ty).expect("memoised");
+    let hit = probe(owner, 7, 0, &ty).expect("memoised");
     assert!(Arc::ptr_eq(&hit.expect("class"), &cls));
 }
 
 #[test]
 fn stored_negative_answer_is_returned() {
     let (owner, ty) = (owner(), named("App\\Missing"));
-    store(owner, 1, &ty, &None);
+    store(owner, 1, 0, &ty, &None);
 
     // `Some(None)` — memoised, and the memoised answer is "no such class".
-    assert!(matches!(probe(owner, 1, &ty), Some(None)));
+    assert!(matches!(probe(owner, 1, 0, &ty), Some(None)));
 }
 
 #[test]
 fn a_later_generation_retires_the_answer() {
     let (owner, ty) = (owner(), named("App\\User"));
-    store(owner, 1, &ty, &Some(class("User")));
+    store(owner, 1, 0, &ty, &Some(class("User")));
 
-    assert!(probe(owner, 2, &ty).is_none());
+    assert!(probe(owner, 2, 0, &ty).is_none());
 }
 
 #[test]
 fn another_index_does_not_see_the_answer() {
     let ty = named("App\\User");
-    store(owner(), 1, &ty, &Some(class("User")));
+    store(owner(), 1, 0, &ty, &Some(class("User")));
 
-    assert!(probe(owner(), 1, &ty).is_none());
+    assert!(probe(owner(), 1, 0, &ty).is_none());
 }
 
 #[test]
 fn a_different_type_in_the_same_slot_misses() {
     let (owner, stored, other) = (owner(), named("App\\User"), named("App\\Order"));
-    store(owner, 1, &stored, &Some(class("User")));
+    store(owner, 1, 0, &stored, &Some(class("User")));
 
     // Not a collision in general, but must be a miss either way.
-    assert!(probe(owner, 1, &other).is_none());
+    assert!(probe(owner, 1, 0, &other).is_none());
 }
 
 #[test]
 fn storing_twice_keeps_the_newer_answer() {
     let (owner, ty, second) = (owner(), named("App\\User"), class("Replaced"));
-    store(owner, 1, &ty, &Some(class("User")));
-    store(owner, 2, &ty, &Some(Arc::clone(&second)));
+    store(owner, 1, 0, &ty, &Some(class("User")));
+    store(owner, 2, 0, &ty, &Some(Arc::clone(&second)));
 
-    let hit = probe(owner, 2, &ty).expect("memoised");
+    let hit = probe(owner, 2, 0, &ty).expect("memoised");
     assert!(Arc::ptr_eq(&hit.expect("class"), &second));
 }
 
@@ -94,7 +94,15 @@ fn every_slot_is_reachable() {
 
     // And every one of them round-trips while it owns its slot.
     for ty in &types {
-        store(owner, 1, ty, &Some(class("C")));
-        assert!(probe(owner, 1, ty).is_some());
+        store(owner, 1, 0, ty, &Some(class("C")));
+        assert!(probe(owner, 1, 0, ty).is_some());
     }
+}
+
+#[test]
+fn another_analysis_context_does_not_see_the_answer() {
+    let (owner, ty) = (owner(), named("App\\User"));
+    store(owner, 1, 11, &ty, &Some(class("First")));
+
+    assert!(probe(owner, 1, 12, &ty).is_none());
 }

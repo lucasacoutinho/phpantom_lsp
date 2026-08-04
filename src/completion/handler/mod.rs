@@ -142,6 +142,10 @@ impl Backend {
         let mut position = params.text_document_position.position;
         let completion_context = params.context.clone();
 
+        // Resolve classes in this file's Composer environment for the
+        // whole completion pass (see `with_analysis_context`).
+        let _analysis_ctx = crate::composer_environment::with_analysis_context(&uri);
+
         // ── Blade directive-name completion ─────────────────────────────
         // Runs before the virtual-PHP content/position swap below: an `@`
         // the user is still typing a directive name after doesn't survive

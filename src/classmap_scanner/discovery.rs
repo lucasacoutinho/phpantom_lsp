@@ -712,6 +712,7 @@ fn scan_files_parallel_full(
                 let scan = super::find_symbols(&content);
                 for fqcn in scan.classes {
                     let class_short_name = fqcn_short_name(&fqcn).to_owned();
+                    result.class_declarations.push((fqcn.clone(), path.clone()));
                     let mut origin_wins = false;
                     result
                         .classmap
@@ -812,6 +813,7 @@ fn scan_files_parallel_full(
         for (scan, path, origin) in batch {
             for fqcn in scan.classes {
                 let class_short_name = fqcn_short_name(&fqcn).to_owned();
+                result.class_declarations.push((fqcn.clone(), path.clone()));
                 let mut origin_wins = false;
                 result
                     .classmap

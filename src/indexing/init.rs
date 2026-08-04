@@ -581,10 +581,13 @@ impl Backend {
             root, &skip_dirs, progress,
         );
         self.populate_autoload_indices(&scan);
-        let class_entries: Vec<(String, PathBuf)> = scan.classmap.into_iter().collect();
-        for (fqn, path) in &class_entries {
+        // File every declaration into its owning project's environment
+        // before deduplication: sibling projects may define the same FQN,
+        // and each environment must retain its own copy.
+        for (fqn, path) in &scan.class_declarations {
             self.index_class_in_owning_composer_project(fqn.clone(), path);
         }
+        let class_entries: Vec<(String, PathBuf)> = scan.classmap.into_iter().collect();
         {
             let mut idx = self.symbols.fqn_uri_index.write();
             for (fqcn, path) in class_entries {

@@ -557,6 +557,7 @@ impl Backend {
 
         let mut result = WorkspaceScanResult {
             classmap,
+            class_declarations: std::mem::take(&mut vendor_scan.class_declarations),
             package_roots: std::mem::take(&mut vendor_scan.package_roots),
             ..Default::default()
         };

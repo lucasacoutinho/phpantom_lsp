@@ -1096,7 +1096,7 @@ pub(crate) fn report(backend: &Backend, runner_content_bytes: usize) {
     let mut cache_overhead = Sz::default();
     {
         let cache = backend.resolved_class_cache.read();
-        let (map, fqn_keys, reverse_deps, substituted_bytes) = cache.audit_maps();
+        let (map, fingerprints, fqn_keys, reverse_deps, substituted_bytes) = cache.audit_maps();
         cache_overhead += map_buckets::<(Atom, Vec<String>), Arc<ClassInfo>>(map.capacity());
         for (key, cls) in map {
             cache_overhead.add(key.1.capacity() * size_of::<String>());
@@ -1104,6 +1104,13 @@ pub(crate) fn report(backend: &Backend, runner_content_bytes: usize) {
                 cache_overhead.add(g.capacity());
             }
             a.class(cls);
+        }
+        cache_overhead += map_buckets::<(Atom, Vec<String>), u64>(fingerprints.capacity());
+        for (_, generic_args) in fingerprints.keys() {
+            cache_overhead.add(generic_args.capacity() * size_of::<String>());
+            for arg in generic_args {
+                cache_overhead.add(arg.capacity());
+            }
         }
         cache_overhead += map_buckets::<String, HashSet<(Atom, Vec<String>)>>(fqn_keys.capacity());
         for (k, set) in fqn_keys {

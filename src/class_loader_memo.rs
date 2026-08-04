@@ -25,6 +25,9 @@
 //! the two structures a loader answer is derived from, so a memoised
 //! answer is never staler than the caches it came from. Retired slots are
 //! overwritten in place rather than swept, so invalidation costs nothing.
+//! Each slot also records the current Composer analysis-context identity,
+//! preventing a worker reused for sibling projects from serving one
+//! project's same-FQN class to another.
 //!
 //! [`SymbolIndex::class_lookup_generation`]: crate::symbol_index::SymbolIndex::class_lookup_generation
 //! [`SymbolIndex::note_class_lookup_change`]: crate::symbol_index::SymbolIndex::note_class_lookup_change
@@ -55,10 +58,10 @@ use crate::types::ClassInfo;
 
 /// Slots per thread, a power of two so the index is a mask.
 ///
-/// 8 KB per thread at 32 bytes a slot. Measured against 1024 on two large
-/// Laravel projects: the smaller table won slightly on both, so the working
-/// set of one file's diagnostics fits and the locality of a table that
-/// stays in L1 is worth more than the collisions avoided by a larger one.
+/// Measured against 1024 slots on two large Laravel projects: the smaller
+/// table won slightly on both, so the working set of one file's diagnostics
+/// fits and locality is worth more than the collisions avoided by a larger
+/// one.
 const SLOTS: usize = 256;
 
 /// One memoised answer.
@@ -75,6 +78,9 @@ struct Slot {
     owner: u64,
     /// Index generation `class` was looked up at.
     generation: u64,
+    /// Ambient analysis-pass identity. A nonzero value scopes same-FQN
+    /// answers to the Composer environment of the file being analyzed.
+    context: u64,
 }
 
 impl Slot {
@@ -84,6 +90,7 @@ impl Slot {
             class: None,
             owner: 0,
             generation: 0,
+            context: 0,
         }
     }
 }
@@ -108,11 +115,16 @@ fn slot_of(ty: &PhpType) -> usize {
 /// The outer `Option` distinguishes "not memoised" from a memoised
 /// "no such class"; both are worth caching, since a negative answer costs
 /// the same multi-phase walk as a positive one.
-pub(crate) fn probe(owner: u64, generation: u64, ty: &PhpType) -> Option<Option<Arc<ClassInfo>>> {
+pub(crate) fn probe(
+    owner: u64,
+    generation: u64,
+    context: u64,
+    ty: &PhpType,
+) -> Option<Option<Arc<ClassInfo>>> {
     TABLE.with(|table| {
         let table = table.borrow();
         let slot = &table.as_ref()?[slot_of(ty)];
-        if slot.owner != owner || slot.generation != generation {
+        if slot.owner != owner || slot.generation != generation || slot.context != context {
             return None;
         }
         // Pointer equality: a different type hashing to this slot is a
@@ -127,7 +139,13 @@ pub(crate) fn probe(owner: u64, generation: u64, ty: &PhpType) -> Option<Option<
 /// Called only after [`probe`] has returned, never with the loader still
 /// running: loading a class parses a file, which resolves further classes
 /// and re-enters this table.
-pub(crate) fn store(owner: u64, generation: u64, ty: &PhpType, class: &Option<Arc<ClassInfo>>) {
+pub(crate) fn store(
+    owner: u64,
+    generation: u64,
+    context: u64,
+    ty: &PhpType,
+    class: &Option<Arc<ClassInfo>>,
+) {
     TABLE.with(|table| {
         let mut table = table.borrow_mut();
         let table = table
@@ -137,6 +155,7 @@ pub(crate) fn store(owner: u64, generation: u64, ty: &PhpType, class: &Option<Ar
             class: class.clone(),
             owner,
             generation,
+            context,
         };
     });
 }

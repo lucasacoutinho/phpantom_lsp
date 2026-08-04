@@ -317,6 +317,8 @@ pub async fn run(options: AnalyseOptions) -> i32 {
                         // collector's own `with_parse_cache` call becomes
                         // a no-op (nested guard).
                         let _parse_guard = with_parse_cache(content);
+                        let _analysis_ctx =
+                            crate::composer_environment::with_analysis_context(uri);
                         let _cache_guard =
                             with_active_resolved_class_cache(&backend.resolved_class_cache);
                         let _chain_guard =

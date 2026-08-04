@@ -6,12 +6,74 @@
 //! source packages, but vendor definitions must be selected from the project
 //! that owns the file making the request.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tower_lsp::lsp_types::Url;
 
 use crate::Backend;
 use crate::ci_map::CiMap;
+
+// ─── Ambient analysis context ────────────────────────────────────────
+
+thread_local! {
+    /// The file currently being analyzed on this thread, if any.
+    ///
+    /// Set by [`with_analysis_context`] at per-file analysis entry points
+    /// (diagnostics, hover, completion). Read by the class loader so type
+    /// resolution can prefer the Composer environment that owns the
+    /// analyzed file — mirroring which autoloader would be active at
+    /// runtime. A thread-local fits the execution model: every analysis
+    /// pass runs synchronously on one blocking thread, like the scoped
+    /// per-analysis caches in `collect_slow_diagnostics`.
+    static ANALYSIS_CONTEXT: RefCell<Option<AnalysisContext>> = const { RefCell::new(None) };
+}
+
+struct AnalysisContext {
+    id: u64,
+    uri: String,
+    /// Per-analysis memo of contextual FQN lookups. Class resolution is
+    /// hot (thousands of lookups per file), so repeated names skip the
+    /// project-index walk after the first hit.
+    resolved: HashMap<String, Option<String>>,
+}
+
+/// RAII guard that restores the previous ambient context on drop, so
+/// nested activations (e.g. a collector re-entering analysis) unwind
+/// correctly.
+pub(crate) struct AnalysisContextGuard {
+    previous: Option<AnalysisContext>,
+}
+
+impl Drop for AnalysisContextGuard {
+    fn drop(&mut self) {
+        ANALYSIS_CONTEXT.with(|slot| {
+            *slot.borrow_mut() = self.previous.take();
+        });
+    }
+}
+
+/// Mark `uri` as the file under analysis for the current thread until
+/// the returned guard is dropped.
+pub(crate) fn with_analysis_context(uri: &str) -> AnalysisContextGuard {
+    static NEXT_CONTEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let previous = ANALYSIS_CONTEXT.with(|slot| {
+        slot.borrow_mut().replace(AnalysisContext {
+            id: NEXT_CONTEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            uri: uri.to_string(),
+            resolved: HashMap::new(),
+        })
+    });
+    AnalysisContextGuard { previous }
+}
+
+/// Identity of the current ambient analysis pass, or zero outside one.
+/// Class-loader memo entries include this value so same-FQN answers cannot
+/// cross Composer-environment boundaries on a reused worker thread.
+pub(crate) fn analysis_context_id() -> u64 {
+    ANALYSIS_CONTEXT.with(|slot| slot.borrow().as_ref().map_or(0, |context| context.id))
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct ComposerProjectIndex {
@@ -299,5 +361,29 @@ impl Backend {
 
     pub(crate) fn class_uris_match(&self, left: &str, right: &str) -> bool {
         same_uri(left, right)
+    }
+
+    /// Resolve `fqn` in the Composer environment of the file currently
+    /// under analysis on this thread (see [`with_analysis_context`]).
+    ///
+    /// Returns `None` when no analysis context is active or when the
+    /// context cannot supply the class — callers should then fall back
+    /// to the global lookup phases.
+    pub(crate) fn contextual_class_uri(&self, fqn: &str) -> Option<String> {
+        let (context_uri, memoised) = ANALYSIS_CONTEXT.with(|slot| {
+            let slot = slot.borrow();
+            let context = slot.as_ref()?;
+            Some((context.uri.clone(), context.resolved.get(fqn).cloned()))
+        })?;
+        if let Some(memoised) = memoised {
+            return memoised;
+        }
+        let resolved = self.class_uri_for_context(fqn, &context_uri);
+        ANALYSIS_CONTEXT.with(|slot| {
+            if let Some(context) = slot.borrow_mut().as_mut() {
+                context.resolved.insert(fqn.to_string(), resolved.clone());
+            }
+        });
+        resolved
     }
 }

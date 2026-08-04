@@ -220,3 +220,101 @@ async fn duplicate_vendor_fqns_are_isolated_in_all_load_orders() {
     run_duplicate_vendor_case(Some(false)).await;
     run_duplicate_vendor_case(Some(true)).await;
 }
+
+// ── Duplicate project-source FQNs (sibling CodeIgniter apps) ───────────
+
+/// Write a minimal legacy-style project: a bare `composer.json`, a
+/// global-namespace helper class, and a consumer that references a
+/// class constant on it.
+fn write_legacy_project(workspace: &Path, directory: &str, helper: &str, consumer: &str) {
+    let root = workspace.join(directory);
+    fs::create_dir_all(root.join("application/helpers")).unwrap();
+    fs::create_dir_all(root.join("application/controllers")).unwrap();
+    fs::write(root.join("composer.json"), "{}").unwrap();
+    fs::write(root.join("application/helpers/logtype_helper.php"), helper).unwrap();
+    fs::write(root.join("application/controllers/expire.php"), consumer).unwrap();
+}
+
+/// Two sibling projects both define a global class `LogType`, but only one
+/// version declares `TYPE_CODE_EXPIRES_SIGNATURE`. Member checks must use
+/// the definition from the project that owns the analyzed file: the global
+/// FQN index keeps a single winner, and before context-aware type
+/// resolution the losing project's members were checked against the
+/// winner's class.
+#[tokio::test]
+async fn duplicate_source_fqns_use_owning_project_for_member_checks() {
+    let workspace = tempfile::tempdir().unwrap();
+
+    let accounts_helper = "<?php\nclass LogType\n{\n    const TYPE_LOGIN = 1;\n}\n";
+    let www_helper = concat!(
+        "<?php\n",
+        "class LogType\n",
+        "{\n",
+        "    const TYPE_LOGIN = 1;\n",
+        "    const TYPE_CODE_EXPIRES_SIGNATURE = 99;\n",
+        "}\n",
+    );
+    // Both consumers reference the www-only constant: valid in `www`,
+    // invalid in `accounts`. Whichever project wins the global index,
+    // one of the two assertions below fails without context-aware
+    // resolution, so the test is deterministic regardless of walk order.
+    let consumer = concat!(
+        "<?php\n",
+        "class ExpireJob\n",
+        "{\n",
+        "    public function run(): int\n",
+        "    {\n",
+        "        return LogType::TYPE_CODE_EXPIRES_SIGNATURE;\n",
+        "    }\n",
+        "}\n",
+    );
+
+    write_legacy_project(workspace.path(), "accounts", accounts_helper, consumer);
+    write_legacy_project(workspace.path(), "www", www_helper, consumer);
+
+    let backend = create_test_backend();
+    backend
+        .initialize(InitializeParams {
+            root_uri: Some(Url::from_directory_path(workspace.path()).unwrap()),
+            ..InitializeParams::default()
+        })
+        .await
+        .unwrap();
+    backend.initialized(InitializedParams {}).await;
+
+    let www_consumer = workspace
+        .path()
+        .join("www/application/controllers/expire.php");
+    let accounts_consumer = workspace
+        .path()
+        .join("accounts/application/controllers/expire.php");
+    let (www_uri, www_text) = open(&backend, &www_consumer).await;
+    let (accounts_uri, accounts_text) = open(&backend, &accounts_consumer).await;
+
+    let mut www_diagnostics = Vec::new();
+    backend.collect_slow_diagnostics(www_uri.as_str(), &www_text, &mut www_diagnostics);
+    let www_member_complaints: Vec<&str> = www_diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.message.contains("TYPE_CODE_EXPIRES_SIGNATURE"))
+        .map(|diagnostic| diagnostic.message.as_str())
+        .collect();
+    assert!(
+        www_member_complaints.is_empty(),
+        "www's LogType declares the constant; member check leaked another \
+         project's definition: {www_member_complaints:?}"
+    );
+
+    let mut accounts_diagnostics = Vec::new();
+    backend.collect_slow_diagnostics(
+        accounts_uri.as_str(),
+        &accounts_text,
+        &mut accounts_diagnostics,
+    );
+    assert!(
+        accounts_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("TYPE_CODE_EXPIRES_SIGNATURE")),
+        "accounts' LogType lacks the constant; member check leaked another \
+         project's definition and masked the error"
+    );
+}
